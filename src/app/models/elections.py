@@ -123,6 +123,11 @@ class BallotCandidate(Base):
     party_id: Mapped[int | None] = mapped_column(ForeignKey("party.id"), index=True)
     ballot_order: Mapped[int] = mapped_column(Integer)
     ballot_name: Mapped[str] = mapped_column(String(200))
+    #: Stable key of the line within its race (candidate key, ticket = presidential candidate key,
+    #: party code for party-list contests); the engines' ``BallotLine.key``.
+    line_key: Mapped[str | None] = mapped_column(String(80))
+    #: Candidate quality used for this ballot (a person's quality may change in later scenarios).
+    quality_snapshot: Mapped[float | None] = mapped_column(Float)
     party_code_snapshot: Mapped[str | None] = mapped_column(String(12))
     party_name_snapshot: Mapped[str | None] = mapped_column(String(120))
     party_abbr_snapshot: Mapped[str | None] = mapped_column(String(16))

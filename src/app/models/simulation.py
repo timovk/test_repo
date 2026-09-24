@@ -45,13 +45,20 @@ class Scenario(Base):
 
 
 class Campaign(Base):
+    """A party's campaign in one election (FICTIONAL plan, SIMULATED effects).
+
+    A party runs one campaign per election across all of its races.  ``race_id`` /
+    ``ballot_candidate_id`` point at the party's presidential ticket when it has one, and are NULL
+    for a party-wide campaign without a ticket (e.g. in midterm years).
+    """
+
     __tablename__ = "campaign"
     __table_args__ = (UniqueConstraint("race_id", "ballot_candidate_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     election_id: Mapped[int] = mapped_column(ForeignKey("election.id"), index=True)
-    race_id: Mapped[int] = mapped_column(ForeignKey("race.id"), index=True)
-    ballot_candidate_id: Mapped[int] = mapped_column(ForeignKey("ballot_candidate.id"))
+    race_id: Mapped[int | None] = mapped_column(ForeignKey("race.id"), index=True)
+    ballot_candidate_id: Mapped[int | None] = mapped_column(ForeignKey("ballot_candidate.id"))
     party_id: Mapped[int | None] = mapped_column(ForeignKey("party.id"))
     budget: Mapped[float] = mapped_column(Float)  # abstract resource units
     strategy: Mapped[str] = mapped_column(String(24), default="balanced")
