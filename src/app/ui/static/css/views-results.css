@@ -621,7 +621,8 @@ tr.res-row--dim td {
   background: color-mix(in srgb, var(--party) 6%, transparent);
 }
 .res-lines--compact .res-lines__row {
-  grid-template-columns: minmax(150px, 1.6fr) minmax(50px, 1fr) 52px 64px;
+  grid-template-columns: minmax(120px, 2fr) minmax(36px, 1fr) 50px 58px;
+  gap: var(--sp-2);
   padding: 5px var(--sp-2) 5px var(--sp-3);
 }
 .res-lines__avatar {
@@ -1174,6 +1175,61 @@ a.res-lines__name:hover {
   margin-top: var(--sp-3);
   padding-top: var(--sp-3);
   border-top: 1px solid var(--border);
+}
+
+/* Municipality page */
+.res-demo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.res-demo .res-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.res-subhead--tight {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--sp-2) 0 2px;
+}
+.res-race-card__kv {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.res-race-card__kv b {
+  color: var(--text-primary);
+}
+.res-race-card__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.res-race-card__foot > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+}
+.res-race-card {
+  position: relative;
+  overflow: hidden;
+}
+.res-race-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--party, transparent);
+}
+.res-hist-chg {
+  font-size: var(--fs-xs);
 }
 
 /* Decision desk (live model evidence) & call log */

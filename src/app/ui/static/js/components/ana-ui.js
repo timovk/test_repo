@@ -225,7 +225,7 @@ export function copyButton(text, label = "Copy") {
     "aria-label": `${label} to clipboard`,
     onclick: async () => {
       try {
-        await navigator.clipboard.writeText(text);
+        await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
         b.textContent = "Copied";
       } catch {
         b.textContent = "Copy failed";

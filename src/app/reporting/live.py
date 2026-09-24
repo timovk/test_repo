@@ -324,9 +324,6 @@ class _Race:
     leader: str | None = None
     history: list[CallRecord] = field(default_factory=list)
     lead_changes: list[LeadChange] = field(default_factory=list)
-    #: The caller's per-race invariants (normalised expectation, clusters); they depend only on
-    #: arrays that never change, so the cache survives resets, rewinds and checkpoints.
-    caller_cache: dict = field(default_factory=dict, repr=False)
 
     @property
     def locked(self) -> bool:
@@ -361,7 +358,6 @@ class _Race:
             unit_cluster=self.cluster,
             n_clusters=len(self.cluster_muni),
             race_type=self.meta.race_type.value,
-            cache=self.caller_cache,
         )
 
 

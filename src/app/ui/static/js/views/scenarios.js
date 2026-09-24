@@ -9,11 +9,10 @@ import { api } from "../api.js";
 import { h, mount } from "../dom.js";
 import { setQuery } from "../router.js";
 import { getState, setState } from "../store.js";
-import { fmtInt } from "../format.js";
-import { card, links, pageHeader } from "./_shared.js";
+import { card, pageHeader } from "./_shared.js";
 import { provBadge } from "../components/badges.js";
 import { icon } from "../components/icons.js";
-import { callout, copyButton, downloadLink, errorBox, field, fmtDate, fmtDateTime, humanize, kv, partyInfo, pchip, provinceName, refresh, selectBox, statusBadge, tabBar, toast } from "../components/ana-ui.js";
+import { callout, copyButton, downloadLink, errorBox, field, fmtDate, fmtDateTime, humanize, kv, pchip, provinceName, refresh, selectBox, statusBadge, tabBar, toast } from "../components/ana-ui.js";
 
 const EV_METHODS = [
   { value: "winner_take_all", label: "Winner-take-all (default)" },
@@ -551,7 +550,7 @@ export async function render(el, _params, ctx) {
                   }
                 } }, "Save YAML"),
           ),
-          h("div", { class: "ana-row" }, h("label", { class: "btn btn--sm btn--ghost", for: "ana-yaml-file" }, "Load file…"), file, copyButton(ta.value, "Copy"), downloadLink(`/api/scenarios/${encodeURIComponent(sc.slug)}/export`, "Download")),
+          h("div", { class: "ana-row" }, h("label", { class: "btn btn--sm btn--ghost", for: "ana-yaml-file" }, "Load file…"), file, copyButton(() => ta.value, "Copy"), downloadLink(`/api/scenarios/${encodeURIComponent(sc.slug)}/export`, "Download")),
         ),
         ta,
         out,
@@ -705,6 +704,4 @@ export async function render(el, _params, ctx) {
   }
   if (st.mode === "import") openImport();
   else await select(st.slug && st.list.scenarios.some((s) => s.slug === st.slug) ? st.slug : st.list.scenarios[st.list.scenarios.length - 1]?.slug);
-  void fmtInt;
-  void links;
 }

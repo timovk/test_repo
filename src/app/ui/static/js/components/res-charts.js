@@ -72,7 +72,8 @@ export function stackBar(segments, { total, marker, markerLabel, label = "Compos
  */
 export function bandBar(bands, { label = "Distribution", ramp } = {}) {
   const n = bands.length;
-  const colors = ramp || bands.map((_, i) => `var(--seq-${Math.min(6, Math.round(1 + (i * 5) / Math.max(1, n - 1)))})`);
+  // Ordinal ramp: one hue, seq-2 → seq-6 (seq-1 is too close to the surface to read as a band).
+  const colors = ramp || bands.map((_, i) => `var(--seq-${Math.min(6, Math.round(2 + (i * 4) / Math.max(1, n - 1)))})`);
   return h(
     "div",
     { class: "res-band", role: "img", "aria-label": `${label}: ${bands.map((b) => `${b.label} ${b.value ?? "–"}%`).join(", ")}` },

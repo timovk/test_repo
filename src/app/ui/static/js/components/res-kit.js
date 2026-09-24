@@ -219,9 +219,12 @@ export const statusLabel = (s) => STATUS_LABELS[String(s || "").toUpperCase()] |
 /* ------------------------------------------------------------------ candidate result rows */
 function lineInfo(l) {
   const person = l.candidate || l.president || null;
+  const mateName = l.running_mate?.name || l.running_mate_name || null;
+  let name = person?.name || l.name || "";
+  if (!person && mateName && name.endsWith(` / ${mateName}`)) name = name.slice(0, -(mateName.length + 3)); // ticket name → candidate
   return {
     key: l.key,
-    name: person?.name || l.name,
+    name,
     fullName: l.name,
     mate: l.running_mate?.name || l.running_mate_name || null,
     portrait: person?.portrait_key || l.portrait_key || null,
