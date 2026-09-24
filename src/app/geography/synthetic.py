@@ -80,7 +80,6 @@ def synthetic_geography(
     rng = make_rng(seed, "synthetic-geography")
     real_pop_m = [0.59, 0.66, 0.50, 1.18, 0.45, 2.15, 1.40, 2.95, 3.90, 0.39, 2.65, 1.12]
     rows = []
-    muni_rows = []
     prov_rows = []
     span = cells * cell_m
     for p, (pcode, pcbs, pname) in enumerate(PROVINCES):
@@ -109,7 +108,7 @@ def synthetic_geography(
             for j in range(cells):
                 mcode = muni_of_cell[(i, j)]
                 geom = box(x0 + j * cell_m, y0 + span - (i + 1) * cell_m, x0 + (j + 1) * cell_m, y0 + span - i * cell_m)
-                pop = int(round(weights[i, j]))
+                pop = round(float(weights[i, j]))
                 area = geom.area / 1e6
                 density = pop / area
                 urb = int(np.clip(5 - np.digitize(density, [500, 1000, 1500, 2500]), 1, 5))
