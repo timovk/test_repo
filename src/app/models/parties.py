@@ -91,6 +91,8 @@ class Candidate(Base):
     __tablename__ = "candidate"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    #: Stable slug identifying the person across elections (scenario candidate key).
+    key: Mapped[str] = mapped_column(String(80), unique=True)
     first_name: Mapped[str] = mapped_column(String(60))
     last_name: Mapped[str] = mapped_column(String(80))
     full_name: Mapped[str] = mapped_column(String(160), index=True)
