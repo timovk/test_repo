@@ -93,6 +93,7 @@ class ProvinceStats(Base):
     province_id: Mapped[int] = mapped_column(ForeignKey("province.id"), index=True)
     vintage_id: Mapped[int] = mapped_column(ForeignKey("geo_vintage.id"), index=True)
     population: Mapped[int] = mapped_column(Integer)
+    population_official: Mapped[int | None] = mapped_column(Integer)
     eligible_voters_est: Mapped[int] = mapped_column(Integer, default=0)
     area_km2: Mapped[float] = mapped_column(Float)
     land_area_km2: Mapped[float] = mapped_column(Float)
@@ -115,7 +116,10 @@ class Municipality(Base):
     cbs_code: Mapped[str] = mapped_column(String(6), index=True)  # 'GM0855'
     name: Mapped[str] = mapped_column(String(80), index=True)
     province_id: Mapped[int] = mapped_column(ForeignKey("province.id"), index=True)
+    #: Sum of the municipality's CBS neighbourhood figures (canonical for all aggregation).
     population: Mapped[int] = mapped_column(Integer)
+    #: Official CBS municipal total (neighbourhood figures are rounded by CBS, so tiny deltas exist).
+    population_official: Mapped[int | None] = mapped_column(Integer)
     eligible_voters_est: Mapped[int] = mapped_column(Integer, default=0)  # DERIVED
     area_km2: Mapped[float] = mapped_column(Float)
     land_area_km2: Mapped[float] = mapped_column(Float)
