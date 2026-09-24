@@ -1,0 +1,325 @@
+# FICTIONAL scenario — the 2028 general election, the playable demo.  Geography is REAL (CBS);
+# every party, person, poll and number below is invented.
+#
+# Elected in 2028: the President, the entire Tweede Kamer, Senate class 2 (8 seats) and the 12
+# governors.  The Electoral College is designed as a genuine two-ticket race with multiparty
+# spoilers: the green-left PA wins the popular vote in most draws but its vote is concentrated in
+# Noord-Holland, Groningen and the university towns, while the incumbent liberal president (VLP) is
+# spread more efficiently over the suburbs — so the race is decided in the Zuid-Holland /
+# Gelderland / Utrecht toss-ups and three-way Overijssel.  The national-populist NVB carries
+# Limburg and Drenthe and contests Fryslân and Zeeland; the Christian-democratic CVU contests
+# Noord-Brabant, Overijssel and Zeeland.  A contingent election (nobody reaching 88 electoral
+# votes) is a real but minority outcome.  Measured with shocks only, campaigns off (1000 draws,
+# REAL geography, Huntington–Hill electoral votes): VLP ≈ 49 % outright, PA ≈ 39 %, contingent
+# ≈ 12 %; turnout ≈ 79 % (see docs/SIMULATION.md §7.1 — FICTIONAL model output, not a forecast).
+scenario:
+  slug: demo-2028
+  name: General Election 2028
+  description: >-
+    President Charlotte Verbeek (VLP) seeks re-election against a resurgent green-left PA led by
+    Lotte van der Ploeg, NVB veteran Ronald Kroon and a CVU ticket built to win the south.  The
+    agrarian Plattelandsbond renamed itself in 2027 and fields no presidential ticket.
+  year: 2028
+  election_type: general
+  election_date: 2028-11-08
+  seed: 20280001
+  political_geography_seed: 1848
+
+parties_file: parties/fictional.yaml
+
+party_overrides:
+  PLB:
+    name: Plattelands- en Regiopartij
+    abbreviation: PRP
+
+party_events:
+  - year: 2027
+    party: PLB
+    event: renamed
+    new_name: Plattelands- en Regiopartij
+    new_abbreviation: PRP
+
+candidates:
+  # --- VLP (incumbent ticket) ----------------------------------------------------------------
+  - key: charlotte-verbeek
+    first_name: Charlotte
+    last_name: Verbeek
+    gender: F
+    birth_date: 1971-03-14
+    party: VLP
+    home_municipality: GM0629   # Wassenaar
+    home_province: ZH
+    quality: 0.6
+    campaign_strength: 0.5
+    fundraising: 1.8
+    favorability: -4.0
+    incumbent_office: PRES
+    bio: Fictional President since 2025; former logistics executive and provincial finance minister.
+  - key: joost-brinkman
+    first_name: Joost
+    last_name: Brinkman
+    gender: M
+    birth_date: 1968-09-02
+    party: VLP
+    home_municipality: GM0200   # Apeldoorn
+    home_province: GE
+    quality: 0.4
+    incumbent_office: VICE_PRESIDENT
+    bio: Fictional Vice-President since 2025; former mayor-turned-entrepreneur from the Veluwe.
+  # --- PA ----------------------------------------------------------------------------------
+  - key: lotte-van-der-ploeg
+    first_name: Lotte
+    last_name: van der Ploeg
+    gender: F
+    birth_date: 1983-05-12
+    party: PA
+    home_municipality: GM0363   # Amsterdam
+    home_province: NH
+    quality: 0.9
+    campaign_strength: 0.7
+    fundraising: 1.4
+    favorability: 3.0
+    bio: Fictional two-term House member for an Amsterdam district and former energy-cooperative director.
+  - key: anil-jagesar
+    first_name: Anil
+    last_name: Jagesar
+    gender: M
+    birth_date: 1978-08-03
+    party: PA
+    home_municipality: GM0268   # Nijmegen
+    home_province: GE
+    quality: 0.5
+    bio: Fictional former alderman for education in Nijmegen, picked to carry Gelderland.
+  # --- NVB ---------------------------------------------------------------------------------
+  - key: ronald-kroon
+    first_name: Ronald
+    last_name: Kroon
+    gender: M
+    birth_date: 1966-11-11
+    party: NVB
+    home_municipality: GM0983   # Venlo
+    home_province: LI
+    quality: 0.3
+    campaign_strength: 0.9
+    fundraising: 1.2
+    bio: Fictional NVB leader, runner-up in 2024; former transport entrepreneur from Venlo.
+  - key: dennis-schipper
+    first_name: Dennis
+    last_name: Schipper
+    gender: M
+    birth_date: 1975-02-26
+    party: NVB
+    home_municipality: GM1930   # Nissewaard
+    home_province: ZH
+    quality: 0.2
+    bio: Fictional port-logistics manager and House member from Spijkenisse.
+  # --- CVU ---------------------------------------------------------------------------------
+  - key: marieke-pijnenburg
+    first_name: Marieke
+    last_name: Pijnenburg
+    gender: F
+    birth_date: 1974-12-08
+    party: CVU
+    home_municipality: GM0796   # 's-Hertogenbosch
+    home_province: NB
+    quality: 0.8
+    campaign_strength: 0.5
+    fundraising: 1.0
+    incumbent_office: GOV-NB
+    bio: Fictional Governor of Noord-Brabant since 2025; former family-court judge.
+  - key: tjeerd-hiemstra
+    first_name: Tjeerd
+    last_name: Hiemstra
+    gender: M
+    birth_date: 1970-10-01
+    party: CVU
+    home_municipality: GM0183   # Tubbergen
+    home_province: OV
+    quality: 0.4
+    bio: Fictional Senator for Overijssel and former dairy-cooperative chairman.
+  # --- DM ----------------------------------------------------------------------------------
+  - key: jasper-de-lange
+    first_name: Jasper
+    last_name: de Lange
+    gender: M
+    birth_date: 1980-04-18
+    party: DM
+    home_municipality: GM0546   # Leiden
+    home_province: ZH
+    quality: 0.4
+    bio: Fictional constitutional-law professor from Leiden.
+  - key: iris-nijland
+    first_name: Iris
+    last_name: Nijland
+    gender: F
+    birth_date: 1986-01-09
+    party: DM
+    home_municipality: GM0772   # Eindhoven
+    home_province: NB
+    quality: 0.3
+    bio: Fictional semiconductor engineer and Eindhoven city councillor.
+  # --- SAP ---------------------------------------------------------------------------------
+  - key: naima-tahiri
+    first_name: Naima
+    last_name: Tahiri
+    gender: F
+    birth_date: 1985-10-14
+    party: SAP
+    home_municipality: GM0855   # Tilburg
+    home_province: NB
+    quality: 0.4
+    bio: Fictional House member for Tilburg; nurse and tenants'-association chair.
+  - key: harm-nijboer
+    first_name: Harm
+    last_name: Nijboer
+    gender: M
+    birth_date: 1964-07-15
+    party: SAP
+    home_municipality: GM1952   # Midden-Groningen
+    home_province: GR
+    quality: 0.2
+    bio: Fictional gas-field damage campaigner from Midden-Groningen.
+
+president:
+  tickets:
+    - {party: VLP, president: charlotte-verbeek, vice_president: joost-brinkman, incumbent: true}
+    - {party: PA, president: lotte-van-der-ploeg, vice_president: anil-jagesar}
+    - {party: NVB, president: ronald-kroon, vice_president: dennis-schipper}
+    - {party: CVU, president: marieke-pijnenburg, vice_president: tjeerd-hiemstra}
+    - {party: DM, president: jasper-de-lange, vice_president: iris-nijland}
+    - {party: SAP, president: naima-tahiri, vice_president: harm-nijboer}
+  home_province_bonus: 0.12
+  vp_home_province_bonus: 0.05
+
+house:
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.04}
+    SAP: {min_expected_share: 0.04}
+    PLB: {min_expected_share: 0.06}
+    RV: {min_expected_share: 0.05, regions: [bible_belt, bible_belt_fringe]}
+  max_candidates: 7
+  candidate_quality_sd: 0.35
+  incumbent_runs_again_prob: 0.88
+  independents_prob: 0.03
+
+senate:
+  classes_up: [2]
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.05}
+    SAP: {min_expected_share: 0.05}
+    PLB: {min_expected_share: 0.07}
+    RV: {min_expected_share: 0.06}
+  max_candidates: 7
+  candidate_quality_sd: 0.4
+  incumbent_runs_again_prob: 0.85
+  independents_prob: 0.02
+
+governors:
+  enabled: true
+  lieutenant_governors: true
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.05}
+    SAP: {min_expected_share: 0.05}
+    PLB: {min_expected_share: 0.07}
+    RV: {min_expected_share: 0.06}
+  max_candidates: 7
+  candidate_quality_sd: 0.45
+  incumbent_runs_again_prob: 0.8
+  independents_prob: 0.04
+
+municipal:
+  enabled: false
+
+environment:
+  national: {PA: 0.05, VLP: 0.03, DM: -0.02, SAP: -0.02}
+  provinces:
+    NB: {CVU: 0.05, VLP: 0.03}   # Governor Pijnenburg's home province; VLP's business vote
+    LI: {CVU: 0.05}
+    GE: {VLP: 0.03}
+    ZH: {PA: 0.15}               # the PA's big-city housing campaign (Rotterdam, The Hague, Leiden, Delft)
+    UT: {PA: 0.05}
+    FR: {NVB: -0.05}             # the NVB's Randstad-centred campaign plays badly in Fryslân
+  events:
+    - name: energy-price-shock
+      description: Fictional — a winter energy-price spike hurts the governing party.
+      national: {VLP: -0.02, NVB: 0.02, SAP: 0.01}
+    - name: southern-floods-response
+      description: Fictional — Governor Pijnenburg's handling of river floods in Brabant and Limburg.
+      provinces:
+        NB: {CVU: 0.03}
+        LI: {CVU: 0.03}
+    - name: pa-momentum-surge
+      description: Fictional — a late youth-turnout surge for the PA ticket (occurs in some draws only).
+      probability: 0.3
+      national: {PA: 0.05}
+      turnout: 0.05
+  turnout_base: 0.79
+  blank_rate: 0.004
+  invalid_rate: 0.003
+  shocks:
+    national_sd: 0.12             # an unusually volatile, nationalised election …
+    province_sd: 0.025            # … in which the provinces move largely together
+    municipality_sd: 0.03
+    unit_sd: 0.06
+    spatial_sd: 0.02
+    spatial_length_km: 40
+    turnout_national_sd: 0.08
+    turnout_local_sd: 0.06
+    tail_df: 6
+  incumbency:
+    president: 0.04
+    house: 0.07
+    senate: 0.05
+    governor: 0.07
+    mayor: 0.08
+    midterm_penalty: 0.04
+  strategic_voting: 0.35
+  elasticity_strength: 0.6
+
+# Structural realignment since 2024 (FICTIONAL): part of the DM and SAP electorate has moved to
+# the PA, the NVB has lost ground to the governing VLP's tougher migration line and the renamed
+# agrarian party has grown.  These baseline shares override the parties' base_share for this
+# election (the political geography is kept).
+calibration:
+  national: {PA: 0.26, VLP: 0.245, NVB: 0.13, CVU: 0.12, DM: 0.075, SAP: 0.065, PLB: 0.075, RV: 0.03}
+
+polling:
+  generate: true
+  start_date: 2028-07-10
+  national_polls: 50
+  province_polls: 72
+  district_polls: 40
+  senate_polls: 16
+  governor_polls: 24
+  generic_ballot_polls: 24
+  true_polling_error_sd: 0.02
+  pollsters:
+    - {name: Veldwerk & Statistiek, rating: 1.5, rating_label: A, method: probability panel, typical_sample: 2400}
+    - {name: Delta Meningsonderzoek, rating: 1.3, rating_label: A-, method: mixed mode, typical_sample: 1800}
+    - {name: Noorderlicht Panels, rating: 1.1, rating_label: B+, method: online, house_effects: {PLB: 0.8, PA: -0.4}}
+    - {name: Rivierland Research, rating: 1.0, rating_label: B, method: IVR, house_effects: {CVU: 0.7, DM: -0.3}}
+    - {name: Hofstad Opinie, rating: 0.8, rating_label: B-, method: online, house_effects: {VLP: 0.9, NVB: -0.7}}
+    - {name: Polderpanel, rating: 0.7, rating_label: C+, method: online opt-in, typical_sample: 1000, house_effects: {NVB: 1.2, DM: -0.5}}
+
+campaigns:
+  enabled: true
+  weeks: 12
+  budgets: {VLP: 115, PA: 105, NVB: 90, CVU: 75, DM: 50, SAP: 40, PLB: 25, RV: 15}
+  strategies: {VLP: battleground, PA: battleground, NVB: expansion, CVU: base, DM: balanced, SAP: base, PLB: base, RV: base}
+  effect_cap: 0.06
+  effect_uncertainty: 0.5
+
+electoral_college:
+  allocation: winner_take_all

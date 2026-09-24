@@ -1,0 +1,56 @@
+# Election calendar of the (FICTIONAL) federal republic — schema: app.elections.calendar.CalendarConfig
+#
+# The calendar decides WHEN offices are elected.  Term lengths are constitutional
+# (config/constitution.yaml): `every_years` / `term_years` left out here default to the
+# constitution, and explicit values that contradict it are rejected when the calendar is loaded.
+#
+# Canonical rotation:
+#   2024 founding general election: President, entire House, ALL 24 senators (classes 1/2/3 with
+#        initial terms of 2/4/6 years), all governors and provincial legislatures
+#   2026 midterm: House + Senate class 1 + municipal (mayors, councils)
+#   2028 general: President + House + Senate class 2 + governors + provincial legislatures
+#   2030 midterm: House + Senate class 3 + municipal
+#   2032 general: President + House + Senate class 1 + governors + provincial legislatures …
+founding_year: 2024
+timezone: Europe/Amsterdam
+
+# Election day: the first `weekday` after the `anchor_occurrence`-th `anchor_weekday` of `month`
+# → "the Wednesday after the first Monday of November" (Dutch elections are held on Wednesdays).
+election_day:
+  month: 11
+  anchor_weekday: monday
+  anchor_occurrence: 1
+  weekday: wednesday
+
+# Local time (Europe/Amsterdam)
+polls_open: "07:30"
+polls_close: "21:00"
+
+# Regular elections in founding_year + first_year_offset + k × every_years
+# (every_years = term_years = the constitutional term unless stated).
+president:                # presidential_term_years (4) → 2024, 2028, 2032 …
+  first_year_offset: 0
+house:                    # house_term_years (2) → every regular election day
+  first_year_offset: 0
+senate:
+  # term_years: senate_term_years (6).
+  # initial_terms: class → length of the term won at the founding election, like the first U.S.
+  # Senate.  Default: class c × House term = {1: 2, 2: 4, 3: 6}, so that exactly one class is up at
+  # every regular election after the founding (2026 → 1, 2028 → 2, 2030 → 3, 2032 → 1 …).
+  initial_terms: null
+governors:                # governor_term_years (4), in presidential years
+  first_year_offset: 0
+provincial_legislatures:  # same cycle as the governors (term defaults to governor_term_years)
+  first_year_offset: 0
+municipal:                # mayors and municipal councils: mayor_term_years (4), offset 2 → 2026, 2030 …
+  first_year_offset: 2
+
+# Terms begin on month/day of (election year + years_after_election)
+term_start:
+  federal: {years_after_election: 1, month: 1, day: 15}
+  provincial: {years_after_election: 1, month: 1, day: 1}
+  municipal: {years_after_election: 1, month: 1, day: 1}
+
+# Vacancies: special election on the next regular election day at least this many days away
+special_elections:
+  min_days_before: 90

@@ -1,0 +1,1799 @@
+/* ==========================================================================
+   View styles (views-analysis) — forecast, polling, campaign, history, candidate,
+   scenarios, data, settings.  Imported by app.css.  All classes are prefixed `ana-`.
+   ========================================================================== */
+
+/* ----------------------------------------------------------------- layout */
+.ana-stack-v {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.ana-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.ana-row--between {
+  justify-content: space-between;
+}
+.ana-grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ana-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin: var(--sp-5) 0 var(--sp-3);
+}
+.ana-section-title h2 {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.ana-section-title p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.ana-sub {
+  margin: 0 0 var(--sp-3);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  max-width: 78ch;
+}
+.ana-note {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: var(--sp-2);
+}
+.ana-muted-block {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.ana-busy {
+  opacity: 0.55;
+  transition: opacity 0.2s var(--ease);
+  pointer-events: none;
+}
+.ana-grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--min, 280px), 1fr));
+  gap: var(--sp-4);
+}
+.ana-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+  gap: var(--sp-4);
+  align-items: start;
+}
+.ana-split--wide {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+.ana-card-pad {
+  padding: var(--sp-4);
+}
+.ana-hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: var(--sp-4) 0;
+}
+
+/* ----------------------------------------------------------------- tabs / filters / forms */
+.ana-tabs {
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-4);
+}
+.ana-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ana-tabs button:focus-visible {
+  outline-offset: -2px;
+}
+.ana-tabs__badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.ana-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  margin-bottom: var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.ana-inline {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ana-inline__label,
+.ana-field__label {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.ana-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ana-field__hint {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ana-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+}
+.input,
+.select {
+  min-width: 0;
+}
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+  border-color: transparent;
+}
+.input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+.input--sm {
+  height: 28px;
+  width: 90px;
+  padding: 0 8px;
+  font-size: var(--fs-sm);
+}
+.input[aria-invalid="true"] {
+  border-color: var(--status-critical);
+}
+.ana-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ana-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.ana-search {
+  position: relative;
+}
+.ana-search .input {
+  width: 100%;
+}
+
+/* ----------------------------------------------------------------- key/value, KPIs */
+.ana-kv {
+  display: grid;
+  grid-template-columns: repeat(var(--kv-cols, 2), minmax(0, 1fr));
+  gap: 0 var(--sp-5);
+  margin: 0;
+}
+.ana-kv__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--grid);
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+.ana-kv dt {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.ana-kv dd {
+  margin: 0;
+  font-weight: 650;
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.ana-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-3);
+}
+.ana-kpi {
+  position: relative;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.ana-kpi[style*="--party"]::before {
+  content: "";
+  position: absolute;
+  inset: 10px auto 10px 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--party);
+}
+.ana-kpi__label {
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: 800;
+}
+.ana-kpi__value {
+  font-size: var(--fs-2xl);
+  font-weight: 850;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  margin-top: 4px;
+}
+.ana-kpi__sub {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* ----------------------------------------------------------------- status & callouts */
+.ana-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border: 1px solid currentColor;
+}
+.ana-status--good {
+  color: var(--status-good);
+}
+.ana-status--warning {
+  color: var(--status-warning);
+}
+.ana-status--critical {
+  color: var(--status-critical);
+}
+.ana-status--info {
+  color: var(--text-secondary);
+}
+.ana-callout {
+  align-items: flex-start;
+  line-height: 1.5;
+}
+.ana-callout__icon {
+  flex: none;
+  margin-top: 2px;
+}
+.ana-callout--warn {
+  border-color: color-mix(in srgb, var(--status-warning) 55%, transparent);
+  background: color-mix(in srgb, var(--status-warning) 7%, var(--surface-2));
+}
+.ana-callout--warn .ana-callout__icon {
+  color: var(--status-warning);
+}
+.ana-callout--ok .ana-callout__icon {
+  color: var(--status-good);
+}
+.ana-callout--sim {
+  border-color: color-mix(in srgb, var(--cat-simulated) 50%, transparent);
+  background: color-mix(in srgb, var(--cat-simulated) 6%, var(--surface-2));
+}
+.ana-callout--sim .ana-callout__icon {
+  color: var(--cat-simulated);
+}
+.ana-callout strong {
+  color: var(--text-primary);
+}
+.ana-provlegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ana-provlegend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ana-error {
+  color: var(--text-secondary);
+}
+.ana-src {
+  gap: 6px;
+}
+
+/* ----------------------------------------------------------------- toasts */
+.ana-toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.ana-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  animation: ana-toast-in 0.25s var(--ease);
+  transition: opacity 0.4s, transform 0.4s;
+}
+.ana-toast--info svg,
+.ana-toast--success svg {
+  color: var(--status-good);
+}
+.ana-toast--error svg {
+  color: var(--status-critical);
+}
+.ana-toast.is-leaving {
+  opacity: 0;
+  transform: translateY(6px);
+}
+@keyframes ana-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* ----------------------------------------------------------------- tooltips */
+.ana-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 170px;
+}
+.ana-tip__title {
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+.ana-tip__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--text-secondary);
+}
+.ana-tip__row b {
+  color: var(--text-primary);
+}
+.ana-tip__key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.ana-tip__line {
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--party);
+  flex: none;
+}
+.ana-tip__note {
+  margin-top: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  max-width: 260px;
+}
+
+/* ----------------------------------------------------------------- charts */
+.ana-fluid {
+  width: 100%;
+  min-width: 0;
+}
+.ana-fluid svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.ana-fluid svg:focus-visible,
+.ana-range-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ana-range-row:hover rect:first-child {
+  fill: var(--surface-hover);
+  fill-opacity: 0.5;
+}
+.ana-chartbox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.ana-col:hover path {
+  filter: brightness(1.15);
+}
+.ana-hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ana-hbars__row {
+  display: grid;
+  grid-template-columns: var(--label-w, 128px) minmax(60px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  color: inherit;
+}
+.ana-hbars__row:hover,
+.ana-hbars__row:focus-visible {
+  background: var(--surface-hover);
+}
+.ana-hbars__label {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ana-hbars__track {
+  position: relative;
+  height: 14px;
+  display: flex;
+  align-items: center;
+}
+.ana-hbars__bar {
+  height: 12px;
+  min-width: 1px;
+  border-radius: 0 4px 4px 0;
+  background: var(--party);
+}
+.ana-hbars--div .ana-hbars__track {
+  justify-content: flex-start;
+}
+.ana-hbars--div .ana-hbars__bar {
+  position: absolute;
+  left: 50%;
+}
+.ana-hbars--div .ana-hbars__bar.is-neg {
+  left: auto;
+  right: 50%;
+  border-radius: 4px 0 0 4px;
+}
+.ana-hbars__zero {
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--border-strong);
+}
+.ana-hbars__val {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  min-width: 52px;
+  text-align: right;
+}
+
+/* composition bar */
+.ana-stack {
+  position: relative;
+  padding: 6px 0;
+}
+.ana-stack__track {
+  display: flex;
+  gap: 2px;
+  height: var(--h, 18px);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--uncalled-soft);
+}
+.ana-stack__seg {
+  position: relative;
+  height: 100%;
+  background: var(--party);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2px;
+}
+.ana-stack__seg:hover,
+.ana-stack__seg:focus-visible {
+  filter: brightness(1.15);
+  outline: none;
+}
+.ana-stack__lbl {
+  font-size: 10px;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+}
+.ana-stack__marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--text-primary);
+  pointer-events: none;
+}
+
+/* probability meter cell */
+.ana-prob {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ana-prob__track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--uncalled-soft);
+  overflow: hidden;
+  flex: none;
+}
+.ana-prob__fill {
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: var(--party);
+}
+.ana-prob__val {
+  min-width: 36px;
+  text-align: right;
+  font-weight: 700;
+}
+
+/* diverging + sequential table cells */
+.ana-div {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.ana-div__track {
+  position: relative;
+  width: 64px;
+  height: 10px;
+}
+.ana-div__zero {
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--border-strong);
+}
+.ana-div__bar {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+}
+.ana-div__bar.is-pos {
+  left: 50%;
+  background: var(--div-pos-2);
+  border-radius: 0 3px 3px 0;
+}
+.ana-div__bar.is-neg {
+  right: 50%;
+  background: var(--div-neg-2);
+  border-radius: 3px 0 0 3px;
+}
+.ana-div__val {
+  min-width: 44px;
+  text-align: right;
+}
+.ana-seq {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ana-seq__sw {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: none;
+}
+
+/* tile heat maps */
+.ana-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 6px;
+  aspect-ratio: 4 / 5;
+  max-width: 380px;
+  margin: 0 auto;
+}
+.ana-tiles--sm {
+  max-width: 260px;
+  gap: 4px;
+}
+.ana-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 10px;
+  background: var(--fill);
+  border: 2px solid var(--party, transparent);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: default;
+  transition: transform 0.15s var(--ease);
+  min-width: 0;
+  padding: 2px;
+}
+button.ana-tile {
+  cursor: pointer;
+}
+.ana-tile:hover,
+.ana-tile:focus-visible {
+  transform: translateY(-2px);
+}
+.ana-tile--light {
+  color: #fff;
+}
+.ana-tile--light .ana-tile__sub {
+  color: rgba(255, 255, 255, 0.9);
+}
+.ana-tile__code {
+  font-weight: 900;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+.ana-tiles--sm .ana-tile__code {
+  font-size: 13px;
+}
+.ana-tile__sub {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ana-tiles--sm .ana-tile__sub {
+  font-size: 9.5px;
+}
+.ana-scale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+.ana-scale__ramp {
+  display: flex;
+  gap: 2px;
+}
+.ana-scale__ramp span {
+  width: 22px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+/* mini cartogram */
+.ana-mini {
+  display: grid;
+  grid-template-columns: repeat(4, 16px);
+  grid-template-rows: repeat(5, 16px);
+  gap: 2px;
+  flex: none;
+}
+.ana-mini__t {
+  border-radius: 3px;
+  background: var(--fill);
+  font-size: 0;
+}
+
+/* ----------------------------------------------------------------- tables */
+.ana-table-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.ana-table-tools .input {
+  width: 220px;
+}
+table.data td a.ana-link,
+a.ana-link {
+  color: var(--text-primary);
+  font-weight: 650;
+  border-bottom: 1px solid var(--border-strong);
+}
+a.ana-link:hover {
+  border-bottom-color: var(--accent);
+}
+table.data td.ana-wrap,
+.ana-wrap {
+  white-space: normal;
+  min-width: 220px;
+}
+.ana-num-strong {
+  font-weight: 800;
+}
+.ana-party-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ana-count {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------- forecast */
+.ana-fc__top {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
+  gap: var(--sp-4);
+  margin: var(--sp-4) 0;
+  align-items: start;
+}
+.ana-fc__top > div:empty {
+  display: none;
+}
+.ana-fc__top:has(> div:empty) {
+  grid-template-columns: 1fr;
+}
+.ana-fc__runform {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--sp-3) var(--sp-5);
+}
+.ana-fc__runform .input[type="number"] {
+  width: 150px;
+}
+.ana-fc__checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+.ana-fc__go {
+  margin-left: auto;
+}
+.ana-fc__go .btn {
+  height: 36px;
+  padding: 0 18px;
+}
+.ana-progress {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+.ana-progress__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  margin-bottom: 8px;
+}
+.ana-progress__track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--uncalled-soft);
+  overflow: hidden;
+}
+.ana-progress__fill {
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: var(--accent);
+  transition: width 0.4s var(--ease);
+}
+.ana-progress.is-completed .ana-progress__fill {
+  background: var(--status-good);
+}
+.ana-progress.is-failed .ana-progress__fill {
+  background: var(--status-critical);
+}
+.ana-progress.is-running .ana-progress__fill,
+.ana-progress.is-queued .ana-progress__fill {
+  background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+.ana-fc__runid {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+  font-weight: 700;
+}
+.ana-fc__runno {
+  font-size: var(--fs-2xl);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+.ana-fc__disc {
+  margin-bottom: var(--sp-3);
+}
+.ana-fc__disc .ana-note {
+  margin: 0;
+  max-width: 110ch;
+}
+.ana-fc__tickets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: var(--sp-3);
+}
+.ana-ticket {
+  position: relative;
+  padding: var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.ana-ticket::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: var(--party);
+}
+.ana-ticket__head {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: var(--sp-3);
+  align-items: center;
+}
+.ana-ticket__avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.ana-ticket__who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ana-ticket__name {
+  font-weight: 800;
+  font-size: var(--fs-lg);
+  line-height: 1.2;
+}
+.ana-ticket__vp {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ana-ticket__prob {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.ana-ticket__big {
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.ana-ticket__cap {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ana-ticket__meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--uncalled-soft);
+  margin: var(--sp-2) 0 var(--sp-2);
+  overflow: hidden;
+}
+.ana-ticket__meter > div {
+  height: 100%;
+  background: var(--party);
+  border-radius: 0 3px 3px 0;
+}
+.ana-ticket .ana-kv__row {
+  padding: 5px 0;
+}
+.ana-fc__multiples {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: var(--sp-4) var(--sp-5);
+}
+.ana-fig {
+  margin: 0;
+  min-width: 0;
+}
+.ana-fig__cap {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: 4px;
+  font-size: var(--fs-sm);
+  flex-wrap: wrap;
+}
+.ana-fig__title {
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ana-fig__meta {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+.ana-combos,
+.ana-compos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 520px;
+  overflow: auto;
+}
+.ana-combo,
+.ana-compo {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--grid);
+}
+.ana-combo__rank {
+  font-weight: 900;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  width: 28px;
+  flex: none;
+}
+.ana-combo__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.ana-combo__freq b {
+  font-size: var(--fs-lg);
+}
+.ana-combo__ev {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: var(--fs-sm);
+}
+.ana-combo__t {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ana-compo__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: var(--fs-xs);
+}
+.ana-compo__freq {
+  font-weight: 800;
+  min-width: 52px;
+  text-align: right;
+}
+.ana-trunc {
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+.ana-empty {
+  padding: 64px var(--sp-6);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+/* ----------------------------------------------------------------- polling */
+.ana-h2 {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.ana-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ana-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-size: var(--fs-xs);
+  font-weight: 800;
+  cursor: pointer;
+}
+.ana-toggle.is-off {
+  color: var(--text-muted);
+  background: transparent;
+}
+.ana-toggle.is-off .chip__swatch {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--party);
+}
+.ana-linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-weight: 650;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-strong);
+}
+.ana-linkbtn:hover {
+  border-bottom-color: var(--accent);
+}
+.ana-rating {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  vertical-align: 1px;
+}
+.ana-rating--lg {
+  margin: 0;
+  font-size: 11.5px;
+  padding: 1px 7px;
+}
+.ana-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+}
+.ana-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.is-over {
+  color: var(--status-critical);
+  font-weight: 800;
+}
+
+/* ----------------------------------------------------------------- campaign */
+.ana-camp__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-3);
+}
+.ana-camp {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--sp-3) var(--sp-4) var(--sp-3) calc(var(--sp-4) + 2px);
+  text-align: left;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  color: var(--text-primary);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.ana-camp::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--party);
+}
+.ana-camp:hover {
+  background: var(--surface-hover);
+}
+.ana-camp.is-active {
+  border-color: var(--party);
+  box-shadow: 0 0 0 1px var(--party) inset, var(--shadow);
+}
+.ana-camp__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ana-camp__strategy {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.ana-camp__name {
+  font-weight: 750;
+  font-size: var(--fs-sm);
+  margin-top: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ana-camp__ticket {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ana-camp__budget {
+  margin-top: 6px;
+  font-size: var(--fs-xs);
+}
+.ana-camp__big {
+  font-size: var(--fs-2xl);
+  font-weight: 850;
+  letter-spacing: -0.01em;
+}
+.ana-camp__meta {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.ana-kpi__text {
+  font-size: var(--fs-md);
+  font-weight: 750;
+  line-height: 1.3;
+  display: block;
+}
+.ana-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ana-camp__map .map {
+  --map-h: 460px;
+}
+.ana-replan {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--sp-2) var(--sp-4);
+}
+.ana-replan__row {
+  display: grid;
+  grid-template-columns: 56px 90px 1fr;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.ana-replan__row .select {
+  height: 28px;
+  font-size: var(--fs-sm);
+}
+.ana-changed {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+/* ----------------------------------------------------------------- history */
+.ana-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.ana-tl {
+  position: relative;
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.ana-tl::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--party, var(--uncalled));
+}
+.ana-tl__year {
+  font-size: 38px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  padding-left: 4px;
+}
+.ana-tl--hidden .ana-tl__year {
+  color: var(--text-muted);
+}
+.ana-tl__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.ana-tl__name {
+  font-weight: 800;
+  font-size: var(--fs-lg);
+}
+.ana-tl__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) minmax(150px, 0.6fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+.ana-tl__cell {
+  min-width: 0;
+}
+.ana-tl__label {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.ana-tl__winner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-md);
+}
+.ana-tl__sub {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.ana-tl__stats .ana-kv__row {
+  padding: 3px 0;
+}
+.ana-tl__hidden {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.ana-flip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 800;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-primary);
+}
+.ana-divrec {
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.ana-notes {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.ana-inl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------------- candidate */
+.ana-csearch {
+  position: relative;
+}
+.ana-csearch .input {
+  width: 260px;
+}
+.ana-csearch__list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 60;
+  width: 380px;
+  max-height: 360px;
+  overflow: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 4px;
+}
+.ana-csearch__item {
+  display: grid;
+  grid-template-columns: 26px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+.ana-csearch__item:hover,
+.ana-csearch__item:focus-visible {
+  background: var(--surface-hover);
+}
+.ana-csearch__av svg {
+  border-radius: 6px;
+  display: block;
+}
+.ana-csearch__name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ana-csearch__empty {
+  padding: 10px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.ana-cand {
+  position: relative;
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: var(--sp-5);
+  padding: var(--sp-5);
+  overflow: hidden;
+}
+.ana-cand::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: var(--party);
+}
+.ana-cand__portrait svg {
+  display: block;
+  border-radius: 16px;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.ana-cand__ph {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.ana-cand__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.ana-cand__name {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.ana-cand__bio {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-secondary);
+  max-width: 80ch;
+}
+.ana-meters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--sp-3) var(--sp-5);
+}
+.ana-meter__top {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: 5px;
+}
+.ana-meter__track {
+  height: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--seq-2) 45%, var(--surface-2));
+  overflow: hidden;
+}
+.ana-meter__fill {
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: var(--seq-5);
+}
+.ana-axes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--sp-3) var(--sp-5);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--grid);
+}
+.ana-axis__label {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.ana-axis__track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.ana-axis__mid {
+  position: absolute;
+  left: 50%;
+  top: -4px;
+  width: 1px;
+  height: 12px;
+  background: var(--text-muted);
+}
+.ana-axis__dot {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+.ana-axis__ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.ana-axis__ends b {
+  color: var(--text-primary);
+}
+.ana-career__el + .ana-career__el {
+  border-top: 1px solid var(--border);
+}
+.ana-career__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-2);
+}
+.ana-career__year {
+  font-size: var(--fs-xl);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+}
+.ana-career__name {
+  font-weight: 700;
+  flex: 1;
+}
+.ana-career__subhead {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--surface-1);
+}
+.ana-career__sub td {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.ana-career__sub td:first-child {
+  padding-left: 22px;
+}
+.ana-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.ana-lost {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ----------------------------------------------------------------- scenarios */
+.ana-scn {
+  display: grid;
+  grid-template-columns: minmax(250px, 300px) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+  margin-top: var(--sp-4);
+}
+.ana-scn > div:first-child {
+  position: sticky;
+  top: calc(var(--strip-h) + 16px);
+}
+.ana-scnlist {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ana-scnitem {
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ana-scnitem:hover {
+  background: var(--surface-hover);
+}
+.ana-scnitem.is-active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.ana-scnitem__top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ana-scnitem__name {
+  font-weight: 750;
+}
+.ana-scnitem__lock {
+  color: var(--text-muted);
+}
+.ana-scnitem__slug {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.ana-scnitem__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.ana-src-tag {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+.ana-src-tag--user {
+  background: color-mix(in srgb, var(--cat-fictional) 20%, var(--surface-2));
+  color: var(--text-primary);
+}
+.ana-scnhead {
+  padding: var(--sp-4);
+}
+.ana-scnhead__name {
+  font-size: var(--fs-2xl);
+  font-weight: 850;
+  letter-spacing: -0.01em;
+}
+.ana-danger {
+  color: var(--status-critical);
+  border-color: color-mix(in srgb, var(--status-critical) 50%, transparent);
+}
+.ana-inlineform {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.ana-pending {
+  padding: var(--sp-3) var(--sp-4);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.ana-pending__list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  max-height: 160px;
+  overflow: auto;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+.ana-pending__op {
+  display: inline-block;
+  min-width: 190px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.ana-pre {
+  margin: 0;
+  padding: var(--sp-3);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+}
+.ana-scnform {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.ana-fs {
+  margin: 0;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  min-width: 0;
+}
+.ana-fs legend {
+  padding: 0 8px;
+  font-size: var(--fs-sm);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.ana-envgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--sp-2) var(--sp-3);
+}
+.ana-edit-table td {
+  vertical-align: middle;
+}
+.ana-edit-table tr.is-removed td {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+.is-dirty {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.ana-color {
+  width: 36px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+.ana-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ana-chipbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: var(--fs-xs);
+}
+.ana-events {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--fs-sm);
+}
+.ana-events li {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.ana-yaml {
+  min-height: 520px;
+  tab-size: 2;
+  white-space: pre;
+}
+.ana-ack {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-weight: 600;
+}

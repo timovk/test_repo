@@ -1,0 +1,126 @@
+"""SQLAlchemy ORM models.  Import from here: ``from app.models import Province, Race, ...``.
+
+Models are pure persistence structures — no election logic lives in them (spec §42).
+"""
+
+from app.models.base import Base, utcnow
+from app.models.districts import (
+    Apportionment,
+    ApportionmentSeat,
+    DistrictAdjacency,
+    DistrictAssignment,
+    DistrictMunicipality,
+    DistrictPlan,
+    HouseDistrict,
+    SenateSeat,
+)
+from app.models.elections import (
+    BallotCandidate,
+    ContingentElection,
+    Election,
+    ElectionResult,
+    ElectoralVoteAllocation,
+    Race,
+    TurnoutResult,
+)
+from app.models.geography import (
+    DataSource,
+    GeoUnit,
+    GeoUnitDemographics,
+    GeoVintage,
+    Municipality,
+    MunicipalityDemographics,
+    MunicipalityLineage,
+    Province,
+    ProvinceStats,
+)
+from app.models.meta import AppMeta
+from app.models.offices import (
+    GovernorSeat,
+    Legislature,
+    LegislatureSeatResult,
+    MayorSeat,
+    Office,
+    OfficeHolder,
+    Vacancy,
+)
+from app.models.parties import Candidate, CandidateAffiliation, Party, PartyEvent, PartyModifier
+from app.models.polling import Poll, PollResult, Pollster, PollsterHouseEffect
+from app.models.reporting import (
+    NightSession,
+    RaceCall,
+    Recount,
+    RecountAdjustment,
+    ReportingEvent,
+    ReportingEventUnit,
+)
+from app.models.simulation import (
+    Campaign,
+    CampaignAllocation,
+    ForecastAggregate,
+    ForecastCombination,
+    ForecastDistribution,
+    ForecastSummary,
+    Scenario,
+    SimulationRun,
+)
+
+__all__ = [
+    "AppMeta",
+    "Apportionment",
+    "ApportionmentSeat",
+    "BallotCandidate",
+    "Base",
+    "Campaign",
+    "CampaignAllocation",
+    "Candidate",
+    "CandidateAffiliation",
+    "ContingentElection",
+    "DataSource",
+    "DistrictAdjacency",
+    "DistrictAssignment",
+    "DistrictMunicipality",
+    "DistrictPlan",
+    "Election",
+    "ElectionResult",
+    "ElectoralVoteAllocation",
+    "ForecastAggregate",
+    "ForecastCombination",
+    "ForecastDistribution",
+    "ForecastSummary",
+    "GeoUnit",
+    "GeoUnitDemographics",
+    "GeoVintage",
+    "GovernorSeat",
+    "HouseDistrict",
+    "Legislature",
+    "LegislatureSeatResult",
+    "MayorSeat",
+    "Municipality",
+    "MunicipalityDemographics",
+    "MunicipalityLineage",
+    "NightSession",
+    "Office",
+    "OfficeHolder",
+    "Party",
+    "PartyEvent",
+    "PartyModifier",
+    "Poll",
+    "PollResult",
+    "Pollster",
+    "PollsterHouseEffect",
+    "Province",
+    "ProvinceStats",
+    "Race",
+    "RaceCall",
+    "Recount",
+    "RecountAdjustment",
+    "ReportingEvent",
+    "ReportingEventUnit",
+    "Scenario",
+    "SenateSeat",
+    "SimulationRun",
+    "TurnoutResult",
+    "Vacancy",
+    "utcnow",
+]

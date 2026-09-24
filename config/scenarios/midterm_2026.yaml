@@ -1,0 +1,175 @@
+# FICTIONAL scenario — the 2026 midterm election.  Geography is REAL (CBS); every party, person,
+# poll and number below is invented.
+#
+# Elected in 2026: the entire Tweede Kamer, Senate class 1 (8 seats), and — for the first time —
+# directly elected mayors and municipal councils in every municipality.  No presidential or
+# gubernatorial races.  The president's party (VLP, assumed winner of founding-2024; when elections
+# are chained through the history service the actual office holder is used) suffers the midterm
+# penalty set in environment.incumbency.
+scenario:
+  slug: midterm-2026
+  name: Midterm Election 2026
+  description: >-
+    Two years into President Verbeek's term.  A farmers' protest wave lifts the agrarian
+    Plattelandsbond, the NVB campaigns against the federal government and turnout falls, as in
+    most midterms.  Mayors and municipal councils are elected directly for the first time.
+  year: 2026
+  election_type: midterm
+  election_date: 2026-11-04
+  seed: 20260001
+  political_geography_seed: 1848
+
+parties_file: parties/fictional.yaml
+
+candidates:
+  # The sitting president and vice-president are not on the ballot but define the president's
+  # party for the midterm penalty (incumbent_office: PRES).
+  - key: charlotte-verbeek
+    first_name: Charlotte
+    last_name: Verbeek
+    gender: F
+    birth_date: 1971-03-14
+    party: VLP
+    home_municipality: GM0629   # Wassenaar
+    home_province: ZH
+    quality: 0.7
+    favorability: -2.0
+    incumbent_office: PRES
+    bio: Fictional President since 2025; former logistics executive and provincial finance minister.
+  - key: joost-brinkman
+    first_name: Joost
+    last_name: Brinkman
+    gender: M
+    birth_date: 1968-09-02
+    party: VLP
+    home_municipality: GM0200   # Apeldoorn
+    home_province: GE
+    quality: 0.4
+    incumbent_office: VICE_PRESIDENT
+    bio: Fictional Vice-President since 2025.
+
+house:
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.04}
+    SAP: {min_expected_share: 0.04}
+    PLB: {min_expected_share: 0.06}
+    RV: {min_expected_share: 0.05, regions: [bible_belt, bible_belt_fringe]}
+  max_candidates: 7
+  candidate_quality_sd: 0.35
+  incumbent_runs_again_prob: 0.9
+  independents_prob: 0.03
+
+senate:
+  classes_up: [1]
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.05}
+    SAP: {min_expected_share: 0.05}
+    PLB: {min_expected_share: 0.07}
+    RV: {min_expected_share: 0.06}
+  max_candidates: 7
+  candidate_quality_sd: 0.4
+  incumbent_runs_again_prob: 0.85
+  independents_prob: 0.02
+
+governors:
+  enabled: false
+
+municipal:
+  enabled: true
+  councils: true
+  council_system: proportional_dhondt
+  # Local politics: parties field mayoral candidates where they are locally relevant, and local
+  # independents (standing in for local lists) are common.
+  default_rule: {min_expected_share: 0.10}
+  contest_rules:
+    PA: {min_expected_share: 0.08}
+    VLP: {min_expected_share: 0.08}
+    NVB: {min_expected_share: 0.10}
+    CVU: {min_expected_share: 0.08}
+  max_candidates: 5
+  candidate_quality_sd: 0.5
+  incumbent_runs_again_prob: 0.8
+  independents_prob: 0.25
+
+environment:
+  national: {VLP: -0.03, PA: 0.02, NVB: 0.04, PLB: 0.08, CVU: -0.01, DM: -0.02}
+  provinces:
+    DR: {PLB: 0.04}
+    OV: {PLB: 0.03}
+    GR: {SAP: 0.03, NVB: 0.03}
+  events:
+    - name: farmers-protest-wave
+      description: Fictional — months of tractor protests against federal nitrogen rules.
+      national: {PLB: 0.05, VLP: -0.02}
+      provinces:
+        GE: {PLB: 0.03}
+        FR: {PLB: 0.03}
+    - name: municipal-premiere
+      description: Fictional — first direct mayoral elections draw attention to local candidates.
+      turnout: 0.03
+  turnout_base: 0.63
+  blank_rate: 0.005
+  invalid_rate: 0.003
+  shocks:
+    national_sd: 0.08
+    province_sd: 0.04
+    municipality_sd: 0.035
+    unit_sd: 0.06
+    spatial_sd: 0.03
+    spatial_length_km: 40
+    turnout_national_sd: 0.10
+    turnout_local_sd: 0.07
+    tail_df: 6
+  incumbency:
+    president: 0.04
+    house: 0.07
+    senate: 0.05
+    governor: 0.07
+    mayor: 0.08
+    midterm_penalty: 0.05
+  strategic_voting: 0.30
+  elasticity_strength: 0.6
+  # Party of the sitting President (pays the midterm penalty).  Services chaining elections pass
+  # the actual office holder's party instead (ElectionContext.president_party).
+  president_party: VLP
+
+# Baseline for 2026 (FICTIONAL drift since 2024).
+calibration:
+  national: {PA: 0.22, VLP: 0.22, NVB: 0.18, CVU: 0.13, DM: 0.08, SAP: 0.07, PLB: 0.07, RV: 0.03}
+
+polling:
+  generate: true
+  start_date: 2026-07-06
+  national_polls: 30
+  province_polls: 36
+  district_polls: 40
+  senate_polls: 16
+  governor_polls: 0
+  generic_ballot_polls: 30
+  true_polling_error_sd: 0.025
+  pollsters:
+    - {name: Veldwerk & Statistiek, rating: 1.5, rating_label: A, method: probability panel, typical_sample: 2400}
+    - {name: Delta Meningsonderzoek, rating: 1.3, rating_label: A-, method: mixed mode, typical_sample: 1800}
+    - {name: Noorderlicht Panels, rating: 1.1, rating_label: B+, method: online, house_effects: {PLB: 0.8, PA: -0.4}}
+    - {name: Rivierland Research, rating: 1.0, rating_label: B, method: IVR, house_effects: {CVU: 0.7, DM: -0.3}}
+    - {name: Hofstad Opinie, rating: 0.8, rating_label: B-, method: online, house_effects: {VLP: 0.9, NVB: -0.7}}
+    - {name: Polderpanel, rating: 0.7, rating_label: C+, method: online opt-in, typical_sample: 1000, house_effects: {NVB: 1.2, DM: -0.5}}
+
+campaigns:
+  enabled: true
+  weeks: 8
+  budgets: {VLP: 90, PA: 85, NVB: 80, CVU: 55, DM: 40, SAP: 35, PLB: 45, RV: 12}
+  strategies: {VLP: battleground, PA: battleground, NVB: expansion, CVU: base, DM: balanced, SAP: base, PLB: expansion, RV: base}
+  effect_cap: 0.05
+  effect_uncertainty: 0.5
+
+electoral_college:
+  allocation: winner_take_all

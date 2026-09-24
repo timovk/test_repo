@@ -1,0 +1,28 @@
+# Automatic recounts (FICTIONAL rules) — schema: app.elections.recount.RecountConfig
+#
+# A race is recounted automatically when it is an exact tie (exact_tie: true) or when the margin
+# between the top two lines is within `margin_pct` percentage points of valid votes and/or within
+# `margin_votes` votes (`combine: or | and`).  Race types without an entry are never recounted
+# automatically (the national PRESIDENT parent race — its Electoral-College province contests are
+# recounted instead — and the proportional legislatures/councils).
+thresholds:
+  PRESIDENT_PROVINCE: {margin_pct: 0.25, exact_tie: true}
+  HOUSE:              {margin_pct: 0.5,  exact_tie: true}
+  SENATE:             {margin_pct: 0.25, exact_tie: true}
+  GOVERNOR:           {margin_pct: 0.25, exact_tie: true}
+  MAYOR:              {margin_pct: 0.5,  exact_tie: true}
+
+# How the ballots are re-examined.  A recount never re-simulates the election: a seeded sample of
+# units (polling places) is re-examined; most counts are confirmed and a few receive small,
+# individually audited corrections of 1..max_delta ballots.
+procedure:
+  unit_sample_fraction: 0.10   # share of units with ballots that are re-examined
+  min_units: 5
+  max_units: 250
+  confirm_probability: 0.6     # re-examined unit whose count is confirmed without change
+  max_delta: 3                 # ballots per correction
+  kind_weights:
+    misread_tally: 0.5               # ballots moved between two lines
+    uncounted_ballot_found: 0.2      # ballots added (never above eligible voters)
+    ballot_ruled_invalid: 0.2        # line → invalid pile
+    invalid_ballot_ruled_valid: 0.1  # invalid pile → line

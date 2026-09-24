@@ -1,0 +1,152 @@
+/* ==========================================================================
+   NL Federal Election Simulator — design tokens
+   Broadcast-grade dark theme by default; light theme via [data-theme="light"].
+   ========================================================================== */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../vendor/fonts/inter-latin-wght-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../vendor/fonts/inter-latin-ext-wght-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("../vendor/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg: #080d19;
+  --surface-1: #0f1727;
+  --surface-2: #151f33;
+  --surface-3: #1c2840;
+  --surface-hover: #22304b;
+  --overlay: rgba(4, 8, 18, 0.72);
+
+  /* Lines */
+  --border: #233049;
+  --border-strong: #33445f;
+  --grid: #1f2b42;
+
+  /* Ink */
+  --text-primary: #f3f6fb;
+  --text-secondary: #b6c1d3;
+  --text-muted: #7f8ca5;
+  --text-inverse: #0a0f1c;
+
+  /* Brand / accents */
+  --accent: #ff7a1a; /* Dutch orange — brand only, never a data series */
+  --accent-soft: rgba(255, 122, 26, 0.14);
+  --live: #ff3d3d;
+  --focus: #6aa8ff;
+
+  /* Status (reserved; always paired with an icon/label) */
+  --status-good: #2fb67c;
+  --status-warning: #e8b100;
+  --status-serious: #f07c2c;
+  --status-critical: #ef4f4f;
+
+  /* Data-category badges (REAL vs FICTIONAL vs SIMULATED) */
+  --cat-real: #37b58a;
+  --cat-derived: #6aa8ff;
+  --cat-fictional: #c08cff;
+  --cat-simulated: #ffb347;
+
+  /* Neutral data colours */
+  --uncalled: #3a475f;
+  --uncalled-soft: #2a3549;
+  --not-up: #243047;
+
+  /* Diverging (margin / swing) — two hues + neutral midpoint */
+  --div-neg-3: #b8452f;
+  --div-neg-2: #d9785f;
+  --div-neg-1: #f0b8a6;
+  --div-mid: #8b93a3;
+  --div-pos-1: #a9c6f0;
+  --div-pos-2: #5b93dd;
+  --div-pos-3: #2a63b8;
+
+  /* Sequential (turnout, reporting, share) — one hue light→dark on dark surface */
+  --seq-1: #16304a;
+  --seq-2: #1d4b73;
+  --seq-3: #25689c;
+  --seq-4: #3688c4;
+  --seq-5: #5aa8e0;
+  --seq-6: #93cdf5;
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --fs-3xl: 36px;
+  --fs-hero: 64px;
+
+  /* Spacing & shape */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.35);
+
+  /* Layout */
+  --strip-h: 72px;
+  --nav-w: 216px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef1f6;
+  --surface-1: #ffffff;
+  --surface-2: #f6f8fb;
+  --surface-3: #edf1f7;
+  --surface-hover: #e6ecf5;
+  --overlay: rgba(240, 244, 250, 0.8);
+  --border: #dbe2ec;
+  --border-strong: #c3cddb;
+  --grid: #e5eaf2;
+  --text-primary: #0c1322;
+  --text-secondary: #43506a;
+  --text-muted: #6b7890;
+  --text-inverse: #ffffff;
+  --accent-soft: rgba(255, 122, 26, 0.12);
+  --uncalled: #c4ccd8;
+  --uncalled-soft: #dde3ec;
+  --not-up: #e7ebf1;
+  --div-mid: #c9ced8;
+  --seq-1: #e3eef9;
+  --seq-2: #bcd7f1;
+  --seq-3: #8cbce6;
+  --seq-4: #5a9bd6;
+  --seq-5: #2f78c0;
+  --seq-6: #1b5596;
+  --shadow: 0 1px 2px rgba(15, 25, 45, 0.06), 0 8px 24px rgba(15, 25, 45, 0.06);
+}

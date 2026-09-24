@@ -1,0 +1,32 @@
+municipality_code,party,votes
+GM0101,Example Green Party,21000
+GM0101,Example Labour Party,9000
+GM0101,Example Liberal Party,12000
+GM0101,Example Democrats,8000
+GM0101,Example Christian Party,4000
+GM0101,Example Nationalists,7000
+GM0101,Example Farmers Party,1000
+GM0101,Example Pensioners List,900
+GM0102,Example Green Party,800
+GM0102,Example Labour Party,700
+GM0102,Example Liberal Party,1500
+GM0102,Example Democrats,400
+GM0102,Example Christian Party,1900
+GM0102,Example Nationalists,1300
+GM0102,Example Farmers Party,1600
+GM1101,Example Green Party,9000
+GM1101,Example Labour Party,6000
+GM1101,Example Liberal Party,8000
+GM1101,Example Democrats,5000
+GM1101,Example Christian Party,14000
+GM1101,Example Nationalists,11000
+GM1101,Example Farmers Party,1500
+GM1201,Example Green Party,5000
+GM1201,Example Labour Party,6000
+GM1201,Example Liberal Party,5000
+GM1201,Example Democrats,2500
+GM1201,Example Christian Party,9000
+GM1201,Example Nationalists,16000
+GM1201,Example Farmers Party,1000
+GM9999,Example Green Party,100
+GM9999,Example Liberal Party,100

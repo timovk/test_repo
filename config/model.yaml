@@ -1,0 +1,111 @@
+# Hyperparameters of the probabilistic political model (validated by app.simulation.config.ModelConfig).
+#
+# FICTIONAL modelling assumptions: how the simulated electorate of the fictional Federal Republic
+# of the Netherlands behaves.  Demographic inputs are REAL CBS indicators; every coefficient here is
+# an invented, editable assumption.  Utility numbers are logit points of the multinomial-logit
+# vote model (+0.10 ≈ +2.5 percentage points for a party near 25 %).  See docs/SIMULATION.md.
+version: 1
+description: Default model of the NL Federal Election Simulator.
+
+# Persistent local political character that demographics do not explain (drawn once from the
+# scenario's political_geography_seed, so it is stable across elections).
+lean:
+  municipality_sd: 0.10        # municipality-level iid lean
+  unit_sd: 0.08                # neighbourhood-level iid lean
+  spatial_sd: 0.12             # spatially correlated lean (Gaussian process over municipality centroids)
+  spatial_length_km: 35
+  kernel: matern32             # exponential | matern32 | squared_exponential
+  ideological_share: 0.5       # share of lean variance on the shared ideology axes
+  imputed_shrinkage: 0.5       # imputed (DERIVED) demographic values count half
+
+# Persistent elasticity e_u (mean 1): how strongly a place moves with national swings.
+elasticity:
+  log_sd: 0.22
+  entropy_weight: 0.6          # support spread over many parties → less entrenched → more elastic
+  suburban_weight: 0.4         # mid-density suburbs swing most
+  noise_weight: 0.35           # idiosyncratic municipal component
+  suburban_by_class: {"0": 0.5, "1": 0.15, "2": 0.7, "3": 1.0, "4": 0.7, "5": 0.3}
+  min: 0.3
+  max: 2.5
+
+# Persistent turnout logit τ_u = τ0 + Σ γ_k z_uk + local lean; τ0 calibrated to environment.turnout_base.
+# γ_k per population-SD of the REAL CBS indicator.
+turnout:
+  demographics:
+    pct_age_65_plus: 0.10
+    pct_age_15_25: -0.08
+    pct_education_high: 0.22
+    pct_education_low: -0.12
+    income_per_capita_keur: 0.12
+    pct_owner_occupied: 0.15
+    pct_origin_non_europe: -0.25
+    pct_single_households: -0.05
+  urbanity: {}
+  municipality_sd: 0.10
+  unit_sd: 0.12
+  unit_shock_share: 0.6          # unit turnout shock SD = 0.6 × environment.shocks.turnout_local_sd
+  party_turnout_shock_sd: 0.05   # differential mobilisation of each party's supporters per election
+  min_probability: 0.05
+  max_probability: 0.985
+  invalid_low_education_effect: 0.15
+  blank_age_effect: 0.10
+
+# Transfers between ballot lines by ideological affinity (absent parties, withdrawn candidates).
+affinity:
+  temperature: 0.35
+  dimension_weights: {economic: 1.0, social: 1.0, europe: 0.7}
+  absent_abstain_share: 0.12       # undervote (blank in that race) of supporters whose party is absent
+  independent_extra_distance: 0.45
+
+# Candidate effects (logit points).
+candidates:
+  quality_utility:                 # per SD of candidate quality
+    PRESIDENT: 0.06
+    PRESIDENT_PROVINCE: 0.06
+    HOUSE: 0.08
+    SENATE: 0.09
+    GOVERNOR: 0.11
+    MAYOR: 0.14
+    PROVINCIAL_LEGISLATURE: 0.0
+    MUNICIPAL_COUNCIL: 0.0
+  running_mate_quality_share: 0.25
+  home_municipality_bonus:
+    PRESIDENT: 0.20
+    PRESIDENT_PROVINCE: 0.20
+    HOUSE: 0.10
+    SENATE: 0.12
+    GOVERNOR: 0.12
+    MAYOR: 0.0
+  home_province_bonus: {SENATE: 0.0, GOVERNOR: 0.0}   # presidential: scenario president.home_province_bonus
+  running_mate_home_municipality_bonus: 0.08
+  independent_base_share: 0.025
+  independent_base_share_by_race: {MAYOR: 0.18, MUNICIPAL_COUNCIL: 0.10}
+  independent_quality_utility: 0.35
+  withdrawn_residual_share: 0.06
+  open_seat_party_bonus: 0.02
+  race_line_sd: 0.04
+  region_overlap_threshold: 0.25
+  age_range:
+    HOUSE: [27, 68]
+    SENATE: [38, 72]
+    GOVERNOR: [38, 70]
+    MAYOR: [32, 68]
+    PROVINCIAL_LEGISLATURE: [25, 70]
+    MUNICIPAL_COUNCIL: [22, 72]
+  female_share: 0.46
+
+# FPTP strategic voting (scaled by the scenario's environment.strategic_voting).
+strategic:
+  viability_gap_start: 0.04      # share points behind the 2nd-placed line where defection starts
+  viability_gap_full: 0.20       # … and reaches its full strength
+  temperature: 0.30
+  race_type_weights: {PRESIDENT: 1.0, PRESIDENT_PROVINCE: 1.0, HOUSE: 1.0, SENATE: 1.0, GOVERNOR: 1.0, MAYOR: 0.8}
+  viable_lines: 2
+
+shocks:
+  ideological_swing_share: 0.35  # share of national shock variance that is a common ideological swing
+
+calibration:
+  max_iterations: 400
+  tolerance: 1.0e-7
+  min_unpinned_share: 0.01

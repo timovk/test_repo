@@ -1,0 +1,156 @@
+# Campaign model — FICTIONAL assumptions (docs/CAMPAIGNS.md).
+#
+# Budgets are abstract resource units (100 = a typical major-party presidential campaign).
+# Effects are logit shifts of the spending party's utility (persuasion) or of its supporters'
+# turnout.  They are deliberately MODEST and UNCERTAIN:
+#   expected = cap × (1 − exp(−Σ_actions potency × decayed_spend / scale))
+#   realised = clip(expected × (1 + uncertainty × z), backfire_floor × cap, cap),  z ~ N(0, 1) seeded
+# Money can never buy more than the cap (≈ 0.06 logit ≈ 1.5 pp near a 50 % share).
+effect_cap: 0.06
+turnout_cap: 0.05
+national_cap_fraction: 0.5
+effect_uncertainty: 0.5
+backfire_floor: -0.3
+max_multiplier: 2.0
+reference_population: {national: 17900000, province: 1500000, district: 120000, municipality: 50000}
+planning_noise_sd: 0.1
+min_allocation: 0.001
+closeness_scale_pp: 8.0
+default_strategy: balanced
+# Where each race family campaigns: presidential → provinces (EV-weighted), House → districts,
+# Senate → provinces, governors → municipalities.
+race_levels: {president: province, house: district, senate: province, governor: municipality}
+
+actions:
+  rally:
+    description: Candidate rally — local enthusiasm and some earned media.
+    persuasion: 0.5
+    turnout: 0.5
+    scope: local
+    scale: 2.5
+    population_elasticity: 0.4
+    uncertainty_multiplier: 1.2
+    persistence: 0.80
+    unit_cost: 0.6
+    max_units_per_week: 3
+    max_units_per_target_week: 1
+  advertising:
+    description: Paid media (TV, online, outdoor) — broad persuasion, decays quickly.
+    persuasion: 1.0
+    turnout: 0.1
+    scope: broad
+    scale: 6.0
+    population_elasticity: 1.0
+    uncertainty_multiplier: 0.9
+    persistence: 0.75
+  field:
+    description: Canvassing and phone banks — mostly turnout, durable.
+    persuasion: 0.3
+    turnout: 1.0
+    scope: local
+    scale: 4.0
+    population_elasticity: 0.9
+    uncertainty_multiplier: 0.7
+    persistence: 0.95
+  visit:
+    description: Candidate / running-mate visit — local news coverage; limited by the calendar.
+    persuasion: 0.8
+    turnout: 0.3
+    scope: local
+    scale: 1.2
+    population_elasticity: 0.2
+    uncertainty_multiplier: 1.4
+    persistence: 0.70
+    unit_cost: 0.3
+    max_units_per_week: 4
+    max_units_per_target_week: 1
+  debate_prep:
+    description: Debate preparation — national, high variance (debates can go badly).
+    persuasion: 1.0
+    turnout: 0.0
+    scope: national
+    scale: 3.0
+    population_elasticity: 0.0
+    uncertainty_multiplier: 1.8
+    persistence: 1.0
+  fundraising:
+    description: Fundraising events — no direct effect; returns money for later weeks.
+    persuasion: 0.0
+    turnout: 0.0
+    scope: national
+    scale: 1.0
+    return_rate: 1.6
+    return_sd: 0.25
+    lag_weeks: 2
+  gotv:
+    description: Get-out-the-vote operation — turnout only, final weeks.
+    persuasion: 0.0
+    turnout: 1.0
+    scope: local
+    scale: 3.0
+    population_elasticity: 0.9
+    uncertainty_multiplier: 0.6
+    persistence: 1.0
+    final_weeks: 2
+
+strategies:
+  battleground:
+    description: Concentrate on high-value, close targets (value × closeness).
+    value_exponent: 1.0
+    closeness_exponent: 2.5
+    closeness_floor: 0.0
+    min_competitiveness: 0.25
+    max_target_share: 0.35
+    min_target_share: 0.01
+    action_mix: {advertising: 0.40, field: 0.22, rally: 0.10, visit: 0.06, gotv: 0.22}
+    fundraising_share: 0.08
+    fundraising_weeks: 3
+    debate_prep_share: 0.03
+    spend_ramp: 1.5
+    fallback: balanced
+  balanced:
+    description: Spread resources roughly by value with a tilt toward close targets.
+    value_exponent: 1.0
+    closeness_exponent: 1.0
+    closeness_floor: 0.35
+    min_competitiveness: 0.0
+    max_target_share: 0.30
+    min_target_share: 0.005
+    action_mix: {advertising: 0.40, field: 0.25, rally: 0.08, visit: 0.05, gotv: 0.22}
+    fundraising_share: 0.06
+    fundraising_weeks: 3
+    debate_prep_share: 0.03
+    spend_ramp: 1.0
+    fallback: null
+  base:
+    description: Mobilise safe home turf — targets where the party leads comfortably, turnout-heavy mix.
+    value_exponent: 0.6
+    closeness_exponent: 0.0
+    closeness_floor: 1.0
+    min_competitiveness: 0.0
+    margin_center_pp: 12.0
+    margin_width_pp: 7.0
+    max_target_share: 0.30
+    min_target_share: 0.01
+    action_mix: {field: 0.40, gotv: 0.30, rally: 0.12, advertising: 0.13, visit: 0.05}
+    fundraising_share: 0.05
+    fundraising_weeks: 2
+    debate_prep_share: 0.02
+    spend_ramp: 1.2
+    fallback: balanced
+  expansion:
+    description: Reach into lean-opponent territory (expected margin a few points behind).
+    value_exponent: 1.0
+    closeness_exponent: 0.0
+    closeness_floor: 1.0
+    min_competitiveness: 0.0
+    margin_center_pp: -6.0
+    margin_width_pp: 5.0
+    max_target_share: 0.30
+    min_target_share: 0.01
+    action_mix: {advertising: 0.50, field: 0.18, rally: 0.10, visit: 0.07, gotv: 0.15}
+    fundraising_share: 0.07
+    fundraising_weeks: 3
+    debate_prep_share: 0.03
+    spend_ramp: 1.2
+    fallback: balanced

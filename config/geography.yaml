@@ -1,0 +1,68 @@
+# REAL geographic data sources and the canonical province list.
+# All data below is official Dutch open data (CBS via PDOK), license CC BY 4.0.
+year: 2025
+sources:
+  wijkenbuurten:
+    name: "CBS Wijk- en Buurtkaart {year} (GeoPackage)"
+    publisher: "Centraal Bureau voor de Statistiek (CBS) via PDOK"
+    url: "https://service.pdok.nl/cbs/wijkenbuurten/{year}/atom/downloads/wijkenbuurten_{year}.gpkg"
+    license: "CC BY 4.0"
+    filename: "wijkenbuurten_{year}.gpkg"
+  provinces:
+    name: "CBS Gebiedsindelingen {year} — provincies (gegeneraliseerd)"
+    publisher: "CBS via PDOK"
+    url: "https://service.pdok.nl/cbs/gebiedsindelingen/{year}/wfs/v1_0?request=GetFeature&service=WFS&version=2.0.0&typeNames=gebiedsindelingen:provincie_gegeneraliseerd&outputFormat=application/json"
+    license: "CC BY 4.0"
+    filename: "provincies_gegeneraliseerd_{year}.geojson"
+  municipalities_generalized:
+    name: "CBS Gebiedsindelingen {year} — gemeenten (gegeneraliseerd)"
+    publisher: "CBS via PDOK"
+    url: "https://service.pdok.nl/cbs/gebiedsindelingen/{year}/wfs/v1_0?request=GetFeature&service=WFS&version=2.0.0&typeNames=gebiedsindelingen:gemeente_gegeneraliseerd&outputFormat=application/json"
+    license: "CC BY 4.0"
+    filename: "gemeenten_gegeneraliseerd_{year}.geojson"
+  supplement:
+    # Education / income / housing indicators are published later than the core figures, so they
+    # are taken from an older "Kerncijfers wijken en buurten" release and joined on CBS codes
+    # (buurt → wijk → gemeente fallback; remaining gaps imputed and flagged).
+    name: "CBS Kerncijfers wijken en buurten 2022 (StatLine table 85318NED)"
+    publisher: "CBS StatLine OData"
+    url: "https://opendata.cbs.nl/ODataFeed/odata/85318NED/TypedDataSet?$format=json&$select=Codering_3,SoortRegio_2,AantalInwoners_5,Koopwoningen_40,OpleidingsniveauLaag_64,OpleidingsniveauMiddelbaar_65,OpleidingsniveauHoog_66,GemiddeldInkomenPerInwoner_72"
+    license: "CC BY 4.0"
+    filename: "kerncijfers_wijken_buurten_2022.json"
+    year: 2022
+
+# Eligible-voter estimate (DERIVED, documented assumption): adults (18+) approximated from the CBS
+# age bands as pct_age_25_plus + 0.7 × pct_age_15_25, times a flat citizenship/registration factor.
+eligible_voters:
+  citizenship_factor: 0.93
+  # Share of the CBS 15–25 age band assumed to be 18 or older (ages 18–24 of 15–24 ≈ 0.7).
+  adult_share_15_25: 0.7
+
+# Simplification tolerances (metres, EPSG:28992) for web display geometries (topology-preserving
+# coverage simplification — shared borders stay shared).
+simplify:
+  provinces_m: 150
+  municipalities_m: 80
+  districts_m: 80
+  units_m: 20
+
+# Adjacency: units whose (slightly buffered) polygons share a border of at least `min_shared_border_m`
+# are neighbours.  Disconnected pieces (Wadden islands, Zeeland islands) are linked to the nearest
+# unit of the same province by explicit "water links" so every province graph is connected.
+adjacency:
+  snap_buffer_m: 2.0
+  min_shared_border_m: 20.0
+
+provinces:
+  - {code: GR, cbs_code: PV20, name: Groningen,     name_en: Groningen,     capital: Groningen}
+  - {code: FR, cbs_code: PV21, name: Fryslân,       name_en: Friesland,     capital: Leeuwarden}
+  - {code: DR, cbs_code: PV22, name: Drenthe,       name_en: Drenthe,       capital: Assen}
+  - {code: OV, cbs_code: PV23, name: Overijssel,    name_en: Overijssel,    capital: Zwolle}
+  - {code: FL, cbs_code: PV24, name: Flevoland,     name_en: Flevoland,     capital: Lelystad}
+  - {code: GE, cbs_code: PV25, name: Gelderland,    name_en: Gelderland,    capital: Arnhem}
+  - {code: UT, cbs_code: PV26, name: Utrecht,       name_en: Utrecht,       capital: Utrecht}
+  - {code: NH, cbs_code: PV27, name: Noord-Holland, name_en: North Holland, capital: Haarlem}
+  - {code: ZH, cbs_code: PV28, name: Zuid-Holland,  name_en: South Holland, capital: Den Haag}
+  - {code: ZE, cbs_code: PV29, name: Zeeland,       name_en: Zeeland,       capital: Middelburg}
+  - {code: NB, cbs_code: PV30, name: Noord-Brabant, name_en: North Brabant, capital: "'s-Hertogenbosch"}
+  - {code: LI, cbs_code: PV31, name: Limburg,       name_en: Limburg,       capital: Maastricht}

@@ -1,0 +1,287 @@
+# FICTIONAL scenario — the founding general election of the (fictional) Federal Republic of the
+# Netherlands.  Geography is REAL (CBS); every party, person, poll and number below is invented.
+#
+# Elected in 2024: the President (174 electoral votes, 88 to win), the entire Tweede Kamer
+# (150 single-member districts), all 24 Eerste Kamer seats (classes 1–3) and the 12 governors.
+scenario:
+  slug: founding-2024
+  name: Founding General Election 2024
+  description: >-
+    The first election under the new federal constitution.  Eight fictional parties compete;
+    six field presidential tickets.  The liberal VLP and the green-left PA start as favourites,
+    the national-populist NVB is strong in the periphery and the Christian-democratic CVU in the
+    south and east.
+  year: 2024
+  election_type: general
+  election_date: 2024-11-06
+  seed: 20240001
+  political_geography_seed: 1848
+
+parties_file: parties/fictional.yaml
+
+party_events:
+  - {year: 2023, party: PA, event: founded}
+  - {year: 2023, party: SAP, event: founded}
+  - {year: 2023, party: VLP, event: founded}
+  - {year: 2023, party: DM, event: founded}
+  - {year: 2023, party: CVU, event: founded}
+  - {year: 2023, party: NVB, event: founded}
+  - {year: 2023, party: PLB, event: founded}
+  - {year: 2023, party: RV, event: founded}
+
+candidates:
+  # --- VLP ---------------------------------------------------------------------------------
+  - key: charlotte-verbeek
+    first_name: Charlotte
+    last_name: Verbeek
+    gender: F
+    birth_date: 1971-03-14
+    party: VLP
+    home_municipality: GM0629   # Wassenaar
+    home_province: ZH
+    quality: 0.8
+    campaign_strength: 0.6
+    fundraising: 1.6
+    bio: Fictional former logistics executive and provincial finance minister of Zuid-Holland.
+  - key: joost-brinkman
+    first_name: Joost
+    last_name: Brinkman
+    gender: M
+    birth_date: 1968-09-02
+    party: VLP
+    home_municipality: GM0200   # Apeldoorn
+    home_province: GE
+    quality: 0.4
+    bio: Fictional mayor-turned-entrepreneur from the Veluwe.
+  # --- PA ----------------------------------------------------------------------------------
+  - key: sanne-westerhof
+    first_name: Sanne
+    last_name: Westerhof
+    gender: F
+    birth_date: 1979-06-21
+    party: PA
+    home_municipality: GM0014   # Groningen
+    home_province: GR
+    quality: 0.6
+    campaign_strength: 0.4
+    fundraising: 1.2
+    bio: Fictional climate scientist and former alderman for housing in Groningen.
+  - key: karim-bouzid
+    first_name: Karim
+    last_name: Bouzid
+    gender: M
+    birth_date: 1982-01-30
+    party: PA
+    home_municipality: GM0599   # Rotterdam
+    home_province: ZH
+    quality: 0.5
+    bio: Fictional labour lawyer and community organiser from Rotterdam-Zuid.
+  # --- NVB ---------------------------------------------------------------------------------
+  - key: ronald-kroon
+    first_name: Ronald
+    last_name: Kroon
+    gender: M
+    birth_date: 1966-11-11
+    party: NVB
+    home_municipality: GM0983   # Venlo
+    home_province: LI
+    quality: 0.3
+    campaign_strength: 0.8
+    fundraising: 1.1
+    bio: Fictional former transport entrepreneur and talk-radio host from Venlo.
+  - key: priscilla-mol
+    first_name: Priscilla
+    last_name: Mol
+    gender: F
+    birth_date: 1977-04-05
+    party: NVB
+    home_municipality: GM0034   # Almere
+    home_province: FL
+    quality: 0.1
+    bio: Fictional police union spokesperson from Almere.
+  # --- CVU ---------------------------------------------------------------------------------
+  - key: hendrik-wolters
+    first_name: Hendrik
+    last_name: Wolters
+    gender: M
+    birth_date: 1963-08-19
+    party: CVU
+    home_municipality: GM0183   # Tubbergen
+    home_province: OV
+    quality: 0.5
+    campaign_strength: 0.2
+    bio: Fictional dairy-cooperative chairman and former governor's adviser from Twente.
+  - key: marieke-pijnenburg
+    first_name: Marieke
+    last_name: Pijnenburg
+    gender: F
+    birth_date: 1974-12-08
+    party: CVU
+    home_municipality: GM0796   # 's-Hertogenbosch
+    home_province: NB
+    quality: 0.6
+    bio: Fictional family-court judge from 's-Hertogenbosch.
+  # --- DM ----------------------------------------------------------------------------------
+  - key: floor-van-egmond
+    first_name: Floor
+    last_name: van Egmond
+    gender: F
+    birth_date: 1976-02-17
+    party: DM
+    home_municipality: GM0344   # Utrecht
+    home_province: UT
+    quality: 0.4
+    bio: Fictional university rector and former European civil servant.
+  - key: diederik-aalbers
+    first_name: Diederik
+    last_name: Aalbers
+    gender: M
+    birth_date: 1981-07-23
+    party: DM
+    home_municipality: GM0503   # Delft
+    home_province: ZH
+    quality: 0.2
+    bio: Fictional engineer and tech-start-up founder from Delft.
+  # --- SAP ---------------------------------------------------------------------------------
+  - key: gerrit-haaksma
+    first_name: Gerrit
+    last_name: Haaksma
+    gender: M
+    birth_date: 1960-05-29
+    party: SAP
+    home_municipality: GM0114   # Emmen
+    home_province: DR
+    quality: 0.2
+    bio: Fictional former factory worker and trade-union leader from Emmen.
+  - key: naima-tahiri
+    first_name: Naima
+    last_name: Tahiri
+    gender: F
+    birth_date: 1985-10-14
+    party: SAP
+    home_municipality: GM0855   # Tilburg
+    home_province: NB
+    quality: 0.3
+    bio: Fictional nurse and tenants'-association chair from Tilburg.
+
+president:
+  tickets:
+    - {party: VLP, president: charlotte-verbeek, vice_president: joost-brinkman}
+    - {party: PA, president: sanne-westerhof, vice_president: karim-bouzid}
+    - {party: NVB, president: ronald-kroon, vice_president: priscilla-mol}
+    - {party: CVU, president: hendrik-wolters, vice_president: marieke-pijnenburg}
+    - {party: DM, president: floor-van-egmond, vice_president: diederik-aalbers}
+    - {party: SAP, president: gerrit-haaksma, vice_president: naima-tahiri}
+  home_province_bonus: 0.12
+  vp_home_province_bonus: 0.05
+
+house:
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.04}
+    SAP: {min_expected_share: 0.04}
+    PLB: {min_expected_share: 0.06}
+    RV: {min_expected_share: 0.05, regions: [bible_belt, bible_belt_fringe]}
+  max_candidates: 7
+  candidate_quality_sd: 0.35
+  incumbent_runs_again_prob: 0.88
+  independents_prob: 0.03
+
+senate:
+  classes_up: [1, 2, 3]
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.05}
+    SAP: {min_expected_share: 0.05}
+    PLB: {min_expected_share: 0.07}
+    RV: {min_expected_share: 0.06}
+  max_candidates: 7
+  candidate_quality_sd: 0.4
+  independents_prob: 0.02
+
+governors:
+  enabled: true
+  lieutenant_governors: true
+  contest_rules:
+    PA: {always: true}
+    VLP: {always: true}
+    NVB: {always: true}
+    CVU: {always: true}
+    DM: {min_expected_share: 0.05}
+    SAP: {min_expected_share: 0.05}
+    PLB: {min_expected_share: 0.07}
+    RV: {min_expected_share: 0.06}
+  max_candidates: 7
+  candidate_quality_sd: 0.45
+  independents_prob: 0.04
+
+municipal:
+  enabled: false
+
+environment:
+  national: {VLP: 0.04, PA: 0.04, DM: 0.02, SAP: -0.03, PLB: -0.04}
+  provinces:
+    GR: {NVB: 0.04, SAP: 0.03}
+    LI: {CVU: 0.03}
+    NB: {CVU: 0.08}
+  events:
+    - name: founding-convention-bounce
+      description: Fictional — the liberal VLP profits from its role in drafting the federal constitution.
+      national: {VLP: 0.03, DM: 0.01}
+    - name: housing-shortage-debate
+      description: Fictional — a televised debate on the housing shortage helps the left.
+      national: {PA: 0.02, SAP: 0.02, VLP: -0.01}
+    - name: late-campaign-scandal
+      description: Fictional — a possible late scandal around NVB campaign finance (occurs in some draws only).
+      probability: 0.25
+      national: {NVB: -0.07}
+  turnout_base: 0.80
+  blank_rate: 0.004
+  invalid_rate: 0.003
+  shocks:
+    national_sd: 0.09
+    province_sd: 0.04
+    municipality_sd: 0.03
+    unit_sd: 0.06
+    spatial_sd: 0.03
+    spatial_length_km: 40
+    turnout_national_sd: 0.08
+    turnout_local_sd: 0.06
+    tail_df: 6
+  strategic_voting: 0.35
+  elasticity_strength: 0.5
+
+polling:
+  generate: true
+  start_date: 2024-07-08
+  national_polls: 45
+  province_polls: 60
+  district_polls: 40
+  senate_polls: 24
+  governor_polls: 24
+  generic_ballot_polls: 20
+  true_polling_error_sd: 0.02
+  pollsters:
+    - {name: Veldwerk & Statistiek, rating: 1.5, rating_label: A, method: probability panel, typical_sample: 2400}
+    - {name: Delta Meningsonderzoek, rating: 1.3, rating_label: A-, method: mixed mode, typical_sample: 1800}
+    - {name: Noorderlicht Panels, rating: 1.1, rating_label: B+, method: online, house_effects: {PLB: 0.8, PA: -0.4}}
+    - {name: Rivierland Research, rating: 1.0, rating_label: B, method: IVR, house_effects: {CVU: 0.7, DM: -0.3}}
+    - {name: Hofstad Opinie, rating: 0.8, rating_label: B-, method: online, house_effects: {VLP: 0.9, NVB: -0.7}}
+    - {name: Polderpanel, rating: 0.7, rating_label: C+, method: online opt-in, typical_sample: 1000, house_effects: {NVB: 1.2, DM: -0.5}}
+
+campaigns:
+  enabled: true
+  weeks: 10
+  budgets: {VLP: 110, PA: 100, NVB: 85, CVU: 70, DM: 60, SAP: 40, PLB: 25, RV: 15}
+  strategies: {VLP: battleground, PA: battleground, NVB: expansion, CVU: base, DM: balanced, SAP: base, PLB: base, RV: base}
+  effect_cap: 0.06
+  effect_uncertainty: 0.5
+
+electoral_college:
+  allocation: winner_take_all

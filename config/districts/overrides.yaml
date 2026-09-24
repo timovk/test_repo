@@ -1,0 +1,21 @@
+# Manual House district overrides (FICTIONAL districting over REAL CBS geography).
+#
+# Entries are applied AFTER algorithmic generation (app.districts.overrides.apply_overrides):
+#
+#   overrides:
+#     - {unit: BU03630000, district: NH-03, note: "why this buurt belongs to NH-03"}
+#     - {municipality: GM0363, district: NH-03}      # every buurt of the municipality
+#
+# * `unit` is a CBS buurt code, `municipality` a CBS gemeente code (exactly one per entry);
+#   `district` is a generated district code '<PV>-<NN>'.
+# * Municipality entries are applied first, then unit entries (the more specific entry wins).
+# * Unknown codes, moves across a province boundary, or an override that empties a district are
+#   hard errors.  A resulting non-contiguous district or a population deviation beyond the
+#   tolerance produces a warning (and `python -m app validate` will report it).
+# * Overridden units are stored with DistrictAssignment.source = 'override'; the overrides are
+#   part of the plan's configuration hash, so a plan stays reproducible from
+#   (vintage, apportionment, seed, config incl. overrides).
+# * District numbers depend on the generated plan (seed + config): re-check codes after changing
+#   either.
+version: 1
+overrides: []

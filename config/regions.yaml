@@ -1,0 +1,328 @@
+# Named political regions — a FICTIONAL political-assumption layer over REAL places.
+#
+# The municipalities and provinces are real (CBS 2025 names/codes); grouping them into
+# "political regions" and giving parties utility shifts per region (PartySpec.regions) are
+# modelling assumptions of this simulator, inspired qualitatively by well-known Dutch electoral
+# geography.  They are not official statistics.
+#
+# Each region is the union of `provinces` (codes), `municipalities` (REAL names; add a province
+# code to disambiguate, e.g. {name: Bergen, province: NH}) and `codes` (CBS GMxxxx codes), minus
+# `exclude`.  Names are matched case/diacritics-insensitively against the current CBS
+# municipalities (see app.simulation.regions); unresolved names are reported, never fatal.
+version: 1
+description: Political regions of the fictional Federal Republic of the Netherlands (demo layer).
+
+aliases:
+  Den Haag: "'s-Gravenhage"
+  Den Bosch: "'s-Hertogenbosch"
+  Hengelo: Hengelo (O.)
+
+regions:
+  bible_belt:
+    label: Bible Belt (orthodox-Protestant core)
+    description: >-
+      Core of the orthodox-Protestant "Bijbelgordel" from Zeeland through the rivers area and
+      the Veluwe to Staphorst and Urk.
+    municipalities:
+      - {name: Urk, province: FL}
+      - {name: Staphorst, province: OV}
+      - {name: Rijssen-Holten, province: OV}
+      - {name: Zwartewaterland, province: OV}
+      - {name: Barneveld, province: GE}
+      - {name: Nunspeet, province: GE}
+      - {name: Elburg, province: GE}
+      - {name: Oldebroek, province: GE}
+      - {name: Hattem, province: GE}
+      - {name: Neder-Betuwe, province: GE}
+      - {name: Scherpenzeel, province: GE}
+      - {name: Putten, province: GE}
+      - {name: Rhenen, province: UT}
+      - {name: Bunschoten, province: UT}
+      - {name: Woudenberg, province: UT}
+      - {name: Renswoude, province: UT}
+      - {name: Hardinxveld-Giessendam, province: ZH}
+      - {name: Molenlanden, province: ZH}
+      - {name: Goeree-Overflakkee, province: ZH}
+      - {name: Tholen, province: ZE}
+      - {name: Reimerswaal, province: ZE}
+      - {name: Kapelle, province: ZE}
+      - {name: Vijfheerenlanden, province: UT}
+      - {name: Lopik, province: UT}
+
+  bible_belt_fringe:
+    label: Bible Belt fringe
+    description: >-
+      Towns bordering the core with a sizeable but not dominant orthodox-Protestant community.
+    municipalities:
+      - {name: Ede, province: GE}
+      - {name: Veenendaal, province: UT}
+      - {name: Katwijk, province: ZH}
+      - {name: Ermelo, province: GE}
+      - {name: Harderwijk, province: GE}
+      - {name: Nijkerk, province: GE}
+      - {name: Kampen, province: OV}
+      - {name: Hardenberg, province: OV}
+      - {name: Dalfsen, province: OV}
+      - {name: Wierden, province: OV}
+      - {name: Sliedrecht, province: ZH}
+      - {name: Alblasserdam, province: ZH}
+      - {name: Krimpenerwaard, province: ZH}
+      - {name: Altena, province: NB}
+      - {name: West Betuwe, province: GE}
+      - {name: Borsele, province: ZE}
+      - {name: Opsterland, province: FR}
+      - {name: Noordoostpolder, province: FL}
+      - {name: Dronten, province: FL}
+      - {name: Epe, province: GE}
+      - {name: Heerde, province: GE}
+
+  catholic_south:
+    label: Catholic South
+    description: Historically Catholic provinces below the great rivers.
+    provinces: [NB, LI]
+
+  randstad_core:
+    label: Randstad core cities
+    municipalities:
+      - {name: Amsterdam, province: NH}
+      - {name: Rotterdam, province: ZH}
+      - {name: "'s-Gravenhage", province: ZH}
+      - {name: Utrecht, province: UT}
+      - {name: Haarlem, province: NH}
+      - {name: Leiden, province: ZH}
+      - {name: Delft, province: ZH}
+      - {name: Zaanstad, province: NH}
+      - {name: Amstelveen, province: NH}
+      - {name: Diemen, province: NH}
+      - {name: Schiedam, province: ZH}
+      - {name: Rijswijk, province: ZH}
+      - {name: Leidschendam-Voorburg, province: ZH}
+      - {name: Zoetermeer, province: ZH}
+
+  university_towns:
+    label: University towns
+    municipalities:
+      - {name: Amsterdam, province: NH}
+      - {name: Utrecht, province: UT}
+      - {name: Leiden, province: ZH}
+      - {name: Groningen, province: GR}
+      - {name: Delft, province: ZH}
+      - {name: Wageningen, province: GE}
+      - {name: Nijmegen, province: GE}
+      - {name: Enschede, province: OV}
+      - {name: Eindhoven, province: NB}
+      - {name: Maastricht, province: LI}
+      - {name: Tilburg, province: NB}
+      - {name: Rotterdam, province: ZH}
+      - {name: Haarlem, province: NH}
+      - {name: Arnhem, province: GE}
+      - {name: Zwolle, province: OV}
+      - {name: Leeuwarden, province: FR}
+
+  gooi_wassenaar:
+    label: Wealthy suburbs (Gooi, Wassenaar, Kennemerland …)
+    municipalities:
+      - {name: Wassenaar, province: ZH}
+      - {name: Bloemendaal, province: NH}
+      - {name: Blaricum, province: NH}
+      - {name: Laren, province: NH}
+      - {name: Gooise Meren, province: NH}
+      - {name: Wijdemeren, province: NH}
+      - {name: Heemstede, province: NH}
+      - {name: Oegstgeest, province: ZH}
+      - {name: Voorschoten, province: ZH}
+      - {name: De Bilt, province: UT}
+      - {name: Baarn, province: UT}
+      - {name: Rozendaal, province: GE}
+      - {name: Vught, province: NB}
+      - {name: Waalre, province: NB}
+      - {name: Oisterwijk, province: NB}
+      - {name: Bergen, province: NH}
+      - {name: Eemnes, province: UT}
+      - {name: Utrechtse Heuvelrug, province: UT}
+      - {name: Ouder-Amstel, province: NH}
+      - {name: Son en Breugel, province: NB}
+      - {name: "Nuenen, Gerwen en Nederwetten", province: NB}
+      - {name: Zeist, province: UT}
+      - {name: Heiloo, province: NH}
+      - {name: Castricum, province: NH}
+
+  groningen_gasfield:
+    label: Groningen gas field
+    description: Municipalities above the Groningen gas field (earthquake damage, distrust of The Hague).
+    municipalities:
+      - {name: Eemsdelta, province: GR}
+      - {name: Midden-Groningen, province: GR}
+      - {name: Het Hogeland, province: GR}
+
+  veenkolonien:
+    label: Veenkoloniën and East Groningen
+    municipalities:
+      - {name: Oldambt, province: GR}
+      - {name: Pekela, province: GR}
+      - {name: Veendam, province: GR}
+      - {name: Stadskanaal, province: GR}
+      - {name: Westerwolde, province: GR}
+      - {name: Midden-Groningen, province: GR}
+      - {name: Borger-Odoorn, province: DR}
+      - {name: Emmen, province: DR}
+      - {name: Aa en Hunze, province: DR}
+
+  frisian:
+    label: Frisian-speaking Fryslân
+    provinces: [FR]
+    exclude:
+      - {name: Ooststellingwerf, province: FR}
+      - {name: Weststellingwerf, province: FR}
+
+  wadden:
+    label: Wadden islands
+    municipalities:
+      - {name: Texel, province: NH}
+      - {name: Vlieland, province: FR}
+      - {name: Terschelling, province: FR}
+      - {name: Ameland, province: FR}
+      - {name: Schiermonnikoog, province: FR}
+
+  veluwe:
+    label: Veluwe
+    municipalities:
+      - {name: Apeldoorn, province: GE}
+      - {name: Barneveld, province: GE}
+      - {name: Ede, province: GE}
+      - {name: Elburg, province: GE}
+      - {name: Epe, province: GE}
+      - {name: Ermelo, province: GE}
+      - {name: Harderwijk, province: GE}
+      - {name: Hattem, province: GE}
+      - {name: Heerde, province: GE}
+      - {name: Nijkerk, province: GE}
+      - {name: Nunspeet, province: GE}
+      - {name: Oldebroek, province: GE}
+      - {name: Putten, province: GE}
+      - {name: Renkum, province: GE}
+      - {name: Rheden, province: GE}
+      - {name: Rozendaal, province: GE}
+      - {name: Scherpenzeel, province: GE}
+      - {name: Voorst, province: GE}
+
+  twente:
+    label: Twente
+    municipalities:
+      - {name: Almelo, province: OV}
+      - {name: Borne, province: OV}
+      - {name: Dinkelland, province: OV}
+      - {name: Enschede, province: OV}
+      - {name: Haaksbergen, province: OV}
+      - {name: Hellendoorn, province: OV}
+      - {name: Hengelo, province: OV}
+      - {name: Hof van Twente, province: OV}
+      - {name: Losser, province: OV}
+      - {name: Oldenzaal, province: OV}
+      - {name: Rijssen-Holten, province: OV}
+      - {name: Tubbergen, province: OV}
+      - {name: Twenterand, province: OV}
+      - {name: Wierden, province: OV}
+
+  achterhoek:
+    label: Achterhoek
+    municipalities:
+      - {name: Aalten, province: GE}
+      - {name: Berkelland, province: GE}
+      - {name: Bronckhorst, province: GE}
+      - {name: Doetinchem, province: GE}
+      - {name: Montferland, province: GE}
+      - {name: Oost Gelre, province: GE}
+      - {name: Oude IJsselstreek, province: GE}
+      - {name: Winterswijk, province: GE}
+      - {name: Lochem, province: GE}
+
+  zeeland_islands:
+    label: Zeeland islands
+    provinces: [ZE]
+    exclude:
+      - {name: Sluis, province: ZE}
+      - {name: Terneuzen, province: ZE}
+      - {name: Hulst, province: ZE}
+
+  zeeuws_vlaanderen:
+    label: Zeeuws-Vlaanderen
+    municipalities:
+      - {name: Sluis, province: ZE}
+      - {name: Terneuzen, province: ZE}
+      - {name: Hulst, province: ZE}
+
+  flevopolder:
+    label: Flevoland polders
+    provinces: [FL]
+
+  rotterdam_port:
+    label: Rotterdam port and outskirts
+    municipalities:
+      - {name: Rotterdam, province: ZH}
+      - {name: Schiedam, province: ZH}
+      - {name: Vlaardingen, province: ZH}
+      - {name: Maassluis, province: ZH}
+      - {name: Nissewaard, province: ZH}
+      - {name: Voorne aan Zee, province: ZH}
+      - {name: Albrandswaard, province: ZH}
+      - {name: Barendrecht, province: ZH}
+      - {name: Ridderkerk, province: ZH}
+      - {name: Capelle aan den IJssel, province: ZH}
+      - {name: Krimpen aan den IJssel, province: ZH}
+
+  limburg_mining:
+    label: Limburg mining area (Parkstad and Westelijke Mijnstreek)
+    municipalities:
+      - {name: Heerlen, province: LI}
+      - {name: Kerkrade, province: LI}
+      - {name: Landgraaf, province: LI}
+      - {name: Brunssum, province: LI}
+      - {name: Simpelveld, province: LI}
+      - {name: Voerendaal, province: LI}
+      - {name: Beekdaelen, province: LI}
+      - {name: Sittard-Geleen, province: LI}
+      - {name: Stein, province: LI}
+      - {name: Beek, province: LI}
+
+  west_friesland:
+    label: West-Friesland and the Kop van Noord-Holland
+    municipalities:
+      - {name: Den Helder, province: NH}
+      - {name: Schagen, province: NH}
+      - {name: Hollands Kroon, province: NH}
+      - {name: Medemblik, province: NH}
+      - {name: Hoorn, province: NH}
+      - {name: Enkhuizen, province: NH}
+      - {name: Stede Broec, province: NH}
+      - {name: Drechterland, province: NH}
+      - {name: Koggenland, province: NH}
+      - {name: Opmeer, province: NH}
+
+  rivierenland:
+    label: Rivierenland (Betuwe and Bommelerwaard)
+    municipalities:
+      - {name: West Betuwe, province: GE}
+      - {name: Neder-Betuwe, province: GE}
+      - {name: Tiel, province: GE}
+      - {name: Buren, province: GE}
+      - {name: Culemborg, province: GE}
+      - {name: Maasdriel, province: GE}
+      - {name: Zaltbommel, province: GE}
+      - {name: West Maas en Waal, province: GE}
+
+  fishing_towns:
+    label: Fishing towns
+    municipalities:
+      - {name: Urk, province: FL}
+      - {name: Edam-Volendam, province: NH}
+      - {name: Katwijk, province: ZH}
+      - {name: Harlingen, province: FR}
+
+  greenhouse_belt:
+    label: Westland greenhouse belt
+    municipalities:
+      - {name: Westland, province: ZH}
+      - {name: Lansingerland, province: ZH}
+      - {name: Midden-Delfland, province: ZH}
+      - {name: Pijnacker-Nootdorp, province: ZH}
