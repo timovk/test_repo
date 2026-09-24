@@ -1,0 +1,173 @@
+# FICTIONAL parties of the fictional Federal Republic of the Netherlands.
+#
+# These eight parties are invented.  They are loosely modelled on Dutch political *families*
+# (green-left, left-populist, economic-liberal, social-liberal, Christian-democratic,
+# national-populist, agrarian, orthodox-Protestant) so that the simulated electoral geography looks
+# plausible, but they are not real parties and their numbers are not real results or polls.
+#
+# Parameters (docs/SIMULATION.md §2): base_share (national baseline share, calibrated exactly),
+# turnout_propensity (logit shift of supporters' turnout), demographics (utility per
+# population-SD of a REAL CBS indicator), urbanity (CBS class 1 = very urban … 5 = rural),
+# provinces / regions (config/regions.yaml) / municipalities (CBS codes) as logit shifts.
+parties:
+  - code: PA
+    name: Progressieve Alliantie
+    abbreviation: PA
+    color: "#2E9E54"
+    family: green-left / social-democratic
+    description: Fictional green-left and social-democratic alliance; strongest in big cities, university towns and among young, highly educated voters.
+    ideology: {economic: -0.6, social: -0.7, europe: 0.6}
+    base_share: 0.2
+    turnout_propensity: 0.10
+    founded_year: 2023
+    demographics:
+      pct_education_high: 0.26
+      pct_age_25_45: 0.12
+      pct_single_households: 0.16
+      pct_origin_non_europe: 0.10
+      pct_owner_occupied: -0.12
+      pct_age_65_plus: -0.04
+      income_per_capita_keur: -0.06
+    urbanity: {"1": 0.30, "2": 0.12, "3": 0.0, "4": -0.12, "5": -0.28}
+    provinces: {GR: 0.12, UT: 0.05, NH: 0.08, LI: -0.12, ZE: -0.10}
+    regions: {university_towns: 0.20, randstad_core: 0.08, bible_belt: -0.60, bible_belt_fringe: -0.20, catholic_south: -0.08, fishing_towns: -0.30}
+
+  - code: SAP
+    name: Socialistische Arbeiderspartij
+    abbreviation: SAP
+    color: "#D62828"
+    family: left-populist
+    description: Fictional left-populist workers' party; lower-income urban neighbourhoods and old industrial areas.
+    ideology: {economic: -0.8, social: -0.1, europe: -0.4}
+    base_share: 0.07
+    turnout_propensity: -0.20
+    founded_year: 2023
+    demographics:
+      pct_education_low: 0.22
+      income_per_capita_keur: -0.22
+      pct_owner_occupied: -0.20
+      pct_age_65_plus: 0.04
+    urbanity: {"1": 0.05, "2": 0.08, "3": 0.05, "4": -0.05, "5": -0.15}
+    provinces: {GR: 0.20, LI: 0.10, NB: 0.05, DR: 0.05}
+    regions: {groningen_gasfield: 0.30, veenkolonien: 0.35, twente: 0.12, limburg_mining: 0.30, bible_belt: -0.50, gooi_wassenaar: -0.40}
+    municipalities: {GM0828: 0.40, GM0268: 0.15, GM1982: 0.15, GM0479: 0.10}
+
+  - code: VLP
+    name: Vrije Liberale Partij
+    abbreviation: VLP
+    color: "#1F5AA6"
+    family: economic-liberal / centre-right
+    description: Fictional economic-liberal party of business, owner-occupiers and affluent suburbs.
+    ideology: {economic: 0.7, social: -0.1, europe: 0.2}
+    base_share: 0.23
+    turnout_propensity: 0.25
+    founded_year: 2023
+    demographics:
+      income_per_capita_keur: 0.32
+      pct_owner_occupied: 0.18
+      pct_education_high: 0.08
+      pct_households_with_children: 0.05
+      pct_origin_non_europe: -0.05
+    urbanity: {"1": -0.10, "2": 0.05, "3": 0.10, "4": 0.05, "5": -0.05}
+    provinces: {ZH: 0.05, NH: 0.05, UT: 0.05, FL: 0.05, GR: -0.10, LI: -0.05}
+    regions: {gooi_wassenaar: 0.45, bible_belt: -0.30, groningen_gasfield: -0.20, veenkolonien: -0.25, limburg_mining: -0.25, greenhouse_belt: 0.15}
+
+  - code: DM
+    name: Democratisch Midden
+    abbreviation: DM
+    color: "#8E44AD"
+    family: social-liberal
+    description: Fictional social-liberal, pro-European party of highly educated suburbs and cities.
+    ideology: {economic: 0.1, social: -0.6, europe: 0.9}
+    base_share: 0.09
+    turnout_propensity: 0.25
+    founded_year: 2023
+    demographics:
+      pct_education_high: 0.42
+      income_per_capita_keur: 0.08
+      pct_age_25_45: 0.08
+      pct_age_65_plus: -0.05
+      pct_education_low: -0.08
+    urbanity: {"1": 0.15, "2": 0.15, "3": 0.05, "4": -0.10, "5": -0.25}
+    provinces: {UT: 0.15, NH: 0.05, LI: -0.10, ZE: -0.10}
+    regions: {university_towns: 0.25, gooi_wassenaar: 0.25, bible_belt: -0.60, veenkolonien: -0.30, limburg_mining: -0.20, fishing_towns: -0.30}
+
+  - code: CVU
+    name: Christelijke Volksunie
+    abbreviation: CVU
+    color: "#12A4B6"
+    family: Christian-democratic
+    description: Fictional Christian-democratic people's party; the Catholic south, rural Protestant east, older voters and smaller towns.
+    ideology: {economic: 0.2, social: 0.5, europe: 0.3}
+    base_share: 0.14
+    turnout_propensity: 0.20
+    founded_year: 2023
+    demographics:
+      pct_age_65_plus: 0.14
+      pct_households_with_children: 0.12
+      pct_origin_non_europe: -0.15
+      pct_single_households: -0.12
+      pct_owner_occupied: 0.08
+    urbanity: {"1": -0.35, "2": -0.15, "3": 0.0, "4": 0.15, "5": 0.25}
+    provinces: {LI: 0.10, NB: 0.05, OV: 0.10, NH: -0.10}
+    regions: {catholic_south: 0.35, twente: 0.40, achterhoek: 0.35, bible_belt: 0.15, bible_belt_fringe: 0.15, veluwe: 0.10, frisian: 0.15, fishing_towns: 0.10}
+
+  - code: NVB
+    name: Nationale Volksbeweging
+    abbreviation: NVB
+    color: "#EE7F1A"
+    family: national-populist
+    description: Fictional national-populist movement; lower-educated voters, the periphery and the outskirts of big cities.
+    ideology: {economic: 0.0, social: 0.5, europe: -0.9}
+    base_share: 0.18
+    turnout_propensity: -0.25
+    founded_year: 2023
+    demographics:
+      pct_education_low: 0.30
+      pct_education_high: -0.18
+      income_per_capita_keur: -0.08
+      pct_age_65_plus: 0.04
+      pct_origin_europe: 0.04
+    urbanity: {"1": -0.20, "2": 0.0, "3": 0.10, "4": 0.10, "5": 0.0}
+    provinces: {LI: 0.35, ZE: 0.10, FL: 0.15, GR: 0.05, DR: 0.05}
+    regions: {limburg_mining: 0.30, zeeuws_vlaanderen: 0.25, veenkolonien: 0.30, rotterdam_port: 0.30, west_friesland: 0.15, fishing_towns: 0.35, university_towns: -0.25, bible_belt: -0.20, gooi_wassenaar: -0.40}
+    municipalities: {GM0385: 0.40}
+
+  - code: PLB
+    name: Plattelandsbond
+    abbreviation: PLB
+    color: "#D2A10F"
+    family: agrarian / rural
+    description: Fictional agrarian party of the countryside; farmers and rural towns in the east and north.
+    ideology: {economic: 0.3, social: 0.4, europe: -0.5}
+    base_share: 0.06
+    turnout_propensity: 0.05
+    founded_year: 2023
+    demographics:
+      log_density: -0.20
+      pct_owner_occupied: 0.15
+      pct_households_with_children: 0.10
+      pct_origin_non_europe: -0.20
+      pct_education_high: -0.10
+    urbanity: {"1": -1.0, "2": -0.6, "3": -0.2, "4": 0.3, "5": 0.7}
+    provinces: {DR: 0.45, OV: 0.35, GE: 0.20, FR: 0.35, GR: 0.15, FL: 0.25, ZE: 0.20, UT: -0.20, NH: -0.20, ZH: -0.15, LI: -0.10}
+    regions: {achterhoek: 0.25, twente: 0.10, veluwe: 0.15, wadden: 0.20, frisian: 0.10, randstad_core: -0.60, bible_belt: -0.20}
+
+  - code: RV
+    name: Reformatorisch Verbond
+    abbreviation: RV
+    color: "#6D4C41"
+    family: orthodox-Protestant
+    description: Fictional orthodox-Protestant party; almost exclusively the Bible Belt.
+    ideology: {economic: 0.3, social: 0.9, europe: -0.2}
+    base_share: 0.03
+    turnout_propensity: 0.50
+    founded_year: 2023
+    demographics:
+      pct_households_with_children: 0.35
+      pct_origin_non_europe: -0.30
+      pct_single_households: -0.20
+    urbanity: {"1": -0.80, "2": -0.30, "3": 0.0, "4": 0.10, "5": 0.30}
+    provinces: {NB: -1.20, LI: -1.50, GR: -0.30, FR: -0.20, NH: -0.60, DR: -0.20}
+    regions: {bible_belt: 2.80, bible_belt_fringe: 1.60, veluwe: 0.30}
+    municipalities: {GM0180: 0.60, GM0184: 0.30}

@@ -1,0 +1,164 @@
+# Polling configuration — ALL pollsters are FICTIONAL (invented names; any resemblance to a real
+# polling organisation is unintended and rejected by the schema).  All polls are SIMULATED.
+#
+# Ratings are SUBJECTIVE aggregation-weight multipliers (1.0 = average) and therefore data, not
+# code: edit them here or in the `pollster` table.  House effects are PRIOR leans in percentage
+# points toward a party code (+ = the pollster tends to overstate that party).  Party codes used
+# by the demo scenarios: PA, SAP, VLP, DM, CVU, NVB, PLB, RV.  Parties that are not listed get no
+# prior house effect (the aggregate can still estimate one from the data).
+pollsters:
+  - name: Polderpeil
+    rating: 1.30
+    rating_label: A+
+    method: mixed
+    typical_sample: 2400
+    activity: 1.4
+    population: LV
+    undecided_offset_pp: -1.0
+    house_effects: {PA: 0.3, SAP: -0.2, VLP: 0.0, DM: -0.1}
+    description: Large mixed-mode panel with voter-file style turnout screening (fictional).
+  - name: Kompas Research
+    rating: 1.20
+    rating_label: A
+    method: phone
+    typical_sample: 1200
+    activity: 1.0
+    population: LV
+    house_effects: {PA: -0.6, SAP: 0.8, CVU: 0.4, NVB: -0.6}
+    description: Live-caller phone surveys, strong track record in the simulated history (fictional).
+  - name: Deltametrie
+    rating: 1.10
+    rating_label: A-
+    method: online
+    typical_sample: 3000
+    activity: 1.6
+    population: RV
+    house_effects: {PA: 0.9, VLP: 0.6, DM: -0.7, RV: -0.8}
+    description: High-volume online panel, weekly national tracker (fictional).
+  - name: Lage Landen Panel
+    rating: 1.00
+    rating_label: B+
+    method: panel
+    typical_sample: 1800
+    activity: 1.2
+    population: LV
+    house_effects: {SAP: 0.5, DM: 0.6, PLB: -0.5, NVB: -0.6}
+    description: Recontact panel measuring individual vote switching (fictional).
+  - name: Horizon Opinie
+    rating: 0.95
+    rating_label: B
+    method: online
+    typical_sample: 1500
+    activity: 1.0
+    population: RV
+    undecided_offset_pp: 1.5
+    house_effects: {PA: -0.4, CVU: 0.7, RV: 0.5, VLP: -0.8}
+    description: Opt-in online sample with demographic weighting (fictional).
+  - name: Randstad Survey Group
+    rating: 0.90
+    rating_label: B
+    method: mixed
+    typical_sample: 1000
+    activity: 0.9
+    population: LV
+    poll_types: [national_president, province_president, house_district, senate, governor, generic_house]
+    house_effects: {DM: 1.0, SAP: 0.4, CVU: -0.6, NVB: -0.8}
+    description: Urban-heavy sampling frame; most active in the western provinces (fictional).
+  - name: Waddenzee Analytics
+    rating: 0.80
+    rating_label: B-
+    method: ivr
+    typical_sample: 900
+    activity: 0.8
+    population: LV
+    undecided_offset_pp: -0.5
+    house_effects: {NVB: 1.2, PLB: 0.6, DM: -0.9, SAP: -0.9}
+    description: Automated (IVR) phone polling with a landline-heavy frame (fictional).
+  - name: Duinzicht Data
+    rating: 0.75
+    rating_label: C+
+    method: online
+    typical_sample: 1100
+    activity: 0.8
+    population: A
+    undecided_offset_pp: 2.0
+    house_effects: {VLP: 1.0, RV: 0.8, PA: -1.0, CVU: -0.8}
+    description: Low-cost online convenience sample, adult population (fictional).
+  - name: Grachtengordel Onderzoek
+    rating: 0.65
+    rating_label: C
+    method: online
+    typical_sample: 800
+    activity: 0.6
+    population: A
+    undecided_offset_pp: 2.5
+    poll_types: [national_president, province_president, generic_house, favorability]
+    house_effects: {DM: 1.4, RV: 0.9, NVB: -1.3, PLB: -1.0}
+    description: Occasional online polls commissioned by advocacy groups (fictional).
+
+aggregation:
+  recency_half_life_days: 14
+  max_age_days: 150
+  sample_size_cap: 3000
+  sample_size_exponent: 0.5
+  rating_weighting: true
+  rating_exponent: 1.0
+  default_rating: 0.8
+  population_weights: {LV: 1.0, RV: 0.85, A: 0.7}
+  default_population_weight: 0.7
+  method_weights: {phone: 1.0, mixed: 1.0, panel: 0.95, online: 0.95, ivr: 0.85}
+  default_method_weight: 0.9
+  pollster_volume_exponent: 0.5
+  house_effects:
+    enabled: true
+    estimate: true
+    shrinkage: 4.0
+    min_pollster_polls: 2
+    max_iterations: 300
+    tolerance: 1.0e-6
+    max_abs_pp: 8.0
+  trend_bandwidth_days: 10
+  trend_slope_ridge: 0.1
+  trend_max_days: 365
+  # proportional | normalize | keep
+  undecided: proportional
+  undecided_exempt_poll_types: [favorability]
+  min_polls: 1
+  interval_level: 0.90
+  design_effect: 1.0
+  nonsampling_sd_pp: 1.0
+  # Correlated industry-wide error (pp at a 50 % share) added to `total_se` (used by the blend).
+  systematic_error_sd_pp: 1.5
+
+generation:
+  default_campaign_days: 120
+  fieldwork_days_min: 2
+  fieldwork_days_max: 5
+  late_bias: 1.8
+  drift_sd_per_day: 0.007
+  local_drift_sd_per_day: 0.003
+  start_offset_sd: 0.08
+  geo_error_fraction: 0.5
+  house_effect_jitter_pp: 0.4
+  undecided_start_pct: 14
+  undecided_end_pct: 5
+  undecided_curve: 1.0
+  undecided_sd_pct: 1.5
+  undecided_population_offset: {LV: -1.0, RV: 0.5, A: 3.0}
+  population_mix: {LV: 0.65, RV: 0.25, A: 0.10}
+  sample_factor:
+    national_president: 1.0
+    generic_house: 1.0
+    favorability: 1.0
+    province_president: 0.55
+    senate: 0.5
+    governor: 0.5
+    house_district: 0.35
+  sample_sd: 0.25
+  min_sample: 300
+  design_effect: {phone: 1.2, mixed: 1.25, panel: 1.3, online: 1.4, ivr: 1.5}
+  default_design_effect: 1.3
+  competitiveness_boost: 8.0
+  competitiveness_power: 2.0
+  tossup_margin_scale: 0.20
+  report_decimals: 1

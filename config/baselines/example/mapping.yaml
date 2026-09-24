@@ -1,0 +1,29 @@
+# SYNTHETIC EXAMPLE — NOT REAL ELECTION RESULTS.
+#
+# Demonstrates the historical-results import (app.simulation.baselines.import_historical_results):
+# a CSV of municipality-level results (municipality_code, party, votes) plus this mapping from the
+# CSV's party names to the FICTIONAL model parties.  A real import would list real party names from
+# official results; the output is always labelled "DERIVED from real election results via mapping —
+# not a result of this fictional system" and is used only when a scenario references the mapping in
+# calibration.imported_baseline.
+#
+# The party names and vote counts in results.csv are invented.  The municipality codes are those of
+# the synthetic test country (app.geography.synthetic), so the example also works offline in tests.
+description: Synthetic example of a historical-results import (invented data).
+source: Invented numbers for tests and documentation — not real results.
+source_csv: results.csv
+synthetic: true
+columns:
+  municipality: municipality_code
+  party: party
+  votes: votes
+parties:
+  # CSV party name → {model party code: weight}
+  Example Green Party: {PA: 1.0}
+  Example Labour Party: {PA: 0.6, SAP: 0.4}
+  Example Liberal Party: {VLP: 1.0}
+  Example Democrats: {DM: 1.0}
+  Example Christian Party: {CVU: 0.8, RV: 0.2}
+  Example Nationalists: {NVB: 1.0}
+  Example Farmers Party: {PLB: 1.0}
+unmapped: drop

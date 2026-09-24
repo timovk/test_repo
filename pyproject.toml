@@ -18,6 +18,7 @@ dependencies = [
     "shapely>=2.1",
     "pyproj>=3.6",
     "pyogrio>=0.9",
+    "pyarrow>=15",
     "networkx>=3.2",
     "sqlalchemy>=2.0.30",
     "alembic>=1.13",

@@ -35,6 +35,8 @@ sources:
 # age bands as pct_age_25_plus + 0.7 × pct_age_15_25, times a flat citizenship/registration factor.
 eligible_voters:
   citizenship_factor: 0.93
+  # Share of the CBS 15–25 age band assumed to be 18 or older (ages 18–24 of 15–24 ≈ 0.7).
+  adult_share_15_25: 0.7
 
 # Simplification tolerances (metres, EPSG:28992) for web display geometries (topology-preserving
 # coverage simplification — shared borders stay shared).

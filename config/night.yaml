@@ -1,0 +1,103 @@
+# Election night (SIMULATED) — reporting timeline, race calling and playback.
+# Validated by app.reporting.config.NightConfig; every parameter is explained in docs/RACE_CALLING.md.
+# Nothing here describes a real counting process: the reporting speeds and province effects are
+# FICTIONAL modelling assumptions.
+data_category: SIMULATED
+
+polls_close:
+  default: "21:00"            # local time; sim_time_s = 0 is the earliest closing
+  timezone: Europe/Amsterdam
+  provinces: {}               # e.g. {ZE: "20:30"}
+  municipalities: {}          # e.g. {GM0088: "20:00"} (overrides the province)
+  fallback_election_date: 2028-11-07   # used only when the caller supplies no date
+
+playback:
+  base_rate: 60.0             # 1x = 60 simulated seconds per real second
+  speeds: [1, 2, 5, 10, 25]
+  default_speed: 1
+
+reporting:
+  size_ref_ballots: 2000      # reference municipality size for the first-report model
+  first_report:               # minutes after the municipality's poll closing
+    base_minutes: 34
+    minutes_per_log10_ballots: 24
+    minutes_per_urbanity_step: 6
+    jitter_sd: 0.20           # multiplicative log-normal jitter (seeded)
+    min_minutes: 18
+    max_minutes: 240
+  duration:                   # minutes from first to last batch
+    ref_ballots: 20000
+    base_minutes: 50
+    elasticity: 0.5
+    urbanity_factor_per_step: 0.08
+    jitter_sd: 0.25
+    min_minutes: 4
+  latest_end_minutes: 470     # soft cap on the scheduled last batch (≈ 04:50)
+  end_spread_minutes: 45
+  province_effect_minutes:    # FICTIONAL province counting-speed effects (minutes)
+    GR: -3
+    FR: -4
+    DR: -6
+    OV: -2
+    FL: 0
+    GE: 0
+    UT: 3
+    NH: 5
+    ZH: 6
+    ZE: -3
+    NB: 2
+    LI: 3
+  province_random_sd_minutes: 4
+  province_duration_sd: 0.10
+  batches_by_size:            # batch count ranges by municipality ballots (last tier open)
+    - {max_ballots: 3000, min: 1, max: 2}
+    - {max_ballots: 10000, min: 2, max: 4}
+    - {max_ballots: 25000, min: 3, max: 7}
+    - {max_ballots: 60000, min: 6, max: 12}
+    - {max_ballots: 150000, min: 10, max: 22}
+    - {max_ballots: 300000, min: 18, max: 36}
+    - {max_ballots: null, min: 30, max: 60}
+  batch_size_concentration: 4.0
+  wijk_snap_tolerance: 0.35
+  min_batch_gap_s: 45
+  partial_precinct:
+    enabled: true
+    min_ballots: 1200
+    min_piece_fraction: 0.15
+  checkpoint_every: 500
+
+calling:
+  lean_threshold: 0.80
+  lean_hysteresis: 0.03
+  projected_threshold: 0.995
+  called_threshold: 0.9995
+  retraction_threshold: 0.90
+  min_reporting_projection: 0.05   # share of expected ballots (0–1)
+  min_reporting_call: 0.15
+  min_eval_increment_pct: 0.5      # re-evaluate a touched race every ≥ 0.5 pp of reporting
+  called_eval_increment_pct: 5.0   # … and a CALLED race every ≥ 5 pp (retraction checks)
+  close_band_pct: 1.0
+  too_close_min_reporting: 0.5
+  call_at_poll_close: false
+  n_draws_min: 500
+  n_draws: 4000
+  n_draws_max: 16000
+  model:
+    swing_prior_sd: 0.12
+    swing_tail_df: 5
+    differential_sd: 0.03
+    cluster_sd: 0.06
+    unit_sd: 0.10
+    partial_sd: 0.02
+    turnout_prior_sd: 0.06
+    turnout_cluster_sd: 0.05
+    pseudo_votes: 0.5
+    valid_rate_prior: 0.993
+    fit_iterations: 12
+
+recount:
+  margin_pct: 0.25            # fallback automatic-recount margin (pp) when no recount_check is injected
+
+snapshot:
+  recent_calls: 12
+  recent_lead_changes: 12

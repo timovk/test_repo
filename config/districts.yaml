@@ -1,0 +1,141 @@
+# House district generator configuration (FICTIONAL districts drawn over REAL CBS geography).
+# Validated by app.districts.config.DistrictConfig; every parameter is documented in
+# docs/DISTRICTING.md.  The canonical JSON of this document (minus `workers`) plus the manual
+# overrides is hashed and stored with every plan: same data + seed + config ⇒ identical plan.
+
+method: multires_bisection
+
+# ---- population equality -------------------------------------------------------------------
+# Every district should be within ±target of its provincial target (province population / seats);
+# a plan with a district beyond ±max fails validation.
+target_deviation_pct: 2.0
+max_deviation_pct: 5.0
+# Bisection tolerance funnel: a side that will still be split into k districts must have an
+# average deviation within target / k**exponent (0 = same tolerance everywhere, 1 = constant
+# absolute window).  0.5 leaves room for the lower levels while allowing whole-municipality cuts.
+tolerance_exponent: 0.5
+
+# ---- cut search (per bisection) ------------------------------------------------------------------
+sweep_angles: 18            # straight sweep lines at 10° steps (seeded rotation)
+geodesic_orderings: 8       # graph-distance orderings grown from extreme atoms
+centre_orderings: 3         # graph-distance orderings grown from the most populous atoms (cities)
+spectral_ordering: true     # Fiedler-vector ordering of the atom graph
+candidates_per_ordering: 3  # best prefixes per ordering checked exactly for contiguity
+max_refine_rounds: 6        # municipality → wijk → buurt refinement rounds per cut
+use_wijk_level: true        # refine municipalities into CBS wijken before buurten
+split_slack: 0              # also try district splits k/2 ± slack
+exact_search_max_k: 4       # exhaustive whole-municipality search for regions of ≤ 4 districts …
+exact_search_max_atoms: 48  # … with ≤ 48 atoms …
+exact_search_max_subsets: 6000  # … enumerating at most this many connected subsets
+water_link_border_m: 250.0  # nominal border length of a water link (bridge/ferry/island link)
+
+# ---- multi-start ---------------------------------------------------------------------------------
+restarts: 12                # independent attempts per province; the best objective wins
+restart_jitter: 0.25        # relative jitter of cut weights / funnel exponent in restarts ≥ 1
+
+# Cut scoring (lower is better): deviation / tolerance, municipal splits, compactness.
+cut:
+  deviation: 1.0
+  new_split: 3.0            # per municipality split for the first time
+  small_split: 2.0          # extra × (1 − municipality population / target): avoid splitting villages
+  existing_split: 0.3       # per already-split municipality (large city) cut again
+  cut_length: 0.8           # × cut length / sqrt(region area)
+  unbalanced: 0.15
+
+# Local search after the bisection: objective weights (deviations in %).
+local_search:
+  enabled: true
+  max_passes: 40
+  fragment_moves: true      # whole municipalities / municipal fragments
+  wijk_moves: true          # CBS wijk fragments
+  unit_moves: true          # single boundary buurten
+  max_fragment_units: 400
+  chain_moves: true         # un-split a municipality, then rebalance greedily (ejection chain)
+  chain_length: 8
+  chain_max_share: 0.25
+  weight_hard: 1000.0       # per %-point beyond max_deviation_pct
+  weight_target: 100.0      # per %-point beyond target_deviation_pct
+  weight_target_district: 50.0  # per district beyond target_deviation_pct
+  weight_split: 10.0        # per split municipality
+  weight_fragment: 2.0      # per extra municipal fragment
+  weight_deviation: 1.0     # per (deviation %)²
+  weight_cut_km: 0.2        # per km of district boundary
+
+# Worker processes (0 = auto, 1 = serial).  Results are identical for every value; not hashed.
+workers: 1
+
+# Manual overrides (relative to config/); applied by the plan-generation service.
+overrides_file: districts/overrides.yaml
+
+# Descriptive names.  Regions are naming aids only (well-known Dutch region names over REAL CBS
+# municipality codes of the 2025 vintage); unknown codes are ignored.
+naming:
+  region_min_share: 0.6
+  region_max_main_share: 0.5
+  second_min_share: 0.2
+  single_min_share: 0.95
+  minor_part_share: 0.05
+  centre_min_parts: 4
+  centre_radius_fraction: 0.4
+  surroundings_suffix: " e.o."
+  regions:
+    # Groningen / Fryslân / Drenthe
+    Oost-Groningen: [GM1895, GM0765, GM0037, GM0047, GM1950]
+    Zuidoost-Fryslân: [GM0074, GM0085, GM0086, GM0090, GM0098]
+    Waddeneilanden: [GM0060, GM0088, GM0093, GM0096, GM0448]
+    Noord-Drenthe: [GM0106, GM1680, GM1699, GM1730]
+    Zuidwest-Drenthe: [GM0119, GM1701, GM1690, GM0118]
+    Zuidoost-Drenthe: [GM0114, GM0109, GM1681]
+    # Overijssel
+    Twente: [GM0141, GM0147, GM1774, GM0153, GM0158, GM0163, GM0164, GM1735, GM0168, GM0173, GM1742, GM0183, GM1700, GM0189]
+    Salland: [GM0150, GM1773, GM0177]
+    Vechtdal: [GM0160, GM0175, GM0148]
+    Kop van Overijssel: [GM1708, GM1896, GM0180]
+    # Gelderland
+    Achterhoek: [GM0197, GM1859, GM1876, GM0222, GM0262, GM1955, GM1586, GM1509, GM0294]
+    Liemers: [GM0226, GM0293, GM0299, GM0221]
+    Noord-Veluwe: [GM0230, GM0233, GM0243, GM0244, GM0246, GM0302, GM0269, GM0273]
+    Rivierenland: [GM0214, GM0216, GM0263, GM1740, GM0281, GM1960, GM0668, GM0297]
+    Gelderse Vallei: [GM0203, GM0228, GM0267, GM0279, GM0289]
+    Rijk van Nijmegen: [GM0268, GM1945, GM0209, GM0252, GM0225, GM0296]
+    # Utrecht
+    Eemland: [GM0307, GM0308, GM0313, GM0317, GM0327, GM0342, GM0351]
+    Lopikerwaard: [GM0331, GM0335, GM0589, GM0353]
+    Kromme Rijn: [GM0312, GM0321, GM0352]
+    # Noord-Holland
+    Kop van Noord-Holland: [GM0400, GM1911, GM0441, GM0448]
+    West-Friesland: [GM0498, GM0388, GM0405, GM1598, GM0420, GM0432, GM0532]
+    Noord-Kennemerland: [GM0361, GM0373, GM0383, GM0399, GM0450, GM1980]
+    Zaanstreek: [GM0479, GM0880, GM0431]
+    Waterland: [GM0852, GM0385, GM0415, GM0439]
+    IJmond: [GM0375, GM0396, GM0453]
+    Zuid-Kennemerland: [GM0392, GM0377, GM0397, GM0473]
+    Amstelland: [GM0362, GM0437, GM0358, GM0451]
+    Het Gooi: [GM0402, GM1942, GM0406, GM0376, GM0417, GM1696]
+    # Zuid-Holland
+    Bollenstreek: [GM0534, GM0553, GM0575, GM1525]
+    Leidse regio: [GM0546, GM0547, GM0579, GM0638, GM0626]
+    Rijnstreek: [GM0484, GM1884, GM0569]
+    Midden-Holland: [GM0513, GM1901, GM1931, GM0627, GM1892]
+    Drechtsteden: [GM0482, GM0505, GM0531, GM0590, GM0610, GM0642]
+    Alblasserwaard: [GM1978, GM0512, GM0523]
+    Voorne-Putten: [GM1930, GM1992]
+    # Zeeland
+    Walcheren: [GM0687, GM0718, GM0717]
+    De Bevelanden: [GM0664, GM0654, GM0678, GM0703, GM1695]
+    Zeeuws-Vlaanderen: [GM1714, GM0715, GM0677]
+    # Noord-Brabant
+    West-Brabant: [GM0748, GM1674, GM0873, GM0851, GM1655, GM0840, GM0879, GM1709, GM0777]
+    Baronie: [GM0758, GM1723, GM0744, GM1719, GM0779, GM0826]
+    Hart van Brabant: [GM0855, GM0766, GM0784, GM0785, GM0798, GM0824]
+    Langstraat: [GM0867, GM0797, GM0809]
+    De Meierij: [GM1948, GM0757, GM0845, GM0865]
+    Noordoost-Brabant: [GM0828, GM1721, GM1991, GM1982, GM0755]
+    De Kempen: [GM1724, GM1728, GM0770, GM0823, GM1667]
+    De Peel: [GM0743, GM0762, GM1652, GM0794, GM1659, GM0847, GM1771]
+    # Limburg
+    Noord-Limburg: [GM0983, GM0984, GM1507, GM1894, GM0889, GM0893, GM0907, GM0944]
+    Midden-Limburg: [GM0957, GM0988, GM1640, GM1641, GM1669, GM1711, GM0946]
+    Parkstad: [GM0917, GM0928, GM0882, GM0899, GM1954, GM0965, GM0986]
+    Westelijke Mijnstreek: [GM1883, GM0888, GM0971]
+    Heuvelland: [GM1729, GM1903, GM0981, GM0994, GM0938]
