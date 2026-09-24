@@ -9,7 +9,7 @@ polls_close:
   timezone: Europe/Amsterdam
   provinces: {}               # e.g. {ZE: "20:30"}
   municipalities: {}          # e.g. {GM0088: "20:00"} (overrides the province)
-  fallback_election_date: 2028-11-07   # used only when the caller supplies no date
+  fallback_election_date: 2028-11-08   # used only when the caller supplies no date
 
 playback:
   base_rate: 60.0             # 1x = 60 simulated seconds per real second

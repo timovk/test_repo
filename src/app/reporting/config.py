@@ -52,7 +52,7 @@ class PollsCloseConfig(_Model):
     #: CBS municipality code → 'HH:MM' override (takes precedence over the province).
     municipalities: dict[str, str] = Field(default_factory=dict)
     #: Election date used when the caller does not supply one (timestamps only).
-    fallback_election_date: date = date(2028, 11, 7)
+    fallback_election_date: date = date(2028, 11, 8)
 
     @field_validator("default")
     @classmethod

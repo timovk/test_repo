@@ -15,7 +15,7 @@ scenario:
     most midterms.  Mayors and municipal councils are elected directly for the first time.
   year: 2026
   election_type: midterm
-  election_date: 2026-11-03
+  election_date: 2026-11-04
   seed: 20260001
   political_geography_seed: 1848
 

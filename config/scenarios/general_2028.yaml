@@ -21,7 +21,7 @@ scenario:
     agrarian Plattelandsbond renamed itself in 2027 and fields no presidential ticket.
   year: 2028
   election_type: general
-  election_date: 2028-11-07
+  election_date: 2028-11-08
   seed: 20280001
   political_geography_seed: 1848
 

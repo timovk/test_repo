@@ -239,7 +239,7 @@ def _database_status(url: str) -> dict[str, Any]:
         and not Path(u.database).exists()
     ):
         info["exists"] = False
-        info["error"] = "database file does not exist (run `python -m app setup`)"
+        info["error"] = "database file does not exist (run `python -m app init --with-geography` or `python -m app demo`)"
         return info
     try:
         engine = get_engine(url)

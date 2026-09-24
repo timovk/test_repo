@@ -40,7 +40,7 @@ def test_forecast_job_and_views(rw_client: TestClient, api_world) -> None:  # ty
     pres = latest["president"]
     assert pres["total_ev"] == 174 and pres["majority"] == 88
     probs = sum(t["prob_win"] for t in pres["tickets"]) + pres["prob_contingent"]
-    assert abs(probs - 1.0) < 1e-6
+    assert abs(probs - 1.0) < 1e-5  # per-line probabilities are rounded to 6 dp
     assert len(pres["provinces"]) == 12 and pres["combinations"]
     assert len(pres["tickets"][0]["ev_histogram"]) == 175
     assert latest["house"]["seats_total"] == 150 and latest["house"]["races"]

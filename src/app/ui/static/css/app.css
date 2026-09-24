@@ -2,6 +2,9 @@
    NL Federal Election Simulator — layout & components
    ========================================================================== */
 @import url("./tokens.css");
+@import url("./views-live.css");
+@import url("./views-results.css");
+@import url("./views-analysis.css");
 
 *,
 *::before,

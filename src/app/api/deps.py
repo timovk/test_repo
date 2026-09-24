@@ -73,7 +73,7 @@ def get_db(request: Request) -> Iterator[Session]:
     db: Database = request.app.state.db
     ok, reason = db.ready()
     if not ok:
-        raise DataNotPreparedError(reason or "database not initialised (run `python -m app setup`)")
+        raise DataNotPreparedError(reason or "database not initialised (run `python -m app init --with-geography` or `python -m app demo`)")
     session = db.sessionmaker()()
     try:
         yield session

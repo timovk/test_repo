@@ -39,7 +39,7 @@ a list of `{loc, msg, type}`; constitutional validation adds `problems`).
 | 404 | `not_found` | unknown election, province, municipality, district, race, candidate, scenario, dataset, job, run, **or unknown `/api/...` path** |
 | 409 | `conflict` | state conflicts: results of an unreported election requested from an export, finalizing a finalized / live election, re-simulating a live / final election, night actions on a final night, editing a built-in scenario, duplicate scenario slug |
 | 422 | `invalid` | bad parameters or bodies (unknown race family, sort field, poll type, malformed scenario, …) |
-| 503 | `not_prepared` | the database or the geography has not been set up (`python -m app setup`) — `GET /api/health` still answers |
+| 503 | `not_prepared` | the database or the geography has not been set up (`python -m app init --with-geography` or `python -m app demo`) — `GET /api/health` still answers |
 | 503 | `unavailable` | an optional service (the election-night service) is not installed |
 | 500 | `internal` | unexpected server error (logged) |
 
@@ -92,7 +92,7 @@ starts with:
 ```json
 {
   "election": {"id": 3, "year": 2028, "name": "General Election 2028", "election_type": "general",
-               "status": "final", "election_date": "2028-11-07", "previous_election_id": 2,
+               "status": "final", "election_date": "2028-11-08", "previous_election_id": 2,
                "reported": true, "live": false, "results_source": "final"},
   "data_category": "SIMULATED",
   "results_source": "final",
@@ -454,7 +454,7 @@ fingerprint; a changed plan regenerates it). Unit layers need the processed stor
 {"data_category": "SIMULATED", "count": 3, "demo_election_id": 3, "latest_election_id": 3,
  "elections": [
    {"id": 1, "year": 2024, "name": "Founding General Election 2024", "election_type": "general",
-    "status": "final", "election_date": "2024-11-05", "previous_election_id": null, "reported": true,
+    "status": "final", "election_date": "2024-11-06", "previous_election_id": null, "reported": true,
     "live": false, "results_source": "final", "seed": 20240001,
     "scenario": {"id": 1, "slug": "founding-2024", "name": "…", "hash": "…"},
     "contents": {"president": true, "house": true, "senate_classes": [1, 2, 3], "governors": true,
