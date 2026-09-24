@@ -9,11 +9,14 @@
 # turnout_propensity (logit shift of supporters' turnout), demographics (utility per
 # population-SD of a REAL CBS indicator), urbanity (CBS class 1 = very urban … 5 = rural),
 # provinces / regions (config/regions.yaml) / municipalities (CBS codes) as logit shifts.
+# Colours: the eight identity hues of the validated data-viz reference palette (checked with the
+# colour-vision validator in both themes: lightness band, chroma floor, CVD separation, contrast).
+# Party colours remain editable data — the UI also supports per-user overrides (Settings).
 parties:
   - code: PA
     name: Progressieve Alliantie
     abbreviation: PA
-    color: "#2E9E54"
+    color: "#2F8F2F"
     family: green-left / social-democratic
     description: Fictional green-left and social-democratic alliance; strongest in big cities, university towns and among young, highly educated voters.
     ideology: {economic: -0.6, social: -0.7, europe: 0.6}
@@ -35,7 +38,7 @@ parties:
   - code: SAP
     name: Socialistische Arbeiderspartij
     abbreviation: SAP
-    color: "#D62828"
+    color: "#E66767"
     family: left-populist
     description: Fictional left-populist workers' party; lower-income urban neighbourhoods and old industrial areas.
     ideology: {economic: -0.8, social: -0.1, europe: -0.4}
@@ -55,7 +58,7 @@ parties:
   - code: VLP
     name: Vrije Liberale Partij
     abbreviation: VLP
-    color: "#1F5AA6"
+    color: "#3987E5"
     family: economic-liberal / centre-right
     description: Fictional economic-liberal party of business, owner-occupiers and affluent suburbs.
     ideology: {economic: 0.7, social: -0.1, europe: 0.2}
@@ -75,7 +78,7 @@ parties:
   - code: DM
     name: Democratisch Midden
     abbreviation: DM
-    color: "#8E44AD"
+    color: "#9085E9"
     family: social-liberal
     description: Fictional social-liberal, pro-European party of highly educated suburbs and cities.
     ideology: {economic: 0.1, social: -0.6, europe: 0.9}
@@ -95,7 +98,7 @@ parties:
   - code: CVU
     name: Christelijke Volksunie
     abbreviation: CVU
-    color: "#12A4B6"
+    color: "#199E70"
     family: Christian-democratic
     description: Fictional Christian-democratic people's party; the Catholic south, rural Protestant east, older voters and smaller towns.
     ideology: {economic: 0.2, social: 0.5, europe: 0.3}
@@ -115,7 +118,7 @@ parties:
   - code: NVB
     name: Nationale Volksbeweging
     abbreviation: NVB
-    color: "#EE7F1A"
+    color: "#D95926"
     family: national-populist
     description: Fictional national-populist movement; lower-educated voters, the periphery and the outskirts of big cities.
     ideology: {economic: 0.0, social: 0.5, europe: -0.9}
@@ -136,7 +139,7 @@ parties:
   - code: PLB
     name: Plattelandsbond
     abbreviation: PLB
-    color: "#D2A10F"
+    color: "#C98500"
     family: agrarian / rural
     description: Fictional agrarian party of the countryside; farmers and rural towns in the east and north.
     ideology: {economic: 0.3, social: 0.4, europe: -0.5}
@@ -156,7 +159,7 @@ parties:
   - code: RV
     name: Reformatorisch Verbond
     abbreviation: RV
-    color: "#6D4C41"
+    color: "#D55181"
     family: orthodox-Protestant
     description: Fictional orthodox-Protestant party; almost exclusively the Bible Belt.
     ideology: {economic: 0.3, social: 0.9, europe: -0.2}
