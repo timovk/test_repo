@@ -1,0 +1,29 @@
+# Constitution of the (FICTIONAL) Federal Republic of the Netherlands.
+# The canonical system — validated by `python -m app validate` and the test-suite:
+#   150 House seats (76 for control) · 24 senators (13 for control) · 174 EV (88 to win)
+province_count: 12
+house_seats: 150
+senators_per_province: 2
+senate_classes: 3
+min_house_seats_per_province: 1
+presidential_term_years: 4
+house_term_years: 2
+senate_term_years: 6
+governor_term_years: 4
+mayor_term_years: 4
+# huntington_hill (U.S. method, default) | hamilton | webster | jefferson | adams
+apportionment_method: huntington_hill
+# winner_take_all (default) | district | proportional
+ev_allocation: winner_take_all
+# Exact province tie after recount: 'lot' (seeded drawing of lots) or 'contingent' (EV withheld)
+province_tie_rule: lot
+lieutenant_governors: true
+contingent:
+  # province_delegations (12th-Amendment analogue, default) | house_members | national_popular_vote | national_runoff
+  mode: province_delegations
+  finalists: 3
+  max_ballots: 10
+  # vice_president_acts | popular_vote
+  deadlock_fallback: popular_vote
+  vice_president_by_senate: true
+  vice_president_finalists: 2

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Data (reproducibly downloaded/generated — see docs/DATA_PROVENANCE.md)
+data/raw/
+data/processed/
+data/cache/
+data/exports/
+data/*.db
+data/*.db-journal
+data/*.sqlite
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
