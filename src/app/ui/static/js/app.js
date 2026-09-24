@@ -1,16 +1,24 @@
 /**
  * Application bootstrap: theme, meta (constitution + elections), shell (national strip + nav),
  * router with lazy views, and the live election-night poller.
+ *
+ * The national strip is always visible:
+ *   brand + election picker · EV bar (decided solid / leading hatched / uncalled, 88 TO WIN) ·
+ *   House counter (76 FOR CONTROL) · Senate counter (13 FOR CONTROL) · reporting % + simulated
+ *   clock · playback controls (hidden / live nights) or the certified final state (FINAL elections).
+ * Live numbers come from the night snapshot (store.night); final numbers from
+ * /api/elections/{id}/president, /house and /senate.  The strip performs no election mathematics.
  */
 import { api } from "./api.js";
-import { $, h, mount } from "./dom.js";
-import { fmtPct } from "./format.js";
+import { $, h, keyed, mount } from "./dom.js";
+import { fmtInt, fmtPct } from "./format.js";
 import { icon } from "./components/icons.js";
 import { evBar } from "./components/evbar.js";
 import { provBadge } from "./components/badges.js";
+import { toast } from "./components/live-toast.js";
 import { ROUTES } from "./routes.js";
 import { parseHash, startRouter } from "./router.js";
-import { getState, setState, subscribe, partyColor } from "./store.js";
+import { getElection, getState, nightFor, partyColor, setState, subscribe } from "./store.js";
 import { nightControl, watchNight } from "./night-poller.js";
 
 const THEME_KEY = "nlfed.theme";
@@ -34,6 +42,21 @@ export function applyTheme(theme) {
 function renderNav() {
   const groups = {};
   for (const r of ROUTES.filter((x) => x.nav)) (groups[r.nav] ||= []).push(r);
+  const themeBtn = h(
+    "button",
+    {
+      class: "btn btn--sm btn--ghost lv-theme-toggle",
+      type: "button",
+      onclick: () => applyTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"),
+    },
+  );
+  const paintTheme = () => {
+    const light = document.documentElement.dataset.theme === "light";
+    mount(themeBtn, icon(light ? "moon" : "sun", { size: 13 }), light ? "Dark theme" : "Light theme");
+    themeBtn.setAttribute("aria-label", light ? "Switch to the dark theme" : "Switch to the light theme");
+  };
+  subscribe("settings", paintTheme);
+  paintTheme();
   return h(
     "nav",
     { class: "nav", "aria-label": "Main" },
@@ -49,7 +72,8 @@ function renderNav() {
       "div",
       { class: "nav__footer" },
       h("div", null, provBadge("FICTIONAL", "Fictional system")),
-      h("p", { style: { margin: "8px 0 0" } }, "Real Dutch geography (CBS/PDOK). Constitution, parties, candidates and all results are fictional simulations."),
+      h("p", { style: { margin: "8px 0 10px" } }, "Real Dutch geography (CBS/PDOK). Constitution, parties, candidates and all results are fictional simulations."),
+      themeBtn,
     ),
   );
 }
@@ -57,94 +81,402 @@ function renderNav() {
 function renderStrip() {
   return h(
     "header",
-    { class: "strip" },
-    h(
-      "a",
-      { class: "brand", href: "#/night" },
-      h("div", { class: "brand__mark" }, "NL"),
-      h("div", null, h("div", { class: "brand__title", id: "strip-title" }, "Federal Election"), h("div", { class: "brand__sub", id: "strip-sub" }, "Simulator")),
-    ),
-    h("div", { class: "strip__slot strip__ev", id: "strip-ev" }),
-    h("div", { class: "strip__counter", id: "strip-house" }),
-    h("div", { class: "strip__counter", id: "strip-senate" }),
-    h("div", { class: "strip__counter", id: "strip-report" }),
-    h("div", { class: "strip__slot", id: "strip-controls" }),
-  );
-}
-
-function counter(label, value, sub) {
-  return [h("span", { class: "strip__label" }, label), h("span", { class: "strip__value" }, value), sub ? h("span", { class: "strip__label" }, sub) : null];
-}
-
-/** Update the national strip from the live night snapshot (or the static election summary). */
-function updateStrip() {
-  const { meta, night, electionId } = getState();
-  if (!meta) return;
-  const c = meta.constitution || {};
-  const election = (meta.elections || []).find((e) => e.id === electionId);
-  $("#strip-title").textContent = election ? election.name : "Federal Election";
-  mount($("#strip-sub"), election ? `${election.year} · ${String(election.status).toUpperCase()}` : "Simulator");
-
-  const snap = night?.snapshot;
-  const pres = snap?.president;
-  const total = pres?.ev_total ?? c.electoral_votes ?? 174;
-  const needed = pres?.ev_needed ?? c.presidential_majority ?? 88;
-  const tickets = (pres?.tickets || []).map((t) => ({
-    key: t.key,
-    label: t.party || t.label,
-    color: partyColor(t.party, t.color),
-    decided: t.ev_decided || 0,
-    leading: t.ev_leading || 0,
-  }));
-  tickets.sort((a, b) => b.decided + b.leading * 0.001 - (a.decided + a.leading * 0.001));
-  mount($("#strip-ev"), evBar({ total, majority: needed, tickets, showLegend: true }));
-
-  const house = snap?.house;
-  const hLead = house?.by_party?.slice().sort((a, b) => b.called + b.leading - (a.called + a.leading))[0];
-  mount(
-    $("#strip-house"),
-    counter("House · " + (house?.majority ?? c.house_majority ?? 76) + " for control", hLead ? `${hLead.party} ${hLead.called}` : "0", house ? `${house.called}/${house.seats_total} called` : `${c.house_seats ?? 150} seats`),
-  );
-  const senate = snap?.senate;
-  const sLead = senate?.by_party?.slice().sort((a, b) => b.total_decided - a.total_decided)[0];
-  mount(
-    $("#strip-senate"),
-    counter("Senate · " + (senate?.majority ?? c.senate_majority ?? 13) + " for control", sLead ? `${sLead.party} ${sLead.total_decided}` : "–", senate ? `${senate.up} up` : `${c.senate_seats ?? 24} seats`),
-  );
-  const rep = snap?.reporting;
-  mount($("#strip-report"), counter("Reporting", rep ? fmtPct(rep.pct_expected_ballots) : "–", night?.clock?.clock ? `${night.clock.clock} CET` : ""));
-  renderControls(night);
-}
-
-function renderControls(night) {
-  const el = $("#strip-controls");
-  if (!night?.clock) {
-    mount(el);
-    return;
-  }
-  const clk = night.clock;
-  const running = clk.status === "running";
-  const finished = clk.status === "finished";
-  const btn = (name, action, title, extra = {}) =>
-    h("button", { class: "btn btn--sm btn--ghost", title, "aria-label": title, disabled: finished, onclick: () => nightControl(action, extra.speed), ...extra.attrs }, icon(name, { size: 14 }));
-  mount(
-    el,
+    { class: "strip lv-strip" },
     h(
       "div",
-      { class: "playback" },
-      running ? h("span", { class: "live-dot", title: "Live" }) : null,
-      running ? btn("pause", "pause", "Pause") : btn("play", clk.status === "ready" ? "start" : "resume", clk.status === "ready" ? "Start election night" : "Resume"),
-      btn("step", "step", "Advance one reporting event"),
-      h(
-        "div",
-        { class: "segmented", role: "group", "aria-label": "Playback speed" },
-        (clk.speeds || [1, 2, 5, 10, 25]).map((s) =>
-          h("button", { class: clk.speed === s ? "is-active" : "", disabled: finished, onclick: () => nightControl("speed", s) }, `${s}×`),
-        ),
-      ),
-      btn("finish", "finish", "Instant finish"),
+      { class: "brand" },
+      h("a", { class: "brand__mark", href: "#/night", "aria-label": "Election Night home" }, "NL"),
+      h("div", { class: "lv-brand__text" }, h("div", { class: "brand__sub" }, "NL Federal Election"), h("div", { id: "strip-picker", class: "lv-strip-picker" })),
+    ),
+    h("div", { class: "strip__slot strip__ev", id: "strip-ev" }),
+    h("div", { class: "strip__counter lv-counter", id: "strip-house" }),
+    h("div", { class: "strip__counter lv-counter", id: "strip-senate" }),
+    h("div", { class: "strip__counter lv-counter lv-counter--report", id: "strip-report" }),
+    h("div", { class: "strip__slot lv-strip-controls", id: "strip-controls" }),
+  );
+}
+
+/* ------------------------------------------------------------------ election picker */
+function statusSuffix(e) {
+  if (e.status === "live") return " · LIVE";
+  if (e.status === "final" || e.status === "certified") return " · final";
+  return " · not reported";
+}
+
+function renderPicker() {
+  const { meta, electionId } = getState();
+  const els = meta?.elections || [];
+  const key = JSON.stringify([electionId, els.map((e) => [e.id, e.status])]);
+  keyed($("#strip-picker"), key, () =>
+    h(
+      "select",
+      {
+        class: "lv-picker",
+        "aria-label": "Election",
+        title: "Choose the election shown on every page",
+        onchange: (e) => {
+          const [path] = location.hash.replace(/^#/, "").split("?");
+          location.hash = `#${path || "/night"}?e=${e.target.value}`;
+        },
+      },
+      els
+        .slice()
+        .reverse()
+        .map((e) => h("option", { value: e.id, selected: e.id === electionId }, `${e.name}${statusSuffix(e)}`)),
     ),
   );
+  const sel = $("#strip-picker select");
+  const cur = els.find((e) => e.id === electionId);
+  if (sel && cur) sel.title = `${cur.name} (${cur.status}) — choose the election shown on every page`;
+}
+
+/* ------------------------------------------------------------------ final-state cache */
+const finalCache = new Map(); // id -> {pres, house, senate} | "loading"
+
+function loadFinal(id) {
+  if (finalCache.has(id)) return;
+  finalCache.set(id, "loading");
+  const soft = (p) => p.catch(() => null);
+  Promise.all([soft(api.get(`/api/elections/${id}/president`)), soft(api.get(`/api/elections/${id}/house`)), soft(api.get(`/api/elections/${id}/senate`))]).then(([pres, house, senate]) => {
+    finalCache.set(id, { pres, house, senate });
+    updateStrip();
+  });
+}
+
+/* ------------------------------------------------------------------ strip model */
+function tallyTickets(list, decidedKey, leadingKey) {
+  const tickets = (list || []).map((t) => ({
+    key: t.key,
+    label: t.party || t.label || t.key,
+    name: t.name || t.label,
+    color: partyColor(t.party, t.color),
+    decided: t[decidedKey] || 0,
+    leading: t[leadingKey] || 0,
+    votes: t.votes || 0,
+  }));
+  // Leader first: by decided EV, then leading EV, then counted votes (sorting only).
+  tickets.sort((a, b) => b.decided - a.decided || b.leading - a.leading || b.votes - a.votes);
+  return tickets;
+}
+
+function stripModel() {
+  const { meta, electionId } = getState();
+  const c = meta?.constitution || {};
+  const election = getElection(electionId);
+  const final = election && (election.status === "final" || election.status === "certified");
+  const base = {
+    election,
+    total: c.electoral_votes ?? 174,
+    needed: c.presidential_majority ?? 88,
+    houseMajority: c.house_majority ?? 76,
+    houseSeats: c.house_seats ?? 150,
+    senateMajority: c.senate_majority ?? 13,
+    senateSeats: c.senate_seats ?? 24,
+  };
+  const night = nightFor(electionId);
+  if (final && night?.clock?.status !== "running") {
+    loadFinal(electionId);
+    const f = finalCache.get(electionId);
+    if (!f || f === "loading") return { ...base, kind: "loading" };
+    const pres = f.pres;
+    return {
+      ...base,
+      kind: "final",
+      noPresident: !pres,
+      ev: pres
+        ? {
+            total: pres.electoral_votes_total ?? base.total,
+            needed: pres.majority ?? base.needed,
+            tickets: tallyTickets(pres.tickets, "electoral_votes", "__none"),
+            winner: pres.winner,
+            decidedBy: pres.decided_by,
+          }
+        : null,
+      house: f.house && {
+        majority: f.house.majority,
+        seats: f.house.seats_total,
+        parties: (f.house.by_party || []).map((p) => ({ party: p.party, color: partyColor(p.party, p.color), called: p.won ?? p.total ?? 0, leading: 0 })),
+        control: f.house.control?.controlling_party || null,
+        largest: f.house.control?.largest_party || null,
+        sub: f.house.control?.controlling_party ? `${f.house.control.controlling_party} control` : "No majority",
+      },
+      senate: f.senate && {
+        majority: f.senate.majority,
+        seats: f.senate.seats_total,
+        parties: (f.senate.by_party || []).map((p) => ({ party: p.party, color: partyColor(p.party, p.color), called: p.total_projected ?? p.total_decided ?? 0, leading: 0, holdover: p.holdover || 0 })),
+        control: f.senate.control?.controlling_party || null,
+        sub: f.senate.control?.controlling_party ? `${f.senate.control.controlling_party} control` : "No majority",
+      },
+      turnout: pres?.popular_vote?.turnout_pct ?? null,
+    };
+  }
+  const snap = night?.snapshot;
+  if (!snap) return { ...base, kind: "empty" };
+  const pres = snap.president;
+  const house = snap.house;
+  const senate = snap.senate;
+  return {
+    ...base,
+    kind: "live",
+    clock: night.clock,
+    noPresident: !pres,
+    ev: pres
+      ? {
+          total: pres.ev_total ?? base.total,
+          needed: pres.ev_needed ?? base.needed,
+          tickets: tallyTickets(pres.tickets, "ev_decided", "ev_leading"),
+          decidedTotal: pres.ev_decided_total ?? 0,
+          uncalled: pres.ev_uncalled ?? base.total,
+          winner: pres.winner,
+          contingentLikely: pres.contingent_likely,
+          decidedBy: pres.decided_by,
+        }
+      : null,
+    house: house && {
+      majority: house.majority,
+      seats: house.seats_total,
+      parties: (house.by_party || []).map((p) => ({ party: p.party, color: partyColor(p.party, p.color), called: p.called || 0, leading: p.leading || 0 })),
+      control: house.control,
+      sub: house.control ? `${house.control} control` : `${fmtInt(house.called)}/${fmtInt(house.seats_total)} called`,
+    },
+    senate: senate && {
+      majority: senate.majority,
+      seats: senate.seats_total,
+      parties: (senate.by_party || []).map((p) => ({ party: p.party, color: partyColor(p.party, p.color), called: p.total_decided || 0, leading: p.leading || 0, holdover: p.holdover || 0 })),
+      control: senate.control,
+      sub: senate.control ? `${senate.control} control` : `${fmtInt(senate.up)} up · ${fmtInt(senate.called)} called`,
+    },
+    reporting: snap.reporting?.pct_expected_ballots ?? 0,
+  };
+}
+
+/* ------------------------------------------------------------------ strip rendering */
+let stripEvBar = null;
+
+function winnerName(ev) {
+  const w = ev?.winner;
+  if (!w) return null;
+  if (typeof w === "object") return w.president?.name || String(w.name || "").split(" / ")[0];
+  const t = ev.tickets.find((x) => x.key === w);
+  return t ? String(t.name || "").split(" / ")[0] : null;
+}
+
+function renderEv(m) {
+  const el = $("#strip-ev");
+  if (m.kind === "loading" || m.kind === "empty") {
+    stripEvBar = null;
+    keyed(el, `${m.kind}`, () => evBlock("President", `0 EV allocated · ${m.total} available`, m.needed, evBar({ total: m.total, majority: m.needed, tickets: [], compact: true, markerLabel: false, showLegend: false })));
+    return;
+  }
+  if (m.noPresident) {
+    stripEvBar = null;
+    keyed(el, "nopres", () =>
+      h("div", { class: "lv-strip-ev lv-strip-ev--none" }, h("span", { class: "strip__label" }, "President"), h("span", { class: "lv-strip-ev__none" }, "Midterm election — no presidential race")),
+    );
+    return;
+  }
+  const ev = m.ev;
+  let status;
+  if (m.kind === "final") {
+    const name = winnerName(ev);
+    status = name ? `${name} elected${ev.decidedBy === "contingent" ? " by contingent election" : ""}` : "Final";
+  } else if (ev.winner) {
+    status = `${winnerName(ev) || "Winner"} secures ${m.needed}`;
+  } else if (ev.contingentLikely) {
+    status = "No ticket can reach 88 — contingent likely";
+  } else status = `${fmtInt(ev.decidedTotal)} of ${fmtInt(ev.total)} EV allocated`;
+  const props = { total: ev.total, majority: ev.needed, tickets: ev.tickets, compact: true, markerLabel: false, legendMax: 3 };
+  if (!stripEvBar || !el.contains(stripEvBar) || el.dataset.key !== "ev") {
+    el.dataset.key = "ev";
+    stripEvBar = evBar(props);
+    mount(el, evBlock("President", status, ev.needed, stripEvBar));
+  } else {
+    stripEvBar.update(props);
+    const st = el.querySelector(".lv-strip-ev__status");
+    if (st && st.textContent !== status) st.textContent = status;
+  }
+  el.classList.toggle("is-won", !!ev.winner);
+  el.classList.toggle("is-contingent", !!ev.contingentLikely && !ev.winner);
+}
+
+function evBlock(label, status, needed, bar) {
+  return h(
+    "div",
+    { class: "lv-strip-ev" },
+    h(
+      "div",
+      { class: "lv-strip-ev__head" },
+      h("span", { class: "strip__label" }, label),
+      h("span", { class: "lv-strip-ev__status" }, status),
+      h("span", { class: "lv-strip-ev__towin" }, `${needed} TO WIN`),
+    ),
+    bar,
+  );
+}
+
+function seatCounter(title, c, fallbackMajority, fallbackSeats) {
+  if (!c) {
+    return [h("span", { class: "strip__label" }, `${title} · ${fallbackMajority} for control`), h("span", { class: "strip__value" }, "–"), h("span", { class: "strip__label" }, `${fallbackSeats} seats`)];
+  }
+  const parties = c.parties
+    .filter((p) => p.called + p.leading > 0)
+    .sort((a, b) => b.called - a.called || b.leading - a.leading);
+  const top = parties.slice(0, 2);
+  const seats = c.seats || fallbackSeats;
+  const bar = h(
+    "div",
+    { class: "lv-minibar", "aria-hidden": "true" },
+    ...parties.map((p) => h("span", { class: "lv-minibar__seg", style: { "--party": p.color, flexGrow: p.called } })),
+    ...parties.filter((p) => p.leading > 0).map((p) => h("span", { class: "lv-minibar__seg lv-minibar__seg--lead", style: { "--party": p.color, flexGrow: p.leading } })),
+    h("span", { class: "lv-minibar__rest", style: { flexGrow: Math.max(0, seats - parties.reduce((a, p) => a + p.called + p.leading, 0)) } }),
+    h("span", { class: "lv-minibar__tick", style: { left: `${(c.majority / seats) * 100}%` } }),
+  );
+  return [
+    h("span", { class: "strip__label" }, `${title} · ${c.majority} for control`),
+    h(
+      "span",
+      { class: "strip__value lv-counter__value" },
+      top.length
+        ? top.map((p) =>
+            h(
+              "span",
+              { class: "lv-counter__party", title: `${p.party}: ${p.called} decided${p.leading ? `, leading ${p.leading}` : ""}` },
+              h("span", { class: "chip__swatch", style: { "--party": p.color } }),
+              `${p.party} ${p.called}`,
+              p.leading ? h("span", { class: "lv-counter__lead" }, `+${p.leading}`) : null,
+            ),
+          )
+        : "0",
+    ),
+    bar,
+    h("span", { class: ["strip__label", c.control && "lv-counter__control"] }, c.control ? [icon("check", { size: 10 }), ` ${c.sub}`] : c.sub),
+  ];
+}
+
+function renderCounters(m) {
+  const houseKey = JSON.stringify(m.house ? [m.house.parties.map((p) => [p.party, p.called, p.leading, p.color]), m.house.sub, m.house.control] : null);
+  keyed($("#strip-house"), houseKey, () => seatCounter("House", m.house, m.houseMajority, m.houseSeats));
+  const senKey = JSON.stringify(m.senate ? [m.senate.parties.map((p) => [p.party, p.called, p.leading, p.color]), m.senate.sub, m.senate.control] : null);
+  keyed($("#strip-senate"), senKey, () => seatCounter("Senate", m.senate, m.senateMajority, m.senateSeats));
+
+  const rep = $("#strip-report");
+  if (m.kind === "final") {
+    keyed(rep, `final|${m.turnout}`, () => [
+      h("span", { class: "strip__label" }, m.turnout !== null && m.turnout !== undefined ? "Turnout" : "Reporting"),
+      h("span", { class: "strip__value" }, m.turnout !== null && m.turnout !== undefined ? fmtPct(m.turnout) : "100%"),
+      h("span", { class: "strip__label" }, "Certified result"),
+    ]);
+    return;
+  }
+  const pct = m.reporting ?? 0;
+  const clock = m.clock?.clock;
+  const running = m.clock?.status === "running";
+  keyed(rep, `${pct}|${clock}|${running}`, () => [
+    h("span", { class: "strip__label" }, "Reporting"),
+    h("span", { class: "strip__value" }, fmtPct(pct)),
+    h("div", { class: "lv-minibar lv-minibar--report", "aria-hidden": "true" }, h("span", { class: "lv-minibar__fill", style: { width: `${Math.min(100, pct)}%` } })),
+    h("span", { class: "strip__label lv-clock" }, running ? h("span", { class: "live-dot", "aria-hidden": "true" }) : null, clock ? `${clock} CET` : ""),
+  ]);
+}
+
+/* two-step confirm buttons for irreversible actions */
+function confirmButton(label, iconName, title, onConfirm, disabled) {
+  const b = h("button", { class: "btn btn--sm btn--ghost lv-ctl", type: "button", title, "aria-label": title, disabled }, icon(iconName, { size: 14 }));
+  let armed = null;
+  b.addEventListener("click", () => {
+    if (armed) {
+      clearTimeout(armed);
+      armed = null;
+      b.classList.remove("is-armed");
+      onConfirm();
+      return;
+    }
+    b.classList.add("is-armed");
+    mount(b, icon(iconName, { size: 14 }), `${label}?`);
+    b.setAttribute("aria-label", `Confirm: ${title}`);
+    armed = setTimeout(() => {
+      armed = null;
+      b.classList.remove("is-armed");
+      mount(b, icon(iconName, { size: 14 }));
+      b.setAttribute("aria-label", title);
+    }, 4000);
+  });
+  return b;
+}
+
+async function control(action, speed) {
+  try {
+    await nightControl(action, speed);
+  } catch (err) {
+    toast(err?.message || `Could not ${action} the night`, { kind: "error" });
+  }
+}
+
+function renderControls(m) {
+  const el = $("#strip-controls");
+  if (m.kind === "final") {
+    const key = `final|${m.ev?.decidedBy}|${m.election?.id}`;
+    keyed(el, key, () =>
+      h(
+        "div",
+        { class: "lv-final" },
+        h("span", { class: "pill pill--final lv-final__pill", style: { "--party": "var(--surface-3)" } }, icon("lock", { size: 11, className: "pill__icon" }), "Final"),
+        h("div", { class: "lv-final__text" }, h("span", { class: "strip__label" }, "Certified result"), h("span", { class: "lv-final__sub" }, m.ev?.decidedBy === "contingent" ? "President chosen by contingent election" : m.noPresident ? "Midterm · House, Senate, local" : "Historic election · no live controls")),
+      ),
+    );
+    return;
+  }
+  const clk = m.clock;
+  if (!clk) {
+    keyed(el, "none", () => h("span", { class: "strip__label" }, m.kind === "loading" ? "" : "No election night available"));
+    return;
+  }
+  const status = clk.status;
+  const key = `${status}|${clk.speed}|${(clk.speeds || []).join(",")}`;
+  keyed(el, key, () => {
+    const finished = status === "finished";
+    const ready = status === "ready";
+    const running = status === "running";
+    const iconBtn = (name, action, title) =>
+      h("button", { class: "btn btn--sm btn--ghost lv-ctl", type: "button", title, "aria-label": title, disabled: finished, onclick: () => control(action) }, icon(name, { size: 14 }));
+    const primary = running
+      ? h("button", { class: "btn btn--sm lv-ctl lv-ctl--main", type: "button", title: "Pause the count", onclick: () => control("pause") }, icon("pause", { size: 13 }), "Pause")
+      : h(
+          "button",
+          { class: "btn btn--sm btn--primary lv-ctl lv-ctl--main", type: "button", disabled: finished, title: ready ? "Start election night" : "Resume the count", onclick: () => control(ready ? "start" : "resume") },
+          icon("play", { size: 13 }),
+          ready ? "Start" : "Resume",
+        );
+    return h(
+      "div",
+      { class: "playback lv-playback" },
+      primary,
+      iconBtn("step", "step", "Advance one reporting event"),
+      h(
+        "div",
+        { class: "segmented lv-speeds", role: "group", "aria-label": "Playback speed" },
+        (clk.speeds || [1, 2, 5, 10, 25]).map((s) =>
+          h("button", { type: "button", class: clk.speed === s ? "is-active" : "", "aria-pressed": clk.speed === s ? "true" : "false", disabled: finished, onclick: () => control("speed", s), title: `Playback speed ${s}×` }, `${s}×`),
+        ),
+      ),
+      confirmButton("Finish", "finish", "Instant finish: reveal every remaining result and certify the election", () => control("finish"), finished),
+      ready || finished ? null : confirmButton("Reset", "reset", "Reset the night to polls closing", () => control("reset"), false),
+    );
+  });
+}
+
+/** Update the national strip from the live night snapshot (or the final election summary). */
+function updateStrip() {
+  const { meta, electionId } = getState();
+  if (!meta) return;
+  renderPicker();
+  const m = stripModel();
+  renderEv(m);
+  renderCounters(m);
+  renderControls(m);
+  const liveLink = document.querySelector('.nav__link[data-path="/night"]');
+  if (liveLink) liveLink.classList.toggle("is-live", m.clock?.status === "running");
+  void electionId;
 }
 
 function highlightNav(path) {
@@ -182,7 +514,12 @@ async function onRoute({ route, params, query, path }) {
     if (token !== renderToken) return;
     const el = h("div", { class: "view" });
     mount(main, el);
-    cleanup = await mod.render(el, params, { query, electionId: getState().electionId, meta: getState().meta });
+    const result = await mod.render(el, params, { query, electionId: getState().electionId, meta: getState().meta });
+    if (token !== renderToken) {
+      if (typeof result === "function") result();
+      return;
+    }
+    cleanup = result;
     window.scrollTo(0, 0);
   } catch (err) {
     console.error(err);
@@ -203,8 +540,13 @@ async function boot() {
   const app = $("#app");
   mount(app, renderStrip(), renderNav(), h("main", { class: "main", id: "main" }));
   subscribe("night", updateStrip);
-  subscribe("meta", updateStrip);
+  subscribe("meta", () => {
+    // statuses changed (e.g. a night finished): final summaries must be refetched
+    for (const [id, v] of finalCache) if (v !== "loading" && getElection(id)?.status !== "final") finalCache.delete(id);
+    updateStrip();
+  });
   subscribe("electionId", updateStrip);
+  subscribe("settings", updateStrip);
   try {
     const [meta, settings] = await Promise.all([api.get("/api/meta"), api.get("/api/settings").catch(() => null)]);
     if (settings?.party_colors) setState({ settings: { ...getState().settings, partyColors: settings.party_colors } });

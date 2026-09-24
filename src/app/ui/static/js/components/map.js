@@ -11,9 +11,20 @@ const NL_BOUNDS = [
   [53.58, 7.25],
 ];
 
-export function electionMap(container, { layer, style, tooltip, onClick, height, outline = "provinces" }) {
+/**
+ * Optional (additive) options: `filter(feature)` keeps only matching features; `outlineFilter`
+ * likewise for the outline layer; `outlineStyle` (object or feature→object) overrides the outline
+ * look (re-applied by restyle()); `hoverStyle` overrides the hover highlight and brings the
+ * hovered feature to the front; `label` sets an accessible name on the map region.
+ */
+export function electionMap(container, { layer, style, tooltip, onClick, height, outline = "provinces", filter, outlineFilter, outlineStyle, hoverStyle, label }) {
   const el = h("div", { class: "map", style: height ? { "--map-h": `${height}px` } : undefined });
+  if (label) {
+    el.setAttribute("role", "region");
+    el.setAttribute("aria-label", label);
+  }
   container.appendChild(el);
+  const outlineCss = (f) => ({ weight: 1.6, color: "rgba(255,255,255,0.55)", fill: false, ...(typeof outlineStyle === "function" ? outlineStyle(f) : outlineStyle || {}) });
   const map = L.map(el, {
     zoomControl: true,
     attributionControl: true,
@@ -33,17 +44,23 @@ export function electionMap(container, { layer, style, tooltip, onClick, height,
   const ready = (async () => {
     const data = await api.get(`/api/geo/${layer}.geojson`, { cache: true });
     geo = L.geoJSON(data, {
+      filter: filter || undefined,
       style: (f) => ({ weight: 0.6, color: "rgba(8,13,25,0.55)", fillOpacity: 0.92, ...(styleFn ? styleFn(f) : {}) }),
       onEachFeature: (f, lyr) => {
         if (tooltipFn) lyr.bindTooltip(() => tooltipFn(f), { sticky: true, className: "nl-tip", direction: "top", opacity: 1 });
-        lyr.on("mouseover", () => lyr.setStyle({ weight: 2, color: "#ffffff" }));
+        lyr.on("mouseover", () => {
+          if (hoverStyle) {
+            lyr.setStyle(typeof hoverStyle === "function" ? hoverStyle(f) : hoverStyle);
+            lyr.bringToFront();
+          } else lyr.setStyle({ weight: 2, color: "#ffffff" });
+        });
         lyr.on("mouseout", () => geo.resetStyle(lyr));
         if (onClick) lyr.on("click", () => onClick(f));
       },
     }).addTo(map);
     if (outline && outline !== layer) {
       const o = await api.get(`/api/geo/${outline}.geojson`, { cache: true });
-      outlineLayer = L.geoJSON(o, { interactive: false, style: { weight: 1.6, color: "rgba(255,255,255,0.55)", fill: false } }).addTo(map);
+      outlineLayer = L.geoJSON(o, { interactive: false, filter: outlineFilter || undefined, style: outlineStyle ? outlineCss : { weight: 1.6, color: "rgba(255,255,255,0.55)", fill: false } }).addTo(map);
     }
     const b = geo.getBounds();
     if (b.isValid()) map.fitBounds(b, { padding: [8, 8] });
@@ -59,6 +76,7 @@ export function electionMap(container, { layer, style, tooltip, onClick, height,
       if (newStyle) styleFn = newStyle;
       if (newTooltip) tooltipFn = newTooltip;
       if (geo) geo.setStyle((f) => ({ weight: 0.6, color: "rgba(8,13,25,0.55)", fillOpacity: 0.92, ...(styleFn ? styleFn(f) : {}) }));
+      if (outlineLayer && outlineStyle) outlineLayer.setStyle(outlineCss);
     },
     fitTo(filterFn) {
       if (!geo) return;

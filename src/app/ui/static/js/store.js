@@ -38,3 +38,22 @@ export function subscribe(key, fn) {
 export function partyColor(code, fallback) {
   return state.settings.partyColors?.[code] || fallback || "var(--uncalled)";
 }
+
+/** ElectionBrief (meta.elections row) of an election id (default: the selected election). */
+export function getElection(id = state.electionId) {
+  return (state.meta?.elections || []).find((e) => e.id === Number(id)) || null;
+}
+
+/**
+ * The night payload of an election if the store currently holds it (the poller only follows the
+ * selected election), else null.
+ */
+export function nightFor(id = state.electionId) {
+  const n = state.night;
+  return n && Number(n.election_id) === Number(id) ? n : null;
+}
+
+/** Statuses the API treats as decided (meta.decided_statuses), with the documented default. */
+export function decidedStatuses() {
+  return state.meta?.decided_statuses || ["CALLED", "FINAL", "PROJECTED_WINNER"];
+}

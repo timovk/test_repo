@@ -27,7 +27,9 @@ Method (full description in ``docs/RACE_CALLING.md`` §4):
    draw costs O(L²) regardless of the number of units.  ``make_rng(seed, "call", race_key,
    seq)`` drives the draws; win probability = share of draws won.  The number of draws is
    adaptive (``n_draws_min`` → ``n_draws`` → ``n_draws_max``) when an estimate is near a
-   threshold.
+   threshold — unless exact analytic bounds of the win probabilities (pairwise margins of the
+   same linearised model, Student-t mixture tails) already decide every threshold that could
+   change the status; the Monte-Carlo estimate is then projected into those bounds.
 6. **Mathematical certainty.**  The counted lead exceeds every ballot that could still be
    counted (eligible − counted in every incomplete unit).
 7. **State machine** (§3): POLLS_CLOSED (no results) → TOO_EARLY / LEAN / TOO_CLOSE →
@@ -40,8 +42,10 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
+from scipy.special import chdtri, ndtr
 
 from app.core.constitution import DECIDED_STATUSES, RaceStatus
 from app.core.errors import ElectionNightError
@@ -125,6 +129,198 @@ def _kv_int(keys: Sequence[str], arr: np.ndarray) -> dict[str, int]:
     return dict(zip(keys, np.asarray(arr, dtype=np.int64).tolist(), strict=True))
 
 
+# --------------------------------------------------------------------------- analytic bounds
+#: Absolute allowance for the numerical error of the analytic probabilities (the quadrature
+#: below is accurate to ~1e-12 for every tail df > 2).
+BOUNDS_EPS = 2e-6
+
+
+@lru_cache(maxsize=16)
+def _chi2_grid(df: float) -> tuple[np.ndarray, np.ndarray]:
+    """Nodes ``u`` and weights of ``E[g(χ²_df)] ≈ Σ w·g(u)``: the trapezoid rule on a uniform grid
+    in ``log u`` between the 1e-15 quantiles (spectrally accurate for these smooth integrands
+    that decay doubly exponentially at both ends; ~90 nodes for df = 5)."""
+    lo = max(-40.0, math.log(max(float(chdtri(df, 1.0 - 1e-15)), 1e-300)))
+    hi = math.log(float(chdtri(df, 1e-15)))
+    h = min(0.2, 0.7 * math.sqrt(2.0 / df))
+    w = lo + h * np.arange(math.ceil((hi - lo) / h) + 1)
+    u = np.exp(w)
+    logc = -(df / 2.0) * math.log(2.0) - math.lgamma(df / 2.0)
+    return u, np.exp(logc + (df / 2.0) * w - u / 2.0) * h
+
+
+def _tail_le(mean: np.ndarray, s1: np.ndarray, s2: np.ndarray, df: float | None) -> np.ndarray:
+    """``P(mean + s·s1·Z1 + s2·Z2 ≤ 0)`` element-wise, ``Z1, Z2 ~ N(0, 1)`` independent and
+    ``s = sqrt(df / χ²_df)`` (the Student-t scale of the race swing; ``df=None``: ``s = 1``).
+    Degenerate entries (``s1 = s2 = 0``) are 1 when ``mean ≤ 0`` and 0 otherwise."""
+    degenerate = (s1 <= 0.0) & (s2 <= 0.0)
+    if df is None:
+        sd = np.sqrt(s1 * s1 + s2 * s2)
+        out = ndtr(-mean / np.where(degenerate, 1.0, sd))
+    else:
+        u, w = _chi2_grid(float(df))
+        den = np.sqrt((df * s1 * s1)[:, None] + u * (s2 * s2)[:, None])
+        out = ndtr(-mean[:, None] * np.sqrt(u) / np.where(den > 0.0, den, 1.0)) @ w
+    out = np.where(degenerate, (mean <= 0.0).astype(np.float64), out)
+    return np.clip(out, 0.0, 1.0)
+
+
+def _win_bounds(
+    mu: np.ndarray,
+    swing: np.ndarray,
+    noise: np.ndarray,
+    counted: np.ndarray,
+    df: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Exact bounds ``lo ≤ P(line k wins) ≤ hi`` of the projection model's draws.
+
+    A draw is ``T' = max(T, counted)`` with ``T = mu + s·(z₁ @ swing) + z₂ @ noise`` (element-wise
+    clip at the counted votes; ``swing``/``noise`` are (·, L) factor matrices with the lines as
+    columns, ``s`` the Student-t scale).  Every linear functional ``aᵀT`` is
+    ``aᵀmu + s·σ₁Z₁ + σ₂Z₂``, whose tail :func:`_tail_le` evaluates exactly.  Then
+
+    * ``P(T'_j ≥ T'_k) ≤ P(T_j ≥ T_k) + 1[c_j ≥ c_k]·P(T_k ≤ c_j)``, so
+      ``P(k loses) ≤ Σ_j`` of these (union bound) → ``lo``;
+    * ``P(k wins) ≤ P(T'_k ≥ T'_j) ≤ P(T_k ≥ T_j) + 1[c_k ≥ c_j]·P(T_j ≤ c_k)`` for every rival
+      ``j`` → ``hi`` (the minimum over ``j``).
+
+    For races decided between two lines the bounds are nearly equal; :data:`BOUNDS_EPS` widens
+    them by (much more than) the quadrature error.
+    """
+    L = len(mu)
+    if L == 1:
+        return np.ones(1), np.ones(1)
+    iu, ju = np.triu_indices(L, 1)
+    # P(T_c ≤ c_j) is needed for every ordered pair with c_j ≥ c_k (k ≠ j)
+    kk, jj = np.nonzero((counted[None, :] >= counted[:, None]) & ~np.eye(L, dtype=bool))
+    d_sw = swing[:, iu] - swing[:, ju]
+    d_nz = noise[:, iu] - noise[:, ju]
+    sd1 = np.sqrt((swing * swing).sum(axis=0))
+    sd2 = np.sqrt((noise * noise).sum(axis=0))
+    P = len(iu)
+    probs = _tail_le(
+        np.concatenate([mu[iu] - mu[ju], mu[kk] - counted[jj]]),
+        np.concatenate([np.sqrt((d_sw * d_sw).sum(axis=0)), sd1[kk]]),
+        np.concatenate([np.sqrt((d_nz * d_nz).sum(axis=0)), sd2[kk]]),
+        df,
+    )
+    p_le = probs[:P]  # P(T_k ≤ T_j) for k < j
+    le = np.zeros((L, L))  # le[k, j] = P(T_k ≤ T_j)
+    le[iu, ju] = p_le
+    # P(T_j ≤ T_k) = 1 − P(T_k < T_j) = 1 − P(T_k ≤ T_j) for a continuous difference; an exact
+    # tie without uncertainty counts as both "≤" (conservative for both bounds)
+    tie = (d_sw == 0.0).all(axis=0) & (d_nz == 0.0).all(axis=0) & (mu[iu] == mu[ju])
+    le[ju, iu] = np.where(tie, 1.0, 1.0 - p_le)
+    below = np.zeros((L, L))  # below[k, j] = P(T_k ≤ c_j) where c_j ≥ c_k, else 0
+    below[kk, jj] = probs[P:]
+    off = ~np.eye(L, dtype=bool)
+    lo = 1.0 - np.where(off, le + below, 0.0).sum(axis=1)
+    hi = np.where(off, le.T + below.T, np.inf).min(axis=1)
+    lo = np.clip(lo - BOUNDS_EPS, 0.0, 1.0)
+    hi = np.clip(hi + BOUNDS_EPS, 0.0, 1.0)
+    return lo, np.maximum(hi, lo)
+
+
+def _project_into(p: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+    """The probability vector closest to ``p`` in the sense ``clip(p + λ, lo, hi)`` that sums to 1
+    (``λ`` solved exactly: the sum is piecewise linear in ``λ``).  Returns ``p`` unchanged when the
+    bounds cannot hold a probability vector (numerically inconsistent input)."""
+    if lo.sum() > 1.0 + 1e-9 or hi.sum() < 1.0 - 1e-9:
+        return p
+    bps = np.sort(np.concatenate([lo - p, hi - p]))
+    g = np.clip(p[None, :] + bps[:, None], lo, hi).sum(axis=1)
+    i = int(np.searchsorted(g, 1.0))
+    if i == 0:
+        lam = float(bps[0])
+    elif i >= len(bps):
+        lam = float(bps[-1])
+    else:
+        g0, g1 = float(g[i - 1]), float(g[i])
+        lam = (
+            float(bps[i]) if g1 <= g0 else float(bps[i - 1] + (bps[i] - bps[i - 1]) * (1.0 - g0) / (g1 - g0))
+        )
+    out = np.clip(p + lam, lo, hi)
+    s = out.sum()
+    return out / s if s > 0 else p
+
+
+# --------------------------------------------------------------------------- per-race invariants
+@dataclass
+class _Invariants:
+    """Quantities that depend only on a race's expectation, eligible voters and clusters —
+    computed once per race when the caller passes a ``RaceProgress.cache`` dict."""
+
+    refs: tuple  # the source arrays (identity check of the cache)
+    e: np.ndarray  # (n, L) normalised expected shares
+    x: np.ndarray  # (n,) expected ballots (finite, ≥ 0)
+    x_total: float
+    exp_race: np.ndarray  # (L,) expected race shares
+    el: np.ndarray  # (n,) int64 eligible voters
+    cl: np.ndarray  # (n,) compact cluster id
+    M: int
+    #: ``np.add.reduceat`` offsets when the units are grouped by cluster (ids 0..M−1 in order,
+    #: every cluster non-empty); None → bincount group sums.
+    starts: np.ndarray | None
+    n_clusters_arg: int | None = None  # ``RaceProgress.n_clusters`` the ids were built with
+
+    def csum(self, vals: np.ndarray) -> np.ndarray:
+        """Per-cluster sums of (n,) or (n, K) values → (M,) / (M, K)."""
+        if self.starts is not None:
+            return np.add.reduceat(vals, self.starts, axis=0)
+        return _gsum(self.cl, vals, self.M)
+
+
+def _invariants(progress: RaceProgress) -> _Invariants:
+    refs = (progress.expected_shares, progress.expected_ballots, progress.eligible, progress.unit_cluster)
+    cache = progress.cache
+    if cache is not None:
+        inv = cache.get("invariants")
+        if (
+            isinstance(inv, _Invariants)
+            and len(inv.refs) == len(refs)
+            and all(a is b for a, b in zip(inv.refs, refs, strict=True))
+            and inv.n_clusters_arg == progress.n_clusters
+            and len(inv.x) == len(progress.reported_fraction)
+        ):
+            return inv
+    n = len(progress.reported_fraction)
+    if progress.unit_cluster is None:
+        cl = np.arange(n, dtype=np.int64)
+        M = n
+    elif progress.n_clusters is not None:
+        cl = np.asarray(progress.unit_cluster, dtype=np.int64)
+        M = int(progress.n_clusters)
+    else:
+        _, cl = np.unique(progress.unit_cluster, return_inverse=True)
+        cl = cl.astype(np.int64)
+        M = int(cl.max()) + 1 if n else 0
+    e = _expected_composition(progress.expected_shares)
+    x = _finite_nonneg(progress.expected_ballots)
+    L = e.shape[1]
+    exp_race = x @ e
+    exp_race = exp_race / exp_race.sum() if exp_race.sum() > 0 else np.full(L, 1.0 / L)
+    starts = None
+    if n and cl[0] == 0 and int(cl[-1]) == M - 1:
+        step = np.diff(cl)
+        if ((step == 0) | (step == 1)).all():
+            starts = np.flatnonzero(np.r_[True, step == 1])
+    inv = _Invariants(
+        refs=refs,
+        e=e,
+        x=x,
+        x_total=float(x.sum()),
+        exp_race=exp_race,
+        el=np.asarray(progress.eligible, dtype=np.int64),
+        cl=cl,
+        M=M,
+        starts=starts,
+        n_clusters_arg=progress.n_clusters,
+    )
+    if cache is not None:
+        cache["invariants"] = inv
+    return inv
+
+
 # --------------------------------------------------------------------------- inputs / outputs
 @dataclass
 class RaceProgress:
@@ -149,6 +345,12 @@ class RaceProgress:
     n_clusters: int | None = None
     #: RaceType value (optional; forwarded to the recount check).
     race_type: str | None = None
+    #: Optional scratch dict for per-race invariants (normalised expectation, clusters, …).  A
+    #: caller that evaluates the same race repeatedly may pass the same dict every time; it is
+    #: only reused while ``expected_shares``, ``expected_ballots``, ``eligible`` and
+    #: ``unit_cluster`` are the *same array objects* (they must not be modified in place).  The
+    #: result of an evaluation never depends on it.
+    cache: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def n_units(self) -> int:
@@ -344,7 +546,9 @@ class _Model:
     """Raw output of the projection model (formatted lazily into evidence)."""
 
     mu: np.ndarray  # (L,) mean final valid votes
-    wins: np.ndarray  # (L,) win counts over the draws
+    prob: np.ndarray  # (L,) win probabilities (Monte Carlo, projected into the bounds if any)
+    prob_mc: np.ndarray  # (L,) share of draws won
+    bounds: tuple[np.ndarray, np.ndarray] | None  # analytic (lo, hi) when they were needed
     n_draws: int
     q05: np.ndarray  # (L,) 5th percentile of final shares
     q95: np.ndarray  # (L,) 95th percentile of final shares
@@ -402,16 +606,22 @@ class RaceCaller:
             raise ElectionNightError(f"{progress.race_key}: race has no ballot lines")
         counted = np.asarray(progress.counted_votes, dtype=np.int64)
         f = np.asarray(progress.reported_fraction, dtype=np.float64)
-        f = np.clip(np.where(np.isfinite(f), f, 0.0), 0.0, 1.0)
+        if not (f.size == 0 or (f.min() >= 0.0 and f.max() <= 1.0)):  # NaN fails both tests
+            f = np.clip(np.where(np.isfinite(f), f, 0.0), 0.0, 1.0)
         cb = np.asarray(progress.counted_ballots, dtype=np.int64)
-        x = _finite_nonneg(progress.expected_ballots)
-        el = np.asarray(progress.eligible, dtype=np.int64)
+        # per-race invariants: cached across evaluations when the caller passes a cache dict
+        inv = _invariants(progress) if progress.cache is not None else None
+        if inv is not None:
+            x, el, X_tot = inv.x, inv.el, inv.x_total
+        else:
+            x = _finite_nonneg(progress.expected_ballots)
+            el = np.asarray(progress.eligible, dtype=np.int64)
+            X_tot = float(x.sum())
         n = len(f)
 
         tot = counted.sum(axis=0)
         C = int(tot.sum())
         cb_tot = int(cb.sum())
-        X_tot = float(x.sum())
         if X_tot > 0:
             rshare = float(f @ x) / X_tot
         elif el.sum() > 0:
@@ -430,8 +640,7 @@ class RaceCaller:
         leader_key = keys[lead_i] if C > 0 else None
         margin_votes = int(tot[lead_i] - (tot[second_i] if second_i is not None else 0)) if C > 0 else 0
         margin_pct = 100.0 * margin_votes / C if C > 0 else 0.0
-        remaining = f < 1.0
-        outstanding_upper = int(np.maximum(el[remaining] - cb[remaining], 0).sum())
+        outstanding_upper = int(np.maximum(el - cb, 0) @ (f < 1.0))
         common = {
             "race_key": progress.race_key,
             "seq": seq,
@@ -466,8 +675,10 @@ class RaceCaller:
         math_certain = has_results and C > 0 and (uncontested or margin_votes > outstanding_upper)
         prior_i = keys.index(prior.key) if prior is not None and prior.key in keys else None
         targets = self._refine_targets(has_results, rshare, prior, prior_i)
-        m = self._project(progress, keys, counted, f, cb, x, tot, C, seed, seq, targets, lead_i, second_i)
-        prob = m.wins / m.n_draws
+        if inv is None:
+            inv = _invariants(progress)
+        m = self._project(progress, inv, keys, counted, f, cb, tot, C, seed, seq, targets, lead_i, second_i)
+        prob = m.prob
         mu = m.mu
         mu_tot = float(mu.sum())
         mu_order = np.argsort(-mu, kind="stable")
@@ -803,11 +1014,11 @@ class RaceCaller:
     def _project(
         self,
         progress: RaceProgress,
+        inv: _Invariants,
         keys: list[str],
         counted: np.ndarray,
         f: np.ndarray,
         cb: np.ndarray,
-        x: np.ndarray,
         tot: np.ndarray,
         C: int,
         seed: int,
@@ -821,34 +1032,43 @@ class RaceCaller:
         n = len(f)
         a = mc.pseudo_votes
         tot_f = tot.astype(np.float64)
-        # --- clusters
-        if progress.unit_cluster is None:
-            cl = np.arange(n)
-            M = n
-        elif progress.n_clusters is not None:
-            cl = np.asarray(progress.unit_cluster, dtype=np.int64)
-            M = int(progress.n_clusters)
-        else:
-            _, cl = np.unique(progress.unit_cluster, return_inverse=True)
-            M = int(cl.max()) + 1 if n else 0
-        # --- expected shares (normalised, floored; corrupt rows → uniform)
-        e = _expected_composition(progress.expected_shares)
-        exp_race = x @ e
-        exp_race = exp_race / exp_race.sum() if exp_race.sum() > 0 else np.full(L, 1.0 / L)
+        e, x, M = inv.e, inv.x, inv.M
 
         cv = counted.sum(axis=1).astype(np.float64)
         cb_tot = float(cb.sum())
         vr = float(C / cb_tot) if cb_tot > 0 and C > 0 else mc.valid_rate_prior
         vr = min(max(vr, 0.5), 1.0)
 
-        # --- turnout ratio (log, shrunk toward 1)
+        # --- per-unit quantities, summed per cluster in a single pass (one reduceat / bincount)
         fx = f * x
-        rep = f > 0
+        has = cv > 0
+        unrep_w = np.where(has, 0.0, x * (1.0 - f))  # expected ballots not yet counted
+        part = has & (f < 1.0)
+        any_part = bool(part.any())
+        c0 = 3 * L
+        K = c0 + 4 + (L + 2 if any_part else 0)
+        W = np.empty((n, K))
+        W[:, :L] = counted
+        np.multiply(cv[:, None], e, out=W[:, L : 2 * L])
+        np.multiply(unrep_w[:, None], e, out=W[:, 2 * L : c0])
+        W[:, c0] = fx
+        W[:, c0 + 1] = cv * cv
+        W[:, c0 + 2] = unrep_w
+        W[:, c0 + 3] = unrep_w * unrep_w
+        if any_part:
+            rem_scale = np.where(part, (1.0 - f) / np.maximum(f, 1e-12), 0.0)
+            rem_valid = cv * rem_scale
+            np.multiply(counted, rem_scale[:, None], out=W[:, c0 + 4 : c0 + 4 + L])
+            W[:, c0 + 4 + L] = rem_valid
+            W[:, c0 + 5 + L] = rem_valid * rem_valid
+        S = inv.csum(W)
+
+        # --- turnout ratio (log, shrunk toward 1)
         sp2 = mc.turnout_prior_sd**2
-        xr = float(fx[rep].sum())
+        xr = float(fx.sum())
         if xr > 0 and cb_tot > 0:
             log_tau_raw = math.log(cb_tot / xr)
-            w_cl = np.bincount(cl[rep], weights=fx[rep], minlength=M)
+            w_cl = S[:, c0]
             H_t = float((w_cl @ w_cl) / max(w_cl.sum(), 1e-12) ** 2)
             v_tau = mc.turnout_cluster_sd**2 * H_t + 1.0 / max(cb_tot, 1.0)
             k_tau = sp2 / (sp2 + v_tau)
@@ -866,12 +1086,9 @@ class RaceCaller:
         var_rho = np.full((M, L), c2)
         n_clusters_rep = 0
         if C > 0:
-            has = cv > 0
-            idx = cl[has]
-            cvh = cv[has]
-            obs_m = _gsum(idx, counted[has].astype(np.float64), M)
+            obs_m = S[:, :L]
             C_m = obs_m.sum(axis=1)
-            Ew = _gsum(idx, cvh[:, None] * e[has], M)
+            Ew = S[:, L : 2 * L]
             rc = C_m > 0
             n_clusters_rep = int(rc.sum())
             Cm = C_m[rc]
@@ -894,7 +1111,7 @@ class RaceCaller:
             # per-cluster residuals (shrunk) — they inform the cluster's uncounted remainder
             P_rep = _softmax(logE + delta_hat)
             rho_raw = np.log((obs_m[rc] + a) / (Cm[:, None] * P_rep + a))
-            H_m = np.bincount(idx, weights=cvh * cvh, minlength=M)[rc] / (Cm * Cm)
+            H_m = S[rc, c0 + 1] / (Cm * Cm)
             v_m = u2 * H_m[:, None] + 1.0 / (Cm[:, None] * np.maximum(P_rep, 1e-3) + 1.0)
             k_m = c2 / (c2 + v_m) if c2 > 0 else np.zeros_like(v_m)
             rho[rc] = k_m * rho_raw
@@ -906,43 +1123,43 @@ class RaceCaller:
             v_post = np.full(L, s2)
 
         # --- outstanding vote per cluster: unreported units and partial remainders
-        unrep_w = np.where(cv > 0, 0.0, x * (1.0 - f))  # expected ballots not yet counted
-        part = (cv > 0) & (f < 1.0)
-        rem_scale = np.where(part, (1.0 - f) / np.maximum(f, 1e-12), 0.0)
-        rem_valid = cv * rem_scale
-        XU = np.bincount(cl, weights=unrep_w, minlength=M)
+        XU = S[:, c0 + 2]
         out_cl = XU > 0
         XUo = XU[out_cl]
-        eU = _gsum(cl, unrep_w[:, None] * e, M)[out_cl] / XUo[:, None]
-        H_out = np.bincount(cl, weights=unrep_w * unrep_w, minlength=M)[out_cl] / (XUo * XUo)
+        eU = S[out_cl, 2 * L : c0] / XUo[:, None]
+        H_out = S[out_cl, c0 + 3] / (XUo * XUo)
         V = tau * vr * XUo  # expected valid votes outstanding per cluster
         Pm = _softmax(np.log(np.maximum(eU, 1e-12)) + delta_hat + rho[out_cl])
         a_vec = V @ Pm
         mu = tot_f + a_vec
         Sig = np.zeros((L, L))
-        if part.any():
-            XP = np.bincount(cl, weights=rem_valid, minlength=M)
+        if any_part:
+            XP = S[:, c0 + 4 + L]
             pc = XP > 0
-            comp_p = _gsum(cl[part], counted[part] * rem_scale[part, None], M)[pc]
+            comp_p = S[pc, c0 + 4 : c0 + 4 + L]
             XPp = XP[pc]
             oP = comp_p / XPp[:, None]
             mu = mu + comp_p.sum(axis=0)
-            HP = np.bincount(cl, weights=rem_valid * rem_valid, minlength=M)[pc] / (XPp * XPp)
+            HP = S[pc, c0 + 5 + L] / (XPp * XPp)
             WP = XPp * XPp * mc.partial_sd**2 * HP
             QP = oP * oP * WP[:, None]
             rP = (oP * oP).sum(axis=1) * WP
             Sig += np.diag(QP.sum(axis=0)) - QP.T @ oP - oP.T @ QP + (oP * rP[:, None]).T @ oP
+            partial_ballots = float(cb @ rem_scale)
+            partial_valid = float(rem_valid.sum())
+        else:
+            partial_ballots = partial_valid = 0.0
 
         # --- linearised covariance: swing (common), turnout (common), cluster + unit noise
         G = np.diag(a_vec) - (Pm * V[:, None]).T @ Pm  # ∂ votes / ∂ swing
         sd_sw = np.sqrt(v_post + mc.differential_sd**2)
         s2m = var_rho[out_cl] + u2 * H_out[:, None]
-        W = V * V
+        Wv = V * V
         Q = Pm * Pm * s2m
-        QW = Q * W[:, None]
-        r = Q.sum(axis=1) * W
+        QW = Q * Wv[:, None]
+        r = Q.sum(axis=1) * Wv
         Sig += np.diag(QW.sum(axis=0)) - QW.T @ Pm - Pm.T @ QW + (Pm * r[:, None]).T @ Pm
-        Sig += mc.turnout_cluster_sd**2 * (Pm * W[:, None]).T @ Pm
+        Sig += mc.turnout_cluster_sd**2 * (Pm * Wv[:, None]).T @ Pm
         Sig = 0.5 * (Sig + Sig.T)
         lam, vec = np.linalg.eigh(Sig)
         BcT = (vec * np.sqrt(np.clip(lam, 0.0, None))[None, :]).T
@@ -998,15 +1215,29 @@ class RaceCaller:
 
         draws = _draw(cfg.n_draws_min)
         wins = _wins(draws)
+        bounds: tuple[np.ndarray, np.ndarray] | None = None
+        settled = False
         for target, need in ((cfg.n_draws, _near), (cfg.n_draws_max, _confirm)):
             D = draws.shape[0]
-            if target <= D or not need(wins, D):
+            if settled or target <= D or not need(wins, D):
                 continue
+            if bounds is None:
+                # a threshold is within the Monte-Carlo error: the exact bounds of the same
+                # model often decide it already, and then no further draw is needed
+                bounds = _win_bounds(mu, GS, np.vstack([BcT, tvec[None, :]]), tot_f, df)
+                if all(np.isfinite(b).all() for b in bounds):
+                    settled = self._settled(targets, *bounds)
+                else:  # defensive: never expected
+                    bounds = None
+                if settled:
+                    continue
             extra = _draw(target - D)
             draws = np.vstack([draws, extra])
             wins = wins + _wins(extra)
 
         D = draws.shape[0]
+        prob_mc = wins / D
+        prob = prob_mc if bounds is None else _project_into(prob_mc, *bounds)
         k05, k95 = round(0.05 * (D - 1)), round(0.95 * (D - 1))
         shares = np.partition(draws / np.maximum(draws.sum(axis=1, keepdims=True), 1e-9), [k05, k95], axis=0)
         mo = np.argsort(-mu, kind="stable")
@@ -1017,9 +1248,12 @@ class RaceCaller:
             gain_q995 = float(np.partition(gain, kq)[kq])
         else:
             gain_q995 = 0.0
+        XU_tot = float(XU.sum())
         return _Model(
             mu=mu,
-            wins=wins,
+            prob=prob,
+            prob_mc=prob_mc,
+            bounds=bounds,
             n_draws=D,
             q05=shares[k05],
             q95=shares[k95],
@@ -1028,8 +1262,8 @@ class RaceCaller:
             clusters_total=M,
             clusters_reporting=n_clusters_rep,
             clusters_outstanding=int(out_cl.sum()),
-            exp_race=exp_race,
-            expected_ballots=float(x.sum()),
+            exp_race=inv.exp_race,
+            expected_ballots=inv.x_total,
             tau_raw=math.exp(log_tau_raw),
             tau=tau,
             k_tau=k_tau,
@@ -1040,10 +1274,22 @@ class RaceCaller:
             k_sw=k_sw,
             v_post=v_post,
             sd_sw=sd_sw,
-            outstanding_ballots=tau * float(XU.sum()) + float((cb * rem_scale).sum()),
-            unreported_expected_ballots=float(XU.sum()),
-            partial_remaining_valid=float(rem_valid.sum()),
+            outstanding_ballots=tau * XU_tot + partial_ballots,
+            unreported_expected_ballots=XU_tot,
+            partial_remaining_valid=partial_valid,
         )
+
+    @staticmethod
+    def _settled(targets: list[tuple[int | None, float]], lo: np.ndarray, hi: np.ndarray) -> bool:
+        """True when the bounds put every relevant threshold on a known side: the status the
+        state machine reaches no longer depends on Monte-Carlo noise."""
+        for i, t in targets:
+            if i is None:
+                if not (float(lo.max()) >= t or float(hi.max()) < t):
+                    return False
+            elif not (float(lo[i]) >= t or float(hi[i]) < t):
+                return False
+        return True
 
     # ------------------------------------------------------------------ helpers
     @staticmethod

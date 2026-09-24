@@ -4,7 +4,7 @@
  */
 import { h, mount } from "../dom.js";
 
-export function dataTable(columns, rows, { sortKey, sortDir = "desc", onRowClick, rowHref, maxHeight, empty = "No data" } = {}) {
+export function dataTable(columns, rows, { sortKey, sortDir = "desc", onRowClick, rowHref, maxHeight, empty = "No data", rowClass, caption } = {}) {
   const wrap = h("div", { class: "table-wrap", style: maxHeight ? { "--table-max-h": `${maxHeight}px` } : undefined });
   let key = sortKey;
   let dir = sortDir;
@@ -39,6 +39,16 @@ export function dataTable(columns, rows, { sortKey, sortDir = "desc", onRowClick
               class: [c.align === "r" && "r", key === c.key && "is-sorted", key === c.key && dir === "asc" && "asc"],
               "data-sort": c.sort === false ? undefined : c.key,
               style: c.width ? { width: c.width } : undefined,
+              scope: "col",
+              tabindex: c.sort === false ? undefined : "0",
+              "aria-sort": key === c.key ? (dir === "asc" ? "ascending" : "descending") : undefined,
+              onkeydown: c.sort === false ? undefined : (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.currentTarget.click();
+                  wrap.querySelector(`th[data-sort="${c.key}"]`)?.focus();
+                }
+              },
               onclick: c.sort === false ? undefined : () => {
                 if (key === c.key) dir = dir === "asc" ? "desc" : "asc";
                 else {
@@ -62,6 +72,7 @@ export function dataTable(columns, rows, { sortKey, sortDir = "desc", onRowClick
               "tr",
               {
                 "data-href": rowHref ? rowHref(row) : undefined,
+                class: rowClass ? rowClass(row) : undefined,
                 onclick: onRowClick ? () => onRowClick(row) : rowHref ? () => (location.hash = rowHref(row)) : undefined,
               },
               columns.map((c) => {
@@ -73,7 +84,7 @@ export function dataTable(columns, rows, { sortKey, sortDir = "desc", onRowClick
           )
         : h("tr", null, h("td", { colspan: columns.length, class: "muted" }, empty)),
     );
-    mount(wrap, h("table", { class: "data" }, thead, tbody));
+    mount(wrap, h("table", { class: "data" }, caption ? h("caption", { class: "sr-only" }, caption) : null, thead, tbody));
   }
   render();
   wrap.update = (newRows) => {

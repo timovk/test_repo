@@ -55,3 +55,26 @@ export function partyChip(code, { color, name } = {}) {
 export function toWin(majority = 88) {
   return h("span", { class: "to-win" }, `${majority} TO WIN`);
 }
+
+const FLIP_TITLES = {
+  flip: "Changed party compared with the previous holder",
+  hold: "Same party as the previous holder",
+  new: "No previous holder (new seat / first election)",
+};
+
+/** Flip / hold / new badge from an API `flip_status` (null → nothing). */
+export function flipBadge(flipStatus, { party } = {}) {
+  if (!flipStatus) return null;
+  const s = String(flipStatus).toLowerCase();
+  return h(
+    "span",
+    { class: `flipb flipb--${s}`, title: FLIP_TITLES[s] || s, style: party ? { "--party": party } : undefined },
+    s === "flip" ? icon("flip", { size: 10, className: "pill__icon" }) : null,
+    s.toUpperCase(),
+  );
+}
+
+/** Pulsing LIVE marker (or a static label for other phases). */
+export function liveBadge(label = "LIVE") {
+  return h("span", { class: "livebadge" }, h("span", { class: "live-dot", "aria-hidden": "true" }), label);
+}

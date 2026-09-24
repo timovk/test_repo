@@ -86,7 +86,7 @@ export function histogram({ bins, color = "var(--seq-4)", marker, xLabel, yForma
  * Multi-series line chart with optional bands and a crosshair tooltip.
  * series: [{key,label,color,points:[{x:Date|number,y:number,lo?:number,hi?:number}]}]
  */
-export function lineChart({ series, width = 720, height = 260, yFormat = (v) => `${v.toFixed(0)}%`, xFormat = (x) => (x instanceof Date ? x.toISOString().slice(5, 10) : String(x)), yDomain }) {
+export function lineChart({ series, width = 720, height = 260, yFormat = (v) => `${v.toFixed(0)}%`, xFormat = (x) => (x instanceof Date ? x.toISOString().slice(5, 10) : String(x)), yDomain, xTicks, markers = false, label }) {
   const m = { t: 12, r: 12, b: 26, l: 42 };
   const iw = width - m.l - m.r;
   const ih = height - m.t - m.b;
@@ -112,6 +112,8 @@ export function lineChart({ series, width = 720, height = 260, yFormat = (v) => 
       paths.push(svg("path", { d: `M${up} L${down} Z`, fill: s.color, "fill-opacity": 0.12, stroke: "none" }));
     }
     paths.push(svg("path", { d: `M${pts.map((p) => `${X(p.x)},${Y(p.y)}`).join(" L")}`, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round" }));
+    // Optional end/point markers (r=4 with a 2px surface ring) for sparse series.
+    if (markers) for (const p of pts) paths.push(svg("circle", { cx: X(p.x), cy: Y(p.y), r: 4, fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2 }));
   }
   const cross = svg("line", { y1: m.t, y2: m.t + ih, stroke: "var(--text-muted)", "stroke-width": 1, visibility: "hidden" });
   const overlay = svg("rect", {
@@ -149,7 +151,7 @@ export function lineChart({ series, width = 720, height = 260, yFormat = (v) => 
       hideTip();
     },
   });
-  const xt = [xmin, xmin + (xmax - xmin) / 3, xmin + (2 * (xmax - xmin)) / 3, xmax];
+  const xt = xTicks ? xTicks.map(xv) : [xmin, xmin + (xmax - xmin) / 3, xmin + (2 * (xmax - xmin)) / 3, xmax];
   const sampleX = all[0].x instanceof Date;
   return h(
     "div",
@@ -157,7 +159,7 @@ export function lineChart({ series, width = 720, height = 260, yFormat = (v) => 
     series.length > 1 ? legend(series.map((s) => ({ label: s.label, color: s.color }))) : null,
     svg(
       "svg",
-      { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "line chart" },
+      { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": label || "line chart" },
       ...yt.map((v) => svg("line", { class: "gridline", x1: m.l, x2: width - m.r, y1: Y(v), y2: Y(v) })),
       svg("g", { class: "axis" }, ...yt.map((v) => svg("text", { x: m.l - 6, y: Y(v) + 3, "text-anchor": "end" }, yFormat(v)))),
       svg("g", { class: "axis" }, ...xt.map((v) => svg("text", { x: X(sampleX ? new Date(v) : v), y: height - 8, "text-anchor": "middle" }, xFormat(sampleX ? new Date(v) : v)))),
