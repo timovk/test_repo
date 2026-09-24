@@ -530,7 +530,7 @@ export async function render(el, params, ctx) {
     const ph = phase();
     if (ph === "finished" || ph === "final") return; // final: the call log provides the names
     try {
-      const full = await api.get(`/api/night/${id}/state?detail=full`);
+      const full = await api.get(`/api/night/${id}/state?detail=full`, { timeout: 180000 });
       S.index.addFullRaces(full?.snapshot?.races || []);
       refresh();
     } catch (err) {

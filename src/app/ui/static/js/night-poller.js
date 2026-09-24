@@ -70,7 +70,8 @@ async function fetchOnce() {
   const id = currentId;
   if (!id) return;
   try {
-    const st = await api.get(`/api/night/${id}/state?detail=summary`);
+    // The first request of a night builds it on the server (seconds, longer on slow machines).
+    const st = await api.get(`/api/night/${id}/state?detail=summary`, { timeout: 180000 });
     if (id !== currentId) return;
     publish(st);
   } catch (err) {
@@ -138,7 +139,8 @@ export function watchedElection() {
 /** Send a playback control action and publish the resulting state. */
 export async function nightControl(action, speed) {
   const id = currentId || getState().electionId;
-  const st = await api.post(`/api/night/${id}/control`, speed ? { action, speed } : { action });
+  // "finish" applies every remaining reporting event and certifies the result: allow it time.
+  const st = await api.post(`/api/night/${id}/control`, speed ? { action, speed } : { action }, { timeout: 300000 });
   if (Number(id) === Number(currentId)) publish(st, { authoritative: true });
   return st;
 }

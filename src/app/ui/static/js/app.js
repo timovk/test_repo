@@ -508,7 +508,12 @@ async function onRoute({ route, params, query, path }) {
   }
   document.title = `${route.title} · NL Federal Election Simulator`;
   const token = ++renderToken;
-  mount(main, h("div", { class: "state" }, h("div", { class: "skeleton", style: { width: "240px", height: "18px" } })));
+  const loading = connectingState("Loading…");
+  mount(main, loading);
+  const slowHint = setTimeout(() => {
+    if (token === renderToken && loading.isConnected)
+      mount(loading, h("div", { class: "skeleton", style: { width: "240px", height: "18px" } }), h("span", { class: "muted" }, "Still loading — the first visit to an election night prepares it on the server, which can take up to a minute on a slow machine."));
+  }, 6000);
   try {
     const mod = await import(`./views/${route.view}.js`);
     if (token !== renderToken) return;
@@ -525,6 +530,8 @@ async function onRoute({ route, params, query, path }) {
     console.error(err);
     if (token !== renderToken) return;
     mount(main, h("div", { class: "state" }, h("h2", null, "Could not load this page"), h("p", { class: "muted" }, String(err.message || err))));
+  } finally {
+    clearTimeout(slowHint);
   }
 }
 
@@ -534,11 +541,40 @@ export function selectElection(id) {
   watchNight(id);
 }
 
+/** Visible banner for unexpected errors (so a failure is never a silent endless spinner). */
+function showErrorBanner(message) {
+  let bar = document.getElementById("error-banner");
+  if (!bar) {
+    bar = h("div", { id: "error-banner", class: "error-banner", role: "alert" });
+    document.body.appendChild(bar);
+  }
+  mount(
+    bar,
+    h("strong", null, "Something went wrong: "),
+    h("span", null, String(message).slice(0, 400)),
+    h("button", { class: "btn btn--sm", onclick: () => bar.remove(), "aria-label": "Dismiss" }, "Dismiss"),
+  );
+}
+
+window.addEventListener("error", (e) => {
+  if (e?.message) showErrorBanner(e.message);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e?.reason;
+  if (r?.name === "AbortError") return;
+  showErrorBanner(r?.message || r || "unknown error");
+});
+
+function connectingState(text) {
+  return h("div", { class: "state" }, h("div", { class: "skeleton", style: { width: "240px", height: "18px" } }), h("span", { class: "muted" }, text));
+}
+
 async function boot() {
+  window.__nlfedBooted = true;
   const saved = safeStorage(() => localStorage.getItem(THEME_KEY));
   applyTheme(saved || "dark");
   const app = $("#app");
-  mount(app, renderStrip(), renderNav(), h("main", { class: "main", id: "main" }));
+  mount(app, renderStrip(), renderNav(), h("main", { class: "main", id: "main" }, connectingState("Connecting to the simulator…")));
   subscribe("night", updateStrip);
   subscribe("meta", () => {
     // statuses changed (e.g. a night finished): final summaries must be refetched
@@ -557,7 +593,17 @@ async function boot() {
     if (initial) selectElection(initial);
   } catch (err) {
     console.error(err);
-    mount($("#main"), h("div", { class: "state" }, h("h2", null, "Backend not reachable"), h("p", { class: "muted" }, "Start the server with `python -m app run` after `python -m app demo`.")));
+    mount(
+      $("#main"),
+      h(
+        "div",
+        { class: "state" },
+        h("h2", null, "Cannot load the simulator's data"),
+        h("p", { class: "muted" }, String(err?.message || err)),
+        h("p", { class: "muted" }, "Is `python -m app run` still running? Did `python -m app demo` finish with “validation ok”?"),
+        h("button", { class: "btn btn--primary", onclick: () => location.reload() }, "Retry"),
+      ),
+    );
     return;
   }
   startRouter(onRoute);

@@ -1129,3 +1129,23 @@ table.data tbody tr[data-href] {
     transition: none !important;
   }
 }
+
+/* Error banner (unexpected client errors are always shown, never silent) */
+.error-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(760px, calc(100vw - 32px));
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--status-critical);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+}
