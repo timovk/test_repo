@@ -261,6 +261,8 @@ def _op_remove_candidate(d: dict, e: Mapping[str, Any]) -> str:
 
 def _op_set(d: dict, e: Mapping[str, Any]) -> str:
     path, value = _req(e, "path", "value")
+    if not isinstance(path, str):
+        raise ScenarioError(f"path must be a dotted string, got {path!r}")
     if path.split(".")[0] == "scenario" and path.endswith("fictional"):
         raise ScenarioError("scenarios are always fictional")
     _set_path(d, str(path), copy.deepcopy(value))
@@ -309,6 +311,9 @@ def apply_edits(
             changes.append(fn(data, e))
         except ScenarioError as exc:
             raise ScenarioError(f"edit #{i} ({op}): {exc}") from exc
+        except (TypeError, ValueError, AttributeError, KeyError, IndexError) as exc:
+            # malformed edit payloads (e.g. from the API) are user errors, not crashes
+            raise ScenarioError(f"edit #{i} ({op}): malformed edit {dict(e)!r}: {exc}") from exc
     try:
         new = ScenarioDocument.model_validate(data)
     except PydanticValidationError as exc:

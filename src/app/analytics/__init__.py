@@ -15,18 +15,24 @@ SIMULATED results.
 
 from app.analytics.results import (
     INDEPENDENT_KEY,
+    JURISDICTION_LEVELS,
     LEVELS,
+    PROPORTIONAL_RACE_TYPES,
     RESULTS_COLUMNS,
     ResultsFrameError,
     build_results_frame,
+    results_frame_from_draw,
     validate_results_frame,
 )
 
 __all__ = [
     "INDEPENDENT_KEY",
+    "JURISDICTION_LEVELS",
     "LEVELS",
+    "PROPORTIONAL_RACE_TYPES",
     "RESULTS_COLUMNS",
     "ResultsFrameError",
     "build_results_frame",
+    "results_frame_from_draw",
     "validate_results_frame",
 ]

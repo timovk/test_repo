@@ -10,7 +10,9 @@ playback speed, pauses and steps change *when* content appears, never *what* app
 
 States: ``ready`` → ``running`` ⇄ ``paused`` → ``finished``.  ``now`` is any monotonic number
 of seconds (e.g. ``time.monotonic()`` or a POSIX timestamp) supplied by the caller, which makes
-the clock trivially testable and persistable (``to_dict`` / ``from_dict``).
+the clock trivially testable and persistable (``to_dict`` / ``from_dict``).  A clock that is
+persisted and restored in another process must use a clock shared by both (POSIX time, e.g.
+``time.time()``): ``time.monotonic()`` has an arbitrary per-boot origin.
 """
 
 from __future__ import annotations
@@ -152,14 +154,23 @@ class PlaybackClock:
             self.anchor_wall = float(now)
         self.speed = speed
 
-    def step(self, now: float | None = None) -> int:
-        """Advance exactly one event and pause there; returns the new target ``seq``.
+    def _require_now(self, action: str, now: float | None) -> None:
+        # a running clock's simulated time depends on ``now``: without it the clock would fall
+        # back to its anchor (time jumps backwards) or keep a stale anchor (time jumps forwards)
+        if self.state == PlaybackState.RUNNING and now is None:
+            raise ElectionNightError(f"{action} on a running clock needs the current time 'now'")
 
-        A running clock is paused first (at ``now``, default: its anchor)."""
+    def step(self, now: float | None = None) -> int:
+        """Advance to the next event time and pause there; returns the new target ``seq``.
+
+        Events sharing that time are revealed together.  A running clock is paused at ``now``
+        first (``now`` is required while running)."""
         if self.state == PlaybackState.FINISHED:
             return self.n_events
+        self._require_now("step()", now)
         if self.state == PlaybackState.RUNNING:
-            self.pause(self.anchor_wall if now is None else now)
+            assert now is not None
+            self.pause(now)
         k = int(np.searchsorted(self._times, self.anchor_sim, side="right"))
         if k >= self.n_events:
             self.finish()
@@ -174,7 +185,10 @@ class PlaybackClock:
         return seq
 
     def seek(self, sim_time_s: float, now: float | None = None) -> None:
-        """Jump to a simulated time (keeps RUNNING/PAUSED; READY becomes PAUSED)."""
+        """Jump to a simulated time (keeps RUNNING/PAUSED; READY/FINISHED become PAUSED).
+
+        ``now`` is required while running (the clock re-anchors there)."""
+        self._require_now("seek()", now)
         t = min(max(float(sim_time_s), 0.0), self.end_sim)
         self.anchor_sim = t
         if now is not None:

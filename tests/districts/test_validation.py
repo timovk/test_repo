@@ -23,7 +23,9 @@ def _mutable(plan):  # type: ignore[no-untyped-def]
 
 def test_valid_plan(fine_plan, fine_geo) -> None:  # type: ignore[no-untyped-def]
     v = validate_plan(fine_plan, fine_geo.units, fine_geo.seats)
-    assert v.ok and bool(v)
+    # a PlanValidation *is* the list of errors (docs/ARCHITECTURE.md: validate_plan -> list[str])
+    assert v.ok and v == [] and not v and len(v) == 0 and list(v) == v.errors == []
+    assert isinstance(v, list) and isinstance(v.warnings, list)
     v.raise_if_invalid()
 
 
@@ -78,3 +80,53 @@ def test_zero_population_district(fine_plan, fine_geo) -> None:  # type: ignore[
     v = validate_plan(p, fine_geo.units.drop(columns=["population"]), fine_geo.seats)
     assert any("no population" in e for e in v.errors)
     assert np.isfinite(p.deviation_pct()).all()
+
+
+def test_validation_is_a_list_of_errors(fine_plan, fine_geo) -> None:  # type: ignore[no-untyped-def]
+    """docs/ARCHITECTURE.md: ``validate_plan(...) -> list[str]`` (empty = valid)."""
+    p = _mutable(fine_plan)
+    p.unit_district[p.unit_district == 1] = 0
+    v = validate_plan(p, fine_geo.units, fine_geo.seats)
+    assert v and not v.ok and len(v) == len(v.errors) > 0
+    assert [e for e in v] == v.errors and all(isinstance(e, str) for e in v)
+    assert "PlanValidation(errors=" in repr(v)
+
+
+def test_stale_or_tampered_targets_are_detected(fine_plan, fine_geo) -> None:  # type: ignore[no-untyped-def]
+    p = _mutable(fine_plan)
+    # a plan whose targets were inflated would otherwise hide real deviations
+    p.district_target = fine_plan.district_target * 1.10
+    v = validate_plan(p, fine_geo.units, fine_geo.seats)
+    assert any("target population" in e for e in v.errors)
+    # deviations are computed against the recomputed target, not the stated one
+    assert not any("hard maximum" in e for e in v.errors)
+    # populations taken from the unit table: a stale plan population is reported and corrected
+    units = fine_geo.units.copy()
+    units.loc[units.index[0], "population"] += 1
+    v2 = validate_plan(fine_plan, units, fine_geo.seats)
+    assert any("populations differ" in w for w in v2.warnings)
+
+
+def test_codes_and_numbering_are_checked(fine_plan, fine_geo) -> None:  # type: ignore[no-untyped-def]
+    p = _mutable(fine_plan)
+    p.district_codes = list(fine_plan.district_codes)
+    p.district_numbers = list(fine_plan.district_numbers)
+    p.district_codes[0] = "Groningen 1"
+    v = validate_plan(p, fine_geo.units, fine_geo.seats)
+    assert any("<PV>-<NN>" in e for e in v.errors)
+    q = _mutable(fine_plan)
+    q.district_numbers = list(fine_plan.district_numbers)
+    q.district_codes = list(fine_plan.district_codes)
+    q.district_numbers[1] = q.district_numbers[0]
+    q.district_codes[1] = q.district_codes[0]
+    v2 = validate_plan(q, fine_geo.units, fine_geo.seats)
+    assert any("numbered 1.." in e for e in v2.errors) and any(
+        "duplicate district codes" in e for e in v2.errors
+    )
+
+
+def test_inconsistent_arrays(fine_plan, fine_geo) -> None:  # type: ignore[no-untyped-def]
+    p = _mutable(fine_plan)
+    p.unit_district = fine_plan.unit_district[:-1]
+    v = validate_plan(p, fine_geo.units, fine_geo.seats)
+    assert v.errors == ["plan arrays have inconsistent lengths: unit_district"]

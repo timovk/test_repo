@@ -8,7 +8,7 @@
 # different pair of classes — {1,2}, {2,3}, {1,3} — so each class contains exactly two groups
 # = 8 seats.  The groups were drawn "snake-style" from the population ranking
 # (ZH NH NB GE UT OV LI FR GR DR FL ZE → A B C C B A A B C C B A) so every group mixes large and
-# small provinces and every class election covers a similar share of the country (≈ 11.4–12.4 M
+# small provinces and every class election covers a similar share of the country (≈ 11.5–12.5 M
 # inhabitants of ≈ 18 M) with provinces in the north, east, south and west.
 #
 # Seat 1 of a province is its seat in the lower-numbered class (list order = seat order).

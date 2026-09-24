@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import Any
 
 import numpy as np
@@ -769,32 +770,77 @@ def _to_bool(value: Any) -> Any:
     raise ValueError(f"cannot interpret {value!r} as a boolean")
 
 
+def _to_int(s: pd.Series) -> pd.Series:
+    """Nullable ``Int64`` without a float round trip (exact beyond 2**53, e.g. 64-bit seeds)."""
+    if pd.api.types.is_integer_dtype(s.dtype) or pd.api.types.is_bool_dtype(s.dtype):
+        return s.astype("Int64")
+    obj = s.astype(object).where(s.notna(), None)
+    num = pd.to_numeric(obj, errors="raise", dtype_backend="numpy_nullable")
+    if pd.api.types.is_integer_dtype(num.dtype):
+        return num.astype("Int64")
+    vals = num.to_numpy(dtype=float, na_value=np.nan)
+    finite = np.isfinite(vals)
+    if (~finite & ~num.isna().to_numpy()).any():
+        raise ValueError("non-finite values")
+    if (np.abs(vals[finite] - np.round(vals[finite])) > 1e-9).any():
+        raise ValueError("non-integral values")
+    return pd.Series(np.round(vals), dtype="float64").astype("Int64")
+
+
+def _to_str(s: pd.Series) -> pd.Series:
+    """``string`` dtype; enum members become their value, other objects ``str(v)``, nulls ``<NA>``."""
+    if str(s.dtype) == "string":
+        return s.astype("string")
+    obj = s.astype(object)
+    values = obj.to_numpy()
+    enums = np.fromiter((isinstance(v, Enum) for v in values), dtype=bool, count=len(values))
+    if enums.any():
+        values = values.copy()
+        values[enums] = [v.value for v in values[enums]]
+    na = pd.isna(values)
+    out = np.empty(len(values), dtype=object)
+    out[na] = None
+    ok = ~na
+    if ok.any():
+        out[ok] = [v if type(v) is str else str(v) for v in values[ok]]
+    return pd.Series(out, dtype="string")
+
+
+def _to_datetime(s: pd.Series) -> pd.Series:
+    """``datetime64``; ISO 8601 strings of mixed precision are accepted, mixed UTC offsets are
+    converted to UTC."""
+    if pd.api.types.is_datetime64_any_dtype(s.dtype):
+        return s.dt.as_unit("ns")
+    obj = s.astype(object).where(s.notna(), None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        dt = pd.to_datetime(obj, errors="raise", format="ISO8601")
+    if not pd.api.types.is_datetime64_any_dtype(dt.dtype):  # mixed offsets → object Timestamps
+        dt = pd.to_datetime(obj, errors="raise", format="ISO8601", utc=True)
+    return dt.dt.as_unit("ns")
+
+
 def _cast(series: pd.Series, col: Column) -> pd.Series:
     s = series.reset_index(drop=True)
     t = col.type
     if t is ColumnType.INT:
-        num = pd.to_numeric(s.astype(object).where(s.notna(), None), errors="raise")
-        vals = num.to_numpy(dtype=float)
-        finite = ~np.isnan(vals)
-        if (np.abs(vals[finite] - np.round(vals[finite])) > 1e-9).any():
-            raise ValueError("non-integral values")
-        return pd.Series(np.round(vals), dtype="float64").astype("Int64")
+        return _to_int(s)
     if t is ColumnType.FLOAT:
+        if pd.api.types.is_float_dtype(s.dtype) and not isinstance(s.dtype, pd.api.extensions.ExtensionDtype):
+            return s.astype("float64")
         num = pd.to_numeric(s.astype(object).where(s.notna(), None), errors="raise")
         return num.astype("float64")
     if t is ColumnType.STR:
-        obj = s.astype(object)
-        obj = obj.where(obj.notna(), None)
-        return pd.Series(
-            [None if v is None else str(v.value if hasattr(v, "value") else v) for v in obj], dtype="string"
-        )
+        return _to_str(s)
     if t is ColumnType.BOOL:
         if s.dtype == bool or str(s.dtype) == "boolean":
             return s.astype("boolean")
-        return pd.Series([_to_bool(v) for v in s.astype(object)], dtype="boolean")
+        obj = s.astype(object)
+        if pd.api.types.infer_dtype(obj, skipna=True) == "boolean":  # bools and nulls only
+            return pd.Series(pd.array(obj.where(obj.notna(), None).tolist(), dtype="boolean"))
+        return pd.Series([_to_bool(v) for v in obj], dtype="boolean")
     if t in (ColumnType.DATE, ColumnType.DATETIME):
-        obj = s.astype(object).where(s.notna(), None)
-        dt = pd.to_datetime(obj, errors="raise")
+        dt = _to_datetime(s)
         if t is ColumnType.DATE:
             if getattr(dt.dt, "tz", None) is not None:
                 dt = dt.dt.tz_localize(None)

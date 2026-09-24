@@ -55,6 +55,7 @@ def test_top_two_margin_vectorised() -> None:
     out = M.top_two_margin(np.array([[1, 1, 2], [0, 0, 0], [5, 0, 0]]))
     assert out[0] == pytest.approx(25.0) and np.isnan(out[1]) and out[2] == pytest.approx(100.0)
     assert M.top_two_margin([7]) == pytest.approx(100.0)
+    assert np.isnan(M.top_two_margin([])) and np.isnan(M.top_two_margin(np.zeros((2, 0)))).all()
 
 
 def test_two_party_share_explicit_and_default_pair(house_curr: pd.DataFrame) -> None:
@@ -242,3 +243,17 @@ def test_race_summaries_with_incumbents(house_prev: pd.DataFrame, house_curr: pd
     assert rs.loc["HOUSE-NB-02", "turnout"] == pytest.approx(1.0)
     no_info = M.race_summaries(house_curr)
     assert set(no_info["flip_status"]) == {"new"}
+
+
+def test_race_summaries_previous_holder_comes_from_earlier_elections_only(make_house) -> None:
+    e1 = make_house(1, 2026, {"NB-01": [("a", "A", 60), ("b", "B", 40)]})
+    e2 = make_house(2, 2028, {"NB-01": [("a", "A", 40), ("b", "B", 60)]})
+    e3 = make_house(3, 2030, {"NB-01": [("a", "A", 70), ("b", "B", 30)]})
+    history = pd.concat([e1, e2, e3], ignore_index=True)
+    rs = M.race_summaries(e2, prev=history).iloc[0]  # the whole history, current and later included
+    assert rs["previous_winner_party"] == "A" and rs["flip_status"] == "flip"
+    both = M.race_summaries(pd.concat([e2, e3]), prev=history).set_index("election_id")
+    assert both.loc[2, "previous_winner_party"] == "A" and both.loc[3, "previous_winner_party"] == "B"
+    assert both.loc[3, "flip_status"] == "flip"
+    first = M.race_summaries(e1, prev=history).iloc[0]
+    assert first["previous_winner_party"] is None and first["flip_status"] == "new"

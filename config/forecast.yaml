@@ -1,0 +1,48 @@
+# Monte Carlo forecasting engine (validated by app.forecasting.config.ForecastConfig).
+#
+# FICTIONAL modelling choices: how uncertain the fictional political model of the NL Federal
+# Election Simulator is.  Forecasts are SIMULATED model estimates — never predictions of real
+# Dutch elections.  See docs/FORECASTING.md.
+version: 1
+description: Default Monte Carlo forecast of the NL Federal Election Simulator.
+
+simulations: 10000             # default number of simulated elections per run
+max_simulations: 1000000
+block_size: 500                # draws per RNG block: block b is seeded with derive_seed(seed, "forecast", b)
+chunk_size: 2000               # draws per worker task (scheduling only — results do not depend on it)
+workers: 0                     # 0 = auto (NLFED_FORECAST_WORKERS, else available CPUs); 1 = in-process
+parallel_min_simulations: 20000  # auto mode stays in-process below this many draws
+
+# Error structure (logit points).  null = the simulation model's own value: the scenario's
+# environment.shocks (national_sd, tail_df, province_sd, municipality_sd, spatial_sd,
+# spatial_length_km, unit_sd, turnout_national_sd, turnout_local_sd) or config/model.yaml
+# (shocks.ideological_swing_share, turnout.unit_shock_share, turnout.party_turnout_shock_sd,
+# candidates.race_line_sd).
+errors:
+  scale: 1.0                   # multiplies every party-utility error SD (uncertainty inflation)
+  national_sd: null            # correlated national party error, Student-t tails
+  tail_df: null
+  ideological_swing_share: null
+  province_sd: null
+  municipality_sd: null
+  spatial_sd: null             # spatially correlated municipal field (GP over centroids)
+  spatial_length_km: null
+  unit_sd: null                # cell noise = unit_sd / sqrt(effective neighbourhoods in the cell)
+  turnout_national_sd: null
+  turnout_local_sd: null
+  turnout_unit_share: null
+  party_turnout_sd: null       # differential mobilisation of each party's supporters
+  race_line_sd: null           # candidate-specific performance per race line
+  events: true                 # probabilistic scenario events occur or not in each draw
+
+# Poll-informed forecasts: the national logit shift from app.polling.blend.shift_from_poll_average.
+polls:
+  weight: 1.0                  # multiplier of the (already precision-weighted) poll shift
+  national_sd_scale: 1.0       # polls share a systematic error, so they do not shrink it by default
+
+outputs:
+  top_combinations: 20         # most common Electoral College maps kept
+  top_compositions: 10         # most common Senate compositions kept
+  share_bins: 400              # share histogram resolution for race / municipality quantiles (0.25 pp)
+  pv_bin_width: 0.005          # stored popular-vote histograms (0.5 pp bins)
+  municipality_distributions: true

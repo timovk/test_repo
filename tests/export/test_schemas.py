@@ -427,3 +427,25 @@ def test_docs_schema_reference_is_current() -> None:
     for sch in S.SCHEMAS.values():
         assert f"| `{sch.name}` | {sch.version} | {sch.data_category.value} |" in doc
         assert sch.fingerprint() in doc, f"regenerate the schema reference for {sch.name}"
+
+
+def test_conform_string_and_boolean_edge_cases() -> None:
+    from app.core.constitution import RaceType
+
+    df = pd.DataFrame(
+        {
+            "run_id": [1, 1, 1],
+            "election_id": [2, 2, 2],
+            "race_code": ["PRES", "PRES-NB", "PRES-UT"],
+            "race_type": [RaceType.PRESIDENT, DataCategory.SIMULATED, None],
+            "line_key": [pd.Timestamp("2032-11-03 21:00"), 7, np.nan],
+            "win_probability": [0.1, 0.2, 0.3],
+        }
+    )
+    out = S.conform(df, "montecarlo_summary")
+    assert out["race_type"].tolist()[:2] == ["PRESIDENT", "SIMULATED"] and pd.isna(out["race_type"].iloc[2])
+    assert out["line_key"].tolist()[:2] == ["2032-11-03 21:00:00", "7"] and pd.isna(out["line_key"].iloc[2])
+    flags = S._cast(pd.Series([True, None, False], dtype=object), S.Column("f", S.ColumnType.BOOL, "x"))
+    assert flags.dtype == "boolean" and flags.tolist() == [True, pd.NA, False]
+    with pytest.raises(S.SchemaError):
+        S.conform(df.assign(n_simulations=[1.0, np.inf, 2.0]), "montecarlo_summary")

@@ -21,10 +21,19 @@ from app.reporting.calling import (
 )
 from app.reporting.clock import PlaybackClock, PlaybackState
 from app.reporting.config import NightConfig, default_night_config, load_night_config
-from app.reporting.live import CallRecord, LeadChange, ManualCall, NightEngine, RaceMeta
+from app.reporting.live import (
+    MANUAL_STATUSES,
+    CallRecord,
+    LeadChange,
+    ManualCall,
+    NightEngine,
+    RaceMeta,
+    manual_calls_from_history,
+)
 from app.reporting.timeline import ReportingEvent, Timeline, generate_timeline, polls_close_times
 
 __all__ = [
+    "MANUAL_STATUSES",
     "CallDecision",
     "CallRecord",
     "CallState",
@@ -45,5 +54,6 @@ __all__ = [
     "default_night_config",
     "generate_timeline",
     "load_night_config",
+    "manual_calls_from_history",
     "polls_close_times",
 ]

@@ -11,7 +11,8 @@ Names (rules in order, see docs/DISTRICTING.md §Names):
 * otherwise, when the largest municipality holds less than ``region_max_main_share``, the most
   specific configured region holding ≥ ``region_min_share`` of the population gives
   ``<Region> – <largest municipality>``;
-* otherwise ``<largest> – <second>`` when the second municipality holds ≥ ``second_min_share``;
+* otherwise ``<largest> – <second>`` when the second municipality holds ≥ ``second_min_share``
+  (both with their compass labels when split);
 * otherwise ``<largest> e.o.`` (*en omstreken*, "and surroundings").
 
 Duplicate names within the plan receive Roman numerals (``… I``, ``… II``).
@@ -74,9 +75,12 @@ def _unique_compass(dx: np.ndarray, dy: np.ndarray, radius: float, config: Namin
     """Distinct compass labels for the significant parts of one split municipality.
 
     Two parts use the four main directions; more parts use eight directions plus "Centrum" (from
-    ``centre_min_parts`` parts on).  Labels are assigned jointly (minimum total angular mismatch,
+    ``centre_min_parts`` parts on; preferred by a part whose centroid lies within
+    ``centre_radius_fraction`` × the municipality's radius of its centroid, avoided by parts
+    outside it).  Labels are assigned jointly (minimum total angular mismatch,
     :func:`scipy.optimize.linear_sum_assignment`), so parts of one municipality never share a
-    label while there are enough labels; beyond nine parts Roman numerals disambiguate later.
+    label while there are enough labels; beyond that each compass label is used at most
+    ⌈n / 8⌉ times ("Centrum" once) and Roman numerals disambiguate identical district names.
     """
     from scipy.optimize import linear_sum_assignment
 
@@ -87,14 +91,18 @@ def _unique_compass(dx: np.ndarray, dy: np.ndarray, radius: float, config: Namin
     ang = np.arctan2(dy, dx)
     cand_ang = np.arange(len(names)) * step
     diff = np.abs((ang[:, None] - cand_ang[None, :] + math.pi) % (2 * math.pi) - math.pi)
-    cols = list(names)
-    cost = diff
-    if n >= config.centre_min_parts:
+    with_centre = n >= config.centre_min_parts
+    # more parts than labels (e.g. Amsterdam): each compass label may be used ⌈…⌉ times (still
+    # assigned jointly); "Centrum" at most once; whole-name duplicates get Roman numerals later
+    reps = max(1, -(-(n - int(with_centre)) // len(names)))
+    cost = np.tile(diff, (1, reps))
+    cols = list(names) * reps
+    if with_centre:
+        # distance from the municipality centroid in units of centre_radius_fraction × radius:
+        # a part within that radius prefers "Centrum" (negative cost), one outside avoids it
         r = np.hypot(dx, dy) / max(config.centre_radius_fraction * radius, 1e-9)
-        cost = np.column_stack([cost, math.pi * np.clip(r, 0.0, 2.0) - 1e-6])
+        cost = np.column_stack([cost, math.pi * (np.clip(r, 0.0, 2.0) - 1.0)])
         cols.append(CENTRE)
-    if n > len(cols):
-        return [names[int(np.argmin(row))] for row in diff]
     rows, picks = linear_sum_assignment(cost)
     out = [""] * n
     for r_, c_ in zip(rows.tolist(), picks.tolist(), strict=True):
@@ -122,8 +130,17 @@ def name_districts(
     n_districts: int,
     municipality_names: Mapping[str, str],
     config: NamingConfig,
+    unit_density: np.ndarray | None = None,
 ) -> list[str]:
-    """Descriptive, unique names for ``n_districts`` districts (index order)."""
+    """Descriptive, unique names for ``n_districts`` districts (index order).
+
+    Compass labels of a split municipality's parts are measured from its population-weighted
+    centroid.  With ``unit_density`` (e.g. the CBS address density), a municipality split into at
+    least ``centre_min_parts`` significant parts is measured from its *core* instead — the centroid
+    weighted by population × density², which lies in a city's historic centre (Amsterdam:
+    Leidseplein, Rotterdam: Stadsdriehoek, Utrecht: binnenstad) — so the central district becomes
+    ``…-Centrum`` and the others are named by their direction from the centre.
+    """
     df = pd.DataFrame(
         {
             "d": np.asarray(unit_district, dtype=np.int64),
@@ -135,11 +152,30 @@ def name_districts(
     )
     df["w"] = df["p"] + 1e-3  # zero-population units still locate parts
     df["wx"], df["wy"] = df["w"] * df["x"], df["w"] * df["y"]
-    muni = df.groupby("m", sort=True).agg(w=("w", "sum"), wx=("wx", "sum"), wy=("wy", "sum"))
+    dens = (
+        np.zeros(len(df))
+        if unit_density is None
+        else np.clip(np.nan_to_num(np.asarray(unit_density, dtype=float), nan=0.0), 0.0, None)
+    )
+    df["c"] = df["w"] * dens**2
+    df["cxw"], df["cyw"] = df["c"] * df["x"], df["c"] * df["y"]
+    muni = df.groupby("m", sort=True).agg(
+        w=("w", "sum"),
+        wx=("wx", "sum"),
+        wy=("wy", "sum"),
+        c=("c", "sum"),
+        cxw=("cxw", "sum"),
+        cyw=("cyw", "sum"),
+    )
     muni["cx"], muni["cy"] = muni["wx"] / muni["w"], muni["wy"] / muni["w"]
-    df = df.join(muni[["cx", "cy"]], on="m")
+    has_core = muni["c"] > 0
+    muni["kx"] = np.where(has_core, muni["cxw"] / muni["c"].where(has_core, 1.0), muni["cx"])
+    muni["ky"] = np.where(has_core, muni["cyw"] / muni["c"].where(has_core, 1.0), muni["cy"])
+    df = df.join(muni[["cx", "cy", "kx", "ky"]], on="m")
     df["r2"] = df["w"] * ((df["x"] - df["cx"]) ** 2 + (df["y"] - df["cy"]) ** 2)
+    df["k2"] = df["w"] * ((df["x"] - df["kx"]) ** 2 + (df["y"] - df["ky"]) ** 2)
     muni["radius"] = np.sqrt(df.groupby("m", sort=True)["r2"].sum() / muni["w"])
+    muni["core_radius"] = np.sqrt(df.groupby("m", sort=True)["k2"].sum() / muni["w"])
     parts = df.groupby(["d", "m"], sort=True).agg(
         p=("p", "sum"), w=("w", "sum"), wx=("wx", "sum"), wy=("wy", "sum")
     )
@@ -154,12 +190,22 @@ def name_districts(
     for m, grp in parts.groupby("m", sort=True):
         if len(grp) < 2:
             continue
-        mx, my = float(muni.at[m, "cx"]), float(muni.at[m, "cy"])
-        radius = float(muni.at[m, "radius"]) or 1.0
-        dx = grp["cx"].to_numpy() - mx
-        dy = grp["cy"].to_numpy() - my
         share = grp["w"].to_numpy() / max(float(grp["w"].sum()), 1e-12)
         sig = share >= config.minor_part_share
+        # many parts: directions from the core (if known); few parts: from the population centroid
+        # (two halves of a town are then always named by opposite directions)
+        at_core = sig.sum() >= config.centre_min_parts
+        mx, my = (
+            (float(muni.at[m, "kx"]), float(muni.at[m, "ky"]))
+            if at_core
+            else (
+                float(muni.at[m, "cx"]),
+                float(muni.at[m, "cy"]),
+            )
+        )
+        radius = float(muni.at[m, "core_radius" if at_core else "radius"]) or 1.0
+        dx = grp["cx"].to_numpy() - mx
+        dy = grp["cy"].to_numpy() - my
         labels = [compass_label(float(a), float(b), True) for a, b in zip(dx, dy, strict=True)]
         if sig.sum() == 1:
             labels[int(np.flatnonzero(sig)[0])] = ""  # the municipality is essentially whole here
@@ -213,23 +259,37 @@ def name_districts(
             else:
                 names.append(f"{label(d, main)} – {region}")
         elif shares[1] >= config.second_min_share:
-            names.append(f"{label(d, main)} – {display(ms[1])}")
+            # the second municipality keeps its compass label too ("Veldhoven – Eindhoven-West"),
+            # so districts sharing a split municipality stay distinguishable
+            names.append(f"{label(d, main)} – {label(d, ms[1])}")
         else:
             names.append(f"{label(d, main)}{config.surroundings_suffix}")
     return dedupe_names(names)
 
 
 def dedupe_names(names: list[str]) -> list[str]:
-    """Append Roman numerals to repeated names (in index order)."""
+    """Append Roman numerals to repeated names (in index order); the result is always unique.
+
+    A numbered name never collides with another name of the list (``["A", "A", "A I"]`` gives
+    ``["A II", "A III", "A I"]``).
+    """
     counts: dict[str, int] = {}
     for n in names:
         counts[n] = counts.get(n, 0) + 1
-    seen: dict[str, int] = {}
+    taken = {n for n, c in counts.items() if c == 1}
+    last: dict[str, int] = {}
     out = []
     for n in names:
         if counts[n] > 1:
-            seen[n] = seen.get(n, 0) + 1
-            out.append(f"{n} {roman(seen[n])}")
+            k = last.get(n, 0)
+            while True:
+                k += 1
+                cand = f"{n} {roman(k)}"
+                if cand not in taken:
+                    break
+            last[n] = k
+            taken.add(cand)
+            out.append(cand)
         else:
             out.append(n)
     return out

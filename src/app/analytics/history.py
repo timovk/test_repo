@@ -31,6 +31,8 @@ from app.analytics.metrics import (
 )
 from app.analytics.results import (
     GEO_KEY,
+    LEVELS,
+    PROPORTIONAL_RACE_TYPES,
     RESULTS_COLUMNS,
     GroupBy,
     ResultsFrameError,
@@ -83,8 +85,11 @@ def _race_records(
     include_uncontested: bool,
 ) -> pd.DataFrame:
     df = as_frame(frames)
+    rt = df["race_type"].astype(str)
     if race_types is not None:
-        df = df[df["race_type"].astype(str).isin(normalize_values(race_types)).to_numpy()]
+        df = df[rt.isin(normalize_values(race_types)).to_numpy()]
+    else:  # a list's top-two margin decides no seat under D'Hondt
+        df = df[~rt.isin(PROPORTIONAL_RACE_TYPES).to_numpy()]
     mt = margin_table(contest_rows(df))
     mt = mt[mt["margin_pp"].notna().to_numpy()]
     if not include_uncontested:
@@ -103,6 +108,8 @@ def closest_races(
 
     Ordered by ``margin_pp``, then ``margin_votes``, ``year`` and ``race_code`` (deterministic).
     Races without valid votes are excluded; uncontested races only with ``include_uncontested``.
+    Proportional party-list races (councils, provincial legislatures) are only included when
+    ``race_types`` names them.
     """
     if n < 0:
         raise ValueError("n must be non-negative")
@@ -122,7 +129,8 @@ def largest_landslides(
 ) -> pd.DataFrame:
     """The ``n`` races with the largest top-two margin (pp), ordered by ``margin_pp`` desc, then
     ``margin_votes`` desc, ``year`` and ``race_code``.  Uncontested races (100 pp by definition)
-    are excluded unless ``include_uncontested``."""
+    are excluded unless ``include_uncontested``; proportional party-list races unless
+    ``race_types`` names them."""
     if n < 0:
         raise ValueError("n must be non-negative")
     mt = _race_records(frame, race_types, include_uncontested)
@@ -238,6 +246,12 @@ def ec_pv_divergence(elections: pd.DataFrame, *, majority: int | None = None) ->
 
 
 # =========================================================================== lineage
+#: Weights of one old unit summing to within this tolerance of 1 are rounding noise (e.g. the
+#: 6-decimal ``population_weight`` of :func:`app.geography.lineage.compute_lineage`) and are
+#: rescaled to sum to exactly 1, so splits preserve totals.
+LINEAGE_WEIGHT_TOLERANCE: float = 1e-4
+
+
 def _lineage_table(lineage: pd.DataFrame) -> pd.DataFrame:
     require_columns(lineage, ("from_code", "to_code"), "lineage")
     lin = pd.DataFrame(
@@ -249,14 +263,19 @@ def _lineage_table(lineage: pd.DataFrame) -> pd.DataFrame:
             else 1.0,
         }
     )
-    if (lin["w"] < 0).any() or lin["w"].isna().any():
-        raise ResultsFrameError("lineage: population_weight must be non-negative")
+    if (lin["w"] < 0).any() or lin["w"].isna().any() or np.isinf(lin["w"]).any():
+        raise ResultsFrameError("lineage: population_weight must be finite and non-negative")
     if lin.duplicated(["from_code", "to_code"]).any():
         raise ResultsFrameError("lineage: duplicate (from_code, to_code) pairs")
-    over = lin.groupby("from_code")["w"].sum()
-    over = over[over > 1.0 + 1e-6]
-    if len(over):
-        raise ResultsFrameError(f"lineage: weights of {sorted(over.index)} sum to more than 1")
+    total = lin.groupby("from_code", sort=False)["w"].transform("sum").to_numpy(dtype=float)
+    over = total > 1.0 + LINEAGE_WEIGHT_TOLERANCE
+    if over.any():
+        raise ResultsFrameError(
+            f"lineage: weights of {sorted(set(lin.loc[over, 'from_code']))} sum to more than 1"
+        )
+    rounding = (np.abs(total - 1.0) <= LINEAGE_WEIGHT_TOLERANCE) & (total != 1.0)
+    if rounding.any():
+        lin.loc[rounding, "w"] = lin.loc[rounding, "w"].to_numpy() / total[rounding]
     return lin
 
 
@@ -272,63 +291,92 @@ def remap_lineage(
     """Re-express an older election's results at ``level`` on a newer code set.
 
     ``lineage`` has ``from_code, to_code`` and ``population_weight`` (share of the old unit's
-    population that moved to the new unit; 1.0 for a clean merger, default 1.0).  Votes,
-    valid votes, eligible voters and ballots of every old unit are multiplied by the weight and
-    summed per new unit; codes absent from the lineage map to themselves.  With ``round_votes``
-    weighted counts are rounded to integers (``valid_votes`` = sum of rounded line votes), so a
-    clean merger is exact.  Shares and winners of affected units are recomputed (plurality);
-    unaffected units are returned unchanged.  Race codes that embed a remapped code (e.g.
-    ``MAYOR-GM0001``) are rewritten to the dominant successor.  Other levels pass through.
+    population that moved to the new unit; 1.0 for a clean merger, default 1.0) — one transition
+    from the old code set to the new one, as :func:`app.geography.lineage.compute_lineage`
+    produces (compose several transitions before calling).  Weights of an old unit that sum to 1
+    up to :data:`LINEAGE_WEIGHT_TOLERANCE` are rescaled to exactly 1.  Votes, valid votes,
+    eligible voters and ballots of every old unit are multiplied by the weight and summed per new
+    unit; codes absent from the lineage map to themselves.  With ``round_votes`` weighted counts
+    are rounded to integers (``valid_votes`` = sum of rounded line votes), so a clean merger is
+    exact.  Shares and winners of affected units are recomputed (plurality); unaffected rows are
+    returned unchanged.
+
+    Race codes that embed a remapped code (e.g. ``MAYOR-GM0001``) are rewritten to the dominant
+    successor.  When that merges several old races into one (``MAYOR-GM0001`` and
+    ``MAYOR-GM0002`` → ``MAYOR-GM0100``), their rows at the *other* levels (e.g. the ``province``
+    rows services store for every race) are pooled the same way, so the result stays a valid
+    results frame; other rows at other levels pass through.
 
     ``names`` / ``province_codes`` supply the new units' names and provinces (default: the name
     of an identically-coded old unit, else the new code; the province of the largest source).
     """
+    if level not in LEVELS:
+        raise ResultsFrameError(f"unknown level {level!r}; expected one of {LEVELS}")
     lin = _lineage_table(lineage)
     names = dict(names or {})
     province_codes = dict(province_codes or {})
-    df = frame.loc[:, list(RESULTS_COLUMNS)].copy()
+    df = frame.loc[:, list(RESULTS_COLUMNS)].copy().reset_index(drop=True)
+    df["_src_race"] = df["race_code"].astype(object)
 
     dom = lin.sort_values(["from_code", "w", "to_code"], ascending=[True, False, True], kind="mergesort")
     dom = dom.drop_duplicates("from_code")
     dom = dom[(dom["from_code"] != dom["to_code"]).to_numpy()]
+    merged_races: set[str] = set()
     if len(dom):
         succ = dict(zip(dom["from_code"], dom["to_code"], strict=True))
         parts = df["race_code"].astype(str).str.rsplit("-", n=1)
-        suffix = parts.str[-1]
-        mapped = suffix.map(succ)
+        mapped = parts.str[-1].map(succ)
         has = mapped.notna() & (parts.str.len() == 2)
-        df.loc[has, "race_code"] = parts[has].str[0] + "-" + mapped[has]
+        if has.any():
+            df.loc[has, "race_code"] = parts[has].str[0] + "-" + mapped[has]
+            merged_races = set(df.loc[has, "race_code"])
 
     is_level = (df["level"] == level).to_numpy()
-    at = df[is_level]
-    rest = df[~is_level]
-    codes = pd.Index(at["geo_code"].astype(str).unique())
-    ident = codes.difference(pd.Index(lin["from_code"]))
+    cand = is_level | df["race_code"].isin(merged_races).to_numpy()
+    cdf = df[cand]
+    # source race-geos → target geos (lineage at `level`, identity elsewhere)
+    src_key = ["election_id", "_src_race", "level", "geo_code"]
+    src = cdf.drop_duplicates(src_key)[[*src_key, "race_code", "valid_votes", "eligible", "ballots_cast"]]
+    at_codes = pd.Index(src.loc[(src["level"] == level).to_numpy(), "geo_code"].astype(str).unique())
+    ident = at_codes.difference(pd.Index(lin["from_code"]))
     full = pd.concat(
         [
-            lin[lin["from_code"].isin(codes).to_numpy()],
+            lin[lin["from_code"].isin(at_codes).to_numpy()],
             pd.DataFrame({"from_code": ident, "to_code": ident, "w": 1.0}),
         ],
         ignore_index=True,
     )
-    tgt = (
-        full.assign(_one=full["w"] == 1.0, _same=full["from_code"] == full["to_code"])
-        .groupby("to_code")
-        .agg(n=("from_code", "size"), one=("_one", "all"), same=("_same", "all"))
+    src_at = src[(src["level"] == level).to_numpy()].merge(
+        full.rename(columns={"from_code": "geo_code"}), on="geo_code", how="inner"
     )
-    changed = set(tgt.index[((tgt["n"] > 1) | ~tgt["one"] | ~tgt["same"]).to_numpy()])
-    affected_codes = set(full.loc[full["to_code"].isin(changed), "from_code"])
-    aff_mask = at["geo_code"].isin(affected_codes).to_numpy()
-    keep = at[~aff_mask]
-    aff = at[aff_mask]
-    if aff.empty:
-        return df.sort_values([*GEO_KEY, "line_key"], kind="mergesort").reset_index(drop=True)
+    src_other = src[(src["level"] != level).to_numpy()].assign(to_code=lambda s: s["geo_code"], w=1.0)
+    src = pd.concat([src_at, src_other], ignore_index=True)
+    tk = ["election_id", "race_code", "level", "to_code"]
+    src["_one"] = src["w"] == 1.0
+    src["_same"] = (src["geo_code"].astype(str) == src["to_code"].astype(str)).to_numpy()
+    tgt = src.groupby(tk, sort=False).agg(n=("geo_code", "size"), one=("_one", "all"), same=("_same", "all"))
+    changed = tgt[((tgt["n"] > 1) | ~tgt["one"] | ~tgt["same"]).to_numpy()]
+    single = tgt[((tgt["n"] == 1) & tgt["one"]).to_numpy()].index
+    src = src.merge(changed[[]].reset_index(), on=tk, how="inner")
+    if src.empty:
+        return (
+            df.drop(columns="_src_race")
+            .sort_values([*GEO_KEY, "line_key"], kind="mergesort")
+            .reset_index(drop=True)
+        )
+    aff_keys = pd.MultiIndex.from_frame(src[src_key].drop_duplicates())
+    aff_mask = np.zeros(len(df), dtype=bool)
+    aff_mask[np.flatnonzero(cand)] = pd.MultiIndex.from_frame(cdf[src_key]).isin(aff_keys)
+    passthrough = df[~aff_mask].drop(columns="_src_race")
+    aff = df[aff_mask]
 
-    single = set(tgt.index[((tgt["n"] == 1) & tgt["one"]).to_numpy()])
-    m = aff.merge(full.rename(columns={"from_code": "geo_code"}), on="geo_code", how="inner")
+    m = aff.merge(src[[*src_key, "to_code", "w"]], on=src_key, how="inner")
+    # labels of pooled lines come from the first source in a fixed order (input-order independent)
+    m = m.sort_values(["_src_race", "geo_code", "line_key"], kind="mergesort")
     m["_votes"] = m["votes"].to_numpy(dtype=float) * m["w"].to_numpy()
-    m["_flag"] = as_bool(m["winner"]) & m["to_code"].isin(single)
-    lk = ["election_id", "race_code", "level", "to_code", "line_key"]
+    in_single = pd.MultiIndex.from_frame(m[tk]).isin(single)
+    m["_flag"] = as_bool(m["winner"]).to_numpy() & in_single
+    lk = [*tk, "line_key"]
     lines = m.groupby(lk, sort=False).agg(
         year=("year", "first"),
         race_type=("race_type", "first"),
@@ -338,28 +386,25 @@ def remap_lineage(
         winner=("_flag", "any"),
     )
     lines = lines.reset_index()
-    g = aff.drop_duplicates(list(GEO_KEY)).merge(
-        full.rename(columns={"from_code": "geo_code"}), on="geo_code", how="inner"
-    )
+    g = src.copy()
     for c in ("valid_votes", "eligible", "ballots_cast"):
         g[c] = g[c].to_numpy(dtype=float) * g["w"].to_numpy()
     g["_size"] = g["eligible"]
+    g = g.merge(aff.drop_duplicates(src_key)[[*src_key, "geo_name", "province_code"]], on=src_key, how="left")
     g = g.sort_values(["_size", "geo_code"], ascending=[False, True], kind="mergesort")
-    gk = ["election_id", "race_code", "level", "to_code"]
-    geo = g.groupby(gk, sort=False).agg(
+    geo = g.groupby(tk, sort=False).agg(
         valid_votes=("valid_votes", "sum"),
         eligible=("eligible", "sum"),
         ballots_cast=("ballots_cast", "sum"),
         province_code=("province_code", "first"),
+        geo_name=("geo_name", "first"),
     )
     geo = geo.reset_index()
-    old_names = dict(zip(at["geo_code"], at["geo_name"], strict=False))
-    out = lines.merge(geo, on=gk, how="left").rename(columns={"to_code": "geo_code"})
+    old_names = dict(zip(df.loc[is_level, "geo_code"], df.loc[is_level, "geo_name"], strict=False))
+    out = lines.merge(geo, on=tk, how="left").rename(columns={"to_code": "geo_code"})
     if round_votes:
         out["votes"] = np.rint(out["votes"].to_numpy()).astype(np.int64)
-        out["valid_votes"] = (
-            out.groupby([*gk[:-1], "geo_code"], sort=False)["votes"].transform("sum").astype(np.int64)
-        )
+        out["valid_votes"] = out.groupby(list(GEO_KEY), sort=False)["votes"].transform("sum").astype(np.int64)
         out["ballots_cast"] = np.maximum(np.rint(out["ballots_cast"].to_numpy()), out["valid_votes"]).astype(
             np.int64
         )
@@ -374,12 +419,22 @@ def remap_lineage(
     top = ranked.index[(ranked["_rank"] == 0).to_numpy() & ((ranked["votes"] > 0) | ranked["_w"]).to_numpy()]
     out["winner"] = False
     out.loc[top, "winner"] = True
-    out["geo_name"] = [names.get(c, old_names.get(c, c)) for c in out["geo_code"]]
-    out["province_code"] = [
-        province_codes.get(c, p) for c, p in zip(out["geo_code"], out["province_code"], strict=True)
-    ]
-    log.debug("remap_lineage: %d old units → %d new units", len(affected_codes), out["geo_code"].nunique())
-    result = pd.concat([rest, keep, normalize_dtypes(out, integer_counts=round_votes)], ignore_index=True)
+    at_out = (out["level"] == level).to_numpy()
+    codes = out["geo_code"].to_numpy(dtype=object)
+    out["geo_name"] = np.where(
+        at_out,
+        np.array([names.get(c, old_names.get(c, c)) for c in codes], dtype=object),
+        out["geo_name"].to_numpy(dtype=object),
+    )
+    out["province_code"] = np.where(
+        at_out,
+        np.array(
+            [province_codes.get(c, p) for c, p in zip(codes, out["province_code"], strict=True)], dtype=object
+        ),
+        out["province_code"].to_numpy(dtype=object),
+    )
+    log.debug("remap_lineage: %d source race-geos → %d target race-geos", len(aff_keys), len(changed))
+    result = pd.concat([passthrough, normalize_dtypes(out, integer_counts=round_votes)], ignore_index=True)
     return result.sort_values([*GEO_KEY, "line_key"], kind="mergesort").reset_index(drop=True)
 
 
@@ -629,9 +684,19 @@ def seat_totals(
 ) -> pd.DataFrame:
     """Seats won per election × party in the seat contests of ``race_type`` (strict race type),
     with ``seats_total`` (contests held), ``majority`` (default: majority of the contests held)
-    and ``has_majority``.  Senate control additionally depends on holdover seats not in the frame."""
+    and ``has_majority``.  Senate control additionally depends on holdover seats not in the frame.
+
+    Proportional party-list races (:data:`~app.analytics.results.PROPORTIONAL_RACE_TYPES`) are
+    rejected with :class:`ValueError`: their D'Hondt seat counts cannot be derived from the frame.
+    """
     df = as_frame(frames)
     rt = normalize_values(race_type)
+    proportional = sorted(set(rt) & PROPORTIONAL_RACE_TYPES)
+    if proportional:
+        raise ValueError(
+            f"seat_totals: {proportional} are proportional (D'Hondt) multi-seat races; their seats are "
+            "not derivable from a results frame (see app.elections.seats.dhondt)"
+        )
     rows = seat_contests(df[df["race_type"].astype(str).isin(rt).to_numpy()])
     cols = ["election_id", "year", "party", "seats", "seats_total", "majority", "has_majority"]
     if rows.empty:

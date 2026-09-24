@@ -24,9 +24,19 @@ from the database and pass them in.
 
 **Input.** One row per race × level × geo × ballot line with the columns `election_id, year,
 race_code, race_type, level, geo_code, geo_name, province_code, line_key, candidate, party_code,
-votes, share, valid_votes, eligible, ballots_cast, winner`. You can check a frame with
-`validate_results_frame(df)`. Test code and services can build a frame with `build_results_frame(rows)`,
-which derives the missing `share`, `valid_votes`, `winner` and other columns.
+votes, share, valid_votes, eligible, ballots_cast, winner`. Services store **every race at every
+level** (unit → municipality → [district] → province → national; `HOUSE-NB-07` also has `province`
+and `national` rows holding its own totals), and every function here is written for that layout.
+
+- `validate_results_frame(df)` lists contract violations: columns, levels, negative votes,
+  `votes ≤ valid_votes ≤ ballots_cast ≤ eligible`, shares in [0, 1] and equal to
+  `votes / valid_votes`, duplicate rows, line votes summing to `valid_votes`, and at most one
+  `winner` per contest-geo — on a line with the most votes (a tie may be flagged for its lot winner).
+- `build_results_frame(rows)` (tests, hand-built frames) derives the missing `share`, `valid_votes`,
+  `winner` and other columns; counts must be finite integers (no silent truncation).
+- `results_frame_from_draw(draw, races, geography, election_id=, year=, unit_district=None,
+  levels=LEVELS)` builds the frame of a simulated `ElectionDraw` without the database, in the
+  services layout (engine aggregation, `winner` = unique plurality leader per geo).
 
 **Units.**
 
@@ -42,15 +52,30 @@ party level. Race-level winner logic still uses individual lines (see below). Ex
 
 **Race families.** The `PRESIDENT_PROVINCE` contests (`PRES-NB`, …) belong to the `PRESIDENT` family
 together with the national parent race `PRES`. Every other race type is its own family.
+`PRES` and its province contests count the *same* ballots, so pooling the family would count every
+presidential ballot twice where both are stored. Family pooling therefore drops `PRESIDENT_PROVINCE`
+rows at an election × level × geo where `PRES` has rows (`dedupe_family_rows`).
 `national_party_totals` computes national shares per election × family:
 
-- it uses the `national` rows when the family has them (`PRES`);
-- otherwise it sums the contest rows of all races in the family (all 150 House districts, for example).
+- it uses the contest rows of the family's national race when there is one (`PRES`);
+- otherwise it sums the contest rows of all races in the family (all 150 House districts, or the 12
+  province contests). The `national` rows that services store for `HOUSE-NB-07` or `PRES-NB` are
+  never mistaken for national totals.
 
 **Contest rows and seat contests.**
 
-- The *contest rows* of a race are its rows at its jurisdiction level, which is the coarsest level present for that race (`HOUSE-NB-07` → `district`, `PRES-NB` → `province`, `PRES` → `national`).
-- *Seat contests* are the contest rows minus the national `PRES` parent race. That parent awards no seat: its electoral votes are won in the province contests.
+- The *contest rows* of a race are its rows at its jurisdiction level, fixed by the race type
+  (`JURISDICTION_LEVELS`): `PRESIDENT` → `national`; `PRESIDENT_PROVINCE`, `SENATE`, `GOVERNOR`,
+  `PROVINCIAL_LEGISLATURE` → `province`; `HOUSE` → `district`; `MAYOR`, `MUNICIPAL_COUNCIL` →
+  `municipality`. The levels present do not matter (services store every level). Fallbacks per
+  race: without the jurisdiction level, the finest level that wholly contains it (a House race
+  fetched without district rows → its `province` row, which holds the race's full totals); with only
+  finer levels (a frame filtered to `municipality`), the coarsest of those; an unknown race type
+  uses its coarsest level.
+- *Seat contests* are the contest rows of single-winner races: minus the national `PRES` parent race
+  (it awards no seat: its electoral votes are won in the province contests) and minus the
+  proportional party-list races (`PROPORTIONAL_RACE_TYPES`: councils and provincial legislatures
+  elect several members by D'Hondt; the frame does not carry their seat counts).
 
 **Grouping mode `by`.**
 
@@ -65,12 +90,20 @@ together with the national parent race `PRES`. Every other race type is its own 
 3. `line_key` (ascending).
 
 The leader is the winner only if it received votes or is flagged. A contest-geo with no valid votes
-has no winner and a NaN margin. In `"family"` mode the winner is the plurality of pooled party
+has no winner and a NaN margin. *Caveat:* the services frame flags only a *unique* plurality leader
+(`app.services.results`), so an exact tie decided by lot is unflagged there and falls to the lowest
+line key here; check `tied` (margins, EV tallies, `electoral_votes_export`'s `decided_by = lot`)
+before quoting such a winner. In `"family"` mode the winner is the plurality of pooled party
 votes, with the same tie-breaks (a flagged line's party first, then the party key).
 
-**Determinism.** Outputs are sorted by explicit keys with stable sorts, so identical input gives
-identical output. The only randomness in this area lives in the tests, which use
-`app.core.rng.make_rng`.
+**Determinism.** Outputs are sorted by explicit keys with stable sorts and do not depend on the
+input row order (the tests shuffle frames and compare). Labels taken from one of several pooled rows
+come from a fixed row (lowest source code / line key). The only randomness in this area lives in the
+tests, which use `app.core.rng.make_rng`.
+
+**Scale.** Everything is vectorised (group-bys, `np.lexsort`, no per-row Python). A realdata test
+runs the history, seat, Electoral College and export paths on four full elections stored at every
+level down to the 14,729 buurten (> 1M rows).
 
 ---
 
@@ -176,12 +209,19 @@ vector `σ` in pp (for example from `national_swing` or a polling average):
 
 1. `P = max(0, S + σ ⊙ mask)`. With `contested_only`, `mask = S > 0`, so a party gains nothing where it did not run.
 2. With `renormalize`, each contest's projected shares are rescaled to the sum of its original shares.
-3. Each contest goes to `argmax P`.
-4. Seats per party are summed with `seat_weights` (geo code → seats; use EV per province for the Electoral College). The default weight is 1.
+3. Each contest goes to the ballot *line* with the largest projected share. A line keeps its fraction
+   of its party's share, so independents pooled under `_IND` never win as a bloc (30 % + 25 % does
+   not beat 45 %); a party projected into a contest where it has no line counts as one line. Exact
+   ties go to the line flagged `winner` (a tie won by lot), then the lowest line key.
+4. Seats per race family × party are summed with `seat_weights` (geo code → seats; use EV per province for the Electoral College). The default weight is 1. Seats of different families are never added up.
+
+The contests are the seat contests of `prev`, or with `level=` every race-geo at that level (a geo
+where the `PRES` parent and a `PRES-<PV>` contest both have rows counts once).
 
 The result has three parts: `shares` (contest × party), `contests` (previous and projected winner,
-projected margin, `flipped`, `weight`) and `seats` (`seats_prev`, `seats_projected`, `change`). A zero
-swing reproduces the previous winners exactly.
+projected margin over the runner-up line, `flipped`, `weight`) and `seats` (`race_family, party,
+seats_prev, seats_projected, change`). A zero swing reproduces the previous winners exactly, lot
+winners included.
 
 *Caveats.* UNS assumes every district moves by the same number of points. Real multiparty swings
 are proportional in strongholds and bounded near zero. Clipping and renormalising keep shares
@@ -250,7 +290,7 @@ half the classic two-party gap.
   - `linear`: `S = α + β·V`. Responsiveness is β, in seat points per vote point.
   - `logit` (King–Browning): `logit S = λ + ρ·logit V`. Responsiveness is ρ; ρ ≈ 3 is the "cube law" typical of two-party FPTP. Seat shares of 0 or 1 are clipped by half a seat.
   - Bias is `(Ŝ(v*) − v*) × 100`: seats above proportionality at the reference vote share v\*. The default v\* is the party's mean vote share; pass 0.5 for the classic two-party bias.
-- **`uns_seat_vote_curve(frame, a, b, grid)`** works on one election. For each target two-party share `t`, it adds `s = t·(A+B) − A` to `a` and subtracts it from `b` in every contest where they ran, with other parties unchanged. Each contest goes to the plurality party. The output is `seat_share_a/b/other(t)`.
+- **`uns_seat_vote_curve(frame, a, b, grid)`** works on one election. For each target two-party share `t`, it adds `s = t·(A+B) − A` to `a` and subtracts it from `b` in every contest where they ran, with other parties unchanged. Each contest goes to the plurality line, as in §2.8. The output is `seat_share_a/b/other(t)`.
 - **`partisan_bias`** reads that curve:
   - `bias = (S_a − S_b)/2` at equal national a/b votes (t = 0.5). With two parties this is the classic `S_a(50 %) − 50 %`, and positive values favour `a`.
   - `responsiveness = (S_a(t₀+h) − S_a(t₀−h)) / 2h` at the observed `t₀`, with h = 2.5 pp by default.
@@ -270,7 +310,11 @@ non-winner-take-all allocations, pass the EV mapping to `ec_efficiency` directly
 
 ### 2.14 Tipping point and EC bias: `tipping_point`, `ec_bias`, `tipping_point_from_frame`
 
-This is implemented locally, without the elections package:
+This is implemented locally, without the elections package, and agrees exactly (province and
+margin) with `app.elections.electoral_college.tipping_point` — same ordering, tie rule, default
+majority and margin arithmetic; a test cross-checks every ticket on random canonical maps,
+including exactly tied margins. One deliberate difference: a province with no valid votes has an
+undefined margin here and sorts last, where the engine treats it as 0 pp.
 
 1. Sort provinces by the candidate's margin over the strongest opponent (pp, descending). Equal margins keep the `ev_by_province` order; NaN margins sort last.
 2. Accumulate electoral votes in that order.
@@ -291,7 +335,7 @@ opposition is fragmented.
 This gives one row per race: winner, runner-up, margins, turnout, `previous_winner_party`,
 `flip_status` (`hold | flip | new | undecided`), `incumbent_*`, `is_open_seat` and `incumbent_won`.
 
-- The previous holder is the winner of the same race code in the most recent election in `prev`. Failing that, it is `incumbents.incumbent_party`, which is the right source for Senate seats last contested six years earlier.
+- The previous holder is the winner of the same race code in the most recent election in `prev` *before* the row's election (by `(year, election_id)`), so `prev` may be the whole history, current and later elections included. Failing that, it is `incumbents.incumbent_party`, which is the right source for Senate seats last contested six years earlier.
 - `incumbent_won` is null when the incumbent candidate is unknown or the seat is open.
 
 ---
@@ -308,7 +352,7 @@ work at each race's jurisdiction level.
 - `closest_races` orders by `margin_pp`, then `margin_votes`, `year` and `race_code`, all ascending.
 - `largest_landslides` orders by `margin_pp` and `margin_votes` descending, then `year` and `race_code` ascending.
 - Races without votes are excluded. Uncontested races (100 pp by definition) are excluded unless `include_uncontested=True`.
-- `race_types` is a strict race-type filter.
+- `race_types` is a strict race-type filter. Without it, proportional party-list races are left out: the top-two list margin of a council decides no seat.
 
 ### 3.2 EC and popular vote: `ec_pv_divergence(long_df, majority=None)`
 
@@ -331,20 +375,22 @@ Exact ties at the top give a null leader.
 | `province_trend(frames, province, party, race_type="PRESIDENT")` | share, national share, lean and change per election |
 | `party_support_series(frames, geo_code, party, since_year=None, race_type=None, level=None)` | any geo, level inferred (e.g. Tilburg `GM0855` since 2028); elections where the party did not run show 0 |
 | `district_history(frames, "NB-07")` | the House race of a district code across elections, with `first/hold/flip/undecided` |
-| `seat_totals(frames, "HOUSE")` | seats per election × party, `majority` (default: majority of the contests held) and `has_majority`; Senate control also depends on holdover seats that are not in the frame |
+| `seat_totals(frames, "HOUSE")` | seats per election × party, `majority` (default: majority of the contests held) and `has_majority`; Senate control also depends on holdover seats that are not in the frame; proportional race types raise `ValueError` (D'Hondt seats are not derivable from the frame) |
 
 ### 3.4 Lineage-aware comparison
 
 `remap_lineage(frame, lineage, level="municipality", names=None, province_codes=None,
 round_votes=True)` re-expresses an older election's rows at `level` on the newer code set. The
-lineage DataFrame has columns `from_code, to_code, population_weight`. A weight is the share of the
-old unit's population that moved to the new one: 1.0 for a clean merger, fractions for splits.
+lineage DataFrame has columns `from_code, to_code, population_weight` — one transition from the old
+code set to the new one, as `app.geography.lineage.compute_lineage` produces it (compose several
+transitions first). A weight is the share of the old unit's population that moved to the new one:
+1.0 for a clean merger, fractions for splits.
 
 - Votes, valid votes, eligible voters and ballots are multiplied by the weight and summed per new code.
 - With `round_votes`, counts are rounded and `valid_votes` is recomputed as the sum of the rounded line votes. Clean mergers are exact. With `round_votes=False` the weighted counts stay fractional (float columns).
 - Affected units get recomputed shares and plurality winners. Unaffected units, and all other levels, pass through unchanged.
-- Race codes that embed a remapped municipality code (`MAYOR-GM0001`) are rewritten to the dominant successor.
-- The lineage is validated: no negative weights, no duplicate pairs, and the weights of a `from_code` must sum to at most 1.
+- Race codes that embed a remapped municipality code (`MAYOR-GM0001`) are rewritten to the dominant successor. When that merges races (`MAYOR-GM0001` + `MAYOR-GM0002` → `MAYOR-GM0100`), their rows at the other levels (the `province` and `national` rows services store) are pooled too, so the result is still a valid results frame.
+- The lineage is validated: finite, non-negative weights, no duplicate pairs, and the weights of a `from_code` must sum to at most 1. Sums within `LINEAGE_WEIGHT_TOLERANCE` (1e-4) of 1 are rounding (`compute_lineage` rounds weights to 6 decimals, so three pieces can sum to 1.000001) and are rescaled to exactly 1, which keeps splits exact.
 
 `compare_elections(prev, curr, level, race_type=None, lineage=None, parties=None, by="family")`
 returns a tidy swing table: the §2.3 columns plus `winner_prev`, `winner_curr`, `flip_status`,
@@ -411,7 +457,12 @@ pin every column list and fingerprint, so **changing a schema requires bumping i
 
 ### 5.2 Formats (`app.export.writers`)
 
-Every writer conforms, validates and sorts by key before writing.
+Every writer conforms, validates and sorts by key before writing. Files are written in chunks of
+`CHUNK_ROWS` rows (compact JSON too), with bytes identical to the in-memory `to_csv_text` /
+`dumps_envelope` output, so a ~1M-row unit export never holds all rows as Python objects.
+Integers are never passed through float64 (64-bit seeds and ids survive CSV and JSON round trips);
+dates and datetimes are read as ISO 8601 of any precision, and datetimes with mixed UTC offsets
+(an election night across the end of daylight saving time) are converted to UTC.
 
 - **CSV** (`write_csv`, `to_csv_text`, `read_csv`):
   - UTF-8 with `\n` line endings, and a header in schema order;
@@ -429,8 +480,10 @@ Every writer conforms, validates and sorts by key before writing.
   ```
 
   Rows are arrays aligned with `columns`. Nulls and non-finite floats become `null`. Metadata keys are
-  sorted, and NumPy scalars, dates, enums and sets are converted.
-- **Bundles.** `export_bundle(frames, out_dir, formats=("csv","json"), metadata, generated_at=None)` writes `<schema>.csv` and `<schema>.json` for each dataset. It also writes `manifest.json` with the bundle version, `generated_at`, metadata, data categories and, for each file, its schema, version, fingerprint, format, category, row count and SHA-256. It returns the written paths.
+  sorted (enum keys by value). NumPy scalars (including `np.bool_`), `None`/`pd.NA`/`NaT` (→ `null`),
+  dates, datetimes and `np.datetime64`, durations (ISO 8601), enums, paths, sets (sorted), sequences,
+  arrays and pandas Series/Index are converted; anything else (e.g. `bytes`) raises `TypeError`.
+- **Bundles.** `export_bundle(frames, out_dir, formats=("csv","json"), metadata, generated_at=None)` validates every dataset first (an invalid dataset leaves no partial bundle), then writes `<schema>.csv` and `<schema>.json` for each dataset. It also writes `manifest.json` with the bundle version, `generated_at`, metadata, data categories and, for each file, its schema, version, fingerprint, format, category, row count and SHA-256. It returns the written paths.
 - **Determinism.** The same data give byte-identical CSVs, whatever the input row or column order. JSON output is also byte-identical once `generated_at` is pinned.
 
 ### 5.3 Builders (`app.export.builders`)
@@ -438,9 +491,9 @@ Every writer conforms, validates and sorts by key before writing.
 | function | output schema |
 |---|---|
 | `results_export(frame, level, unit_municipality=None)` | `<level>_results` |
-| `house_results_export(frame, prev=None, incumbents=None)` | `house_results` |
-| `senate_results_export(…, senate_classes=None, special_races=None)` | `senate_results` |
-| `governor_results_export(…)` | `governor_results` |
+| `house_results_export(frame, prev=None, incumbents=None)` | `house_results` (`district_code` from the race code, `district_name` null, when the frame has no district rows) |
+| `senate_results_export(…, senate_classes=None, special_races=None)` | `senate_results` (`province_code` from the race code without province rows) |
+| `governor_results_export(…)` | `governor_results` (likewise) |
 | `electoral_votes_export(frame, ev_by_province, decided_by=None)` | `electoral_votes` (ties default to `lot`) |
 | `swing_export(prev, curr, level, race_type=None, lineage=None)` | `swing` |
 | `build_all_results(frame)` | `{schema: frame}` for every level present |

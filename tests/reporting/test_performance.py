@@ -47,7 +47,8 @@ def test_synthetic_night_performance(synthetic, small_election) -> None:  # type
 
 @pytest.mark.realdata
 def test_real_geography_night(real_frame, election_builder) -> None:  # type: ignore[no-untyped-def]
-    """Full night on the REAL CBS geography with synthetic (FICTIONAL) races: < 60 s."""
+    """Full night on the REAL CBS geography with synthetic (FICTIONAL) races: < 60 s, a typical
+    event < 20 ms, every race FINAL/RECOUNT with its exact result, and no wrong call."""
     cfg = default_night_config()
     el = election_builder(real_frame, seed=3)
     tl = generate_timeline(real_frame, el.ballots, cfg, seed=3)
@@ -57,10 +58,22 @@ def test_real_geography_night(real_frame, election_builder) -> None:  # type: ig
     small = ballots <= np.quantile(ballots, 0.25)
     large = ballots >= np.quantile(ballots, 0.75)
     assert np.nanmean(first[small]) < np.nanmean(first[large])
-    assert 1.0 <= tl.end_time_s / 3600.0 <= 9.0
+    assert 7.0 <= tl.end_time_s / 3600.0 <= 9.25  # last results between 04:00 and 06:15
     eng = NightEngine(real_frame, tl, el.races, el.meta, cfg, seed=3, holdover_senate=el.holdover)
+    per_event = []
     t = time.perf_counter()
-    eng.finish()
-    assert time.perf_counter() - t < 60.0
-    json.dumps(eng.snapshot("full"))
-    assert all(eng.race_state(k).status in {RaceStatus.FINAL, RaceStatus.RECOUNT} for k in eng.race_keys)
+    while not eng.is_finished:
+        s = time.perf_counter()
+        eng.advance(1)
+        per_event.append(time.perf_counter() - s)
+    total = time.perf_counter() - t
+    assert total < 60.0, f"full night took {total:.1f}s"
+    assert float(np.median(per_event)) < 0.020
+    json.dumps(eng.snapshot("full"), allow_nan=False)
+    for key, rv in el.races.items():
+        assert eng.race_state(key).status in {RaceStatus.FINAL, RaceStatus.RECOUNT}, key
+        assert eng.counted_votes(key) == dict(zip(rv.line_keys, rv.totals().tolist(), strict=True))
+    for rec in eng.call_history:
+        if rec.race_key != "PRES" and rec.status in (RaceStatus.PROJECTED, RaceStatus.CALLED):
+            rv = el.races[rec.race_key]
+            assert rec.key == rv.line_keys[int(np.argmax(rv.totals()))], rec.race_key

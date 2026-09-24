@@ -55,3 +55,22 @@ def test_parse_hhmm() -> None:
     assert (t.hour, t.minute) == (21, 0)
     with pytest.raises(ValueError):
         parse_hhmm("2100")
+
+
+def test_timing_parameters_are_consistent() -> None:
+    from app.reporting.config import FirstReportConfig
+
+    with pytest.raises(ValidationError):
+        FirstReportConfig(min_minutes=60, max_minutes=30)
+    with pytest.raises(ValidationError):
+        ReportingSpeedConfig(
+            batches_by_size=[
+                {"max_ballots": 100, "min": 1, "max": 1},
+                {"max_ballots": 100, "min": 2, "max": 2},
+                {"max_ballots": None, "min": 3, "max": 3},
+            ]
+        )
+    rep = default_night_config().reporting
+    # polls close at 21:00: the soft cap on the last batch is between 05:00 and 06:00
+    assert 8 * 60 <= rep.latest_end_minutes <= 9 * 60
+    assert rep.latest_end_minutes - rep.end_spread_minutes >= 7.5 * 60

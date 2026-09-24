@@ -35,9 +35,12 @@ province with the highest *priority* `P / d(n)` (`n` = seats it already has):
 | `adams` | `n` (needs `min_seats ≥ 1`) | favours small provinces |
 | `hamilton` (`largest_remainder`) | — | Hare quota, largest remainders; provinces below the minimum are fixed at it and the rest re-apportioned |
 
-Ties are broken deterministically by population (descending), then province code.  The result
-records exact quotas (`P·S/ΣP`), persons per seat, the priority order of every seat above the
-minimum and the next five "first provinces out".  Divisor methods are house-monotone; Hamilton is
+Priorities and Hamilton remainders are compared in exact rational arithmetic (Huntington-Hill
+compares `P²/(n(n+1))`), so floating-point rounding never decides a seat: an exact tie — e.g.
+`{A: 1, B: 10}` competing for seat 27 of 27 with 2 and 24 seats — is broken deterministically by
+population (descending), then province code.  The result records exact quotas (`P·S/ΣP`), persons
+per seat, the priority order of every seat above the minimum (float priorities, for display) and
+the next five "first provinces out".  Populations must be finite non-negative integers.  Divisor methods are house-monotone; Hamilton is
 not (the Alabama paradox is demonstrated in `tests/districts/test_apportionment.py`).
 
 With the CBS 2025 neighbourhood population (18.04 M) Huntington-Hill gives
@@ -58,7 +61,8 @@ run because every random stream is `make_rng(seed, "districts", <step>, <provinc
 ### 2.1 Unit graph, contiguity and water links
 
 Units are the CBS buurten (land only, including zero-population buurten so districts cover all
-territory).  The graph is the unit adjacency of the processed store (`border` edges with the
+territory).  Unit codes must be unique (a duplicate is a `DistrictingError`); a missing, non-numeric
+or negative population is treated as 0 and reported in the plan's warnings.  The graph is the unit adjacency of the processed store (`border` edges with the
 shared border length, `water_link` edges joining islands and other disconnected pieces to the
 nearest unit of the same province).  Contiguity means *graph* contiguity over this adjacency,
 so Texel, the Wadden islands or Zeeuws-Vlaanderen are contiguous with the district across the
@@ -144,12 +148,28 @@ greedily for up to `chain_length` moves — the chain is kept only if the total 
 districts still beyond the target tolerance get the same treatment starting from each of their
 boundary buurten.
 
-### 2.4 Restarts
+### 2.4 Restarts and recombination
 
 `restarts` independent attempts per province (restart 0: the root seed and the configured
 weights; restart r: a seed derived from (seed, province, r) and cut weights / funnel exponent
-jittered by ±`restart_jitter`) are compared with the objective above; the best wins (ties: the
-lowest restart).  Restarts are the main lever for fewer split municipalities.
+jittered by ±`restart_jitter`) are compared with the objective above.
+
+The best `merge_split.restarts` of them are then *recombined* ("merge-split"): regions of adjacent
+districts are merged and re-drawn from scratch by the bisection of §2.2 (same targets, funnel,
+split penalties and exact whole-municipality search), polished by the local search restricted to
+the region, and kept when the province objective decreases:
+
+* every pair of adjacent districts (seeded order), and
+* for every municipality split into more districts than its population requires, the union of the
+  districts holding it — also with one neighbouring district (the two with the longest shared
+  boundary are tried) — up to `merge_split.max_region_districts` districts.
+
+Passes repeat (at most `merge_split.max_passes`) until one brings no improvement; a final local
+search follows.  The recombined restart with the lowest objective wins (ties: the lowest restart).
+The top-down bisection has to fix the population of large regions early; recombination undoes the
+resulting avoidable splits and C-shaped boundaries (CBS 2025: 65 → 60 split municipalities, 102 → 98
+municipal fragments, Polsby-Popper median 0.27 → 0.29, internal boundary −2 %, at ≈ 35 % more CPU
+time).
 
 ### 2.5 Numbering and names
 
@@ -162,17 +182,31 @@ Names (`naming` in `config/districts.yaml`):
 * a district with ≥ 95 % of its population in one municipality is named after it; when the
   municipality is split its significant parts (≥ 5 % of its population) get *distinct* compass
   suffixes assigned jointly (minimum angular mismatch; four directions for two parts, eight plus
-  `Centrum` from four parts on): `Tilburg-Oost`, `Amsterdam-Zuidoost`, `Groningen-Noord`;
+  `Centrum` from four parts on): `Tilburg-Oost`, `Amsterdam-Zuidoost`, `Groningen-Noord`.
+  Directions are measured from the municipality's population-weighted centroid; a municipality in
+  at least `centre_min_parts` (4) parts is measured from its *core* instead — the centroid weighted
+  by population × CBS address density², i.e. the historic centre (Amsterdam: Leidseplein,
+  Rotterdam: Stadsdriehoek, Utrecht: binnenstad) — and `Centrum` goes to a part lying within
+  `centre_radius_fraction` × the (RMS) radius of that core (`Amsterdam-Centrum`, `Utrecht-Centrum`,
+  `Rotterdam-Centrum`, `'s-Gravenhage-Centrum`, `Eindhoven-Centrum`).  Two halves of a town are
+  therefore always named by opposite directions.  A municipality with more parts than labels uses
+  every compass label at most ⌈parts / 8⌉ times and `Centrum` once;
 * otherwise, when the largest municipality holds < 50 % and a configured region holds ≥ 60 %, the
   most specific such region: `Zeeuws-Vlaanderen – Terneuzen`, `Twente – Almelo-Noord` (region
   first when the largest municipality belongs to it, e.g. `Deventer-Oost – Twente` otherwise);
 * otherwise `<largest> – <second>` when the second municipality holds ≥ 20 %
-  (`Middelburg (Z.) – Vlissingen`), else `<largest> e.o.` (*en omstreken*);
-* remaining duplicates get Roman numerals.
+  (`Middelburg (Z.) – Vlissingen`; both keep their compass labels when split, so
+  `Veldhoven – Eindhoven-West` and `Valkenswaard – Eindhoven-Zuid` stay distinguishable), else
+  `<largest> e.o.` (*en omstreken*);
+* remaining duplicates get Roman numerals (never colliding with another name of the plan).
 
 Region names are a curated naming aid over REAL CBS municipality codes (2025 vintage); unknown
-codes are ignored.  Municipality display names come from `municipality_names=` (the store's
-`municipalities.parquet`) or a `municipality_name` column; without either the CBS code is used.
+codes are ignored.  Municipality display names come from a `municipality_name` column and
+`municipality_names=`; when `municipality_names` is `None`, codes still unnamed are looked up in the
+processed store's `municipalities.parquet` (default vintage) if it names *every* municipality of
+the units (so `generate_plan(load_units_gdf(), load_unit_adjacency(), seats)` gets real names while
+synthetic geographies keep their codes); otherwise the CBS code is used.  Names are computed after
+manual overrides, so they describe the final districts.
 
 ### 2.6 Parameters
 
@@ -188,6 +222,7 @@ The most important:
 | `max_refine_rounds`, `use_wijk_level` | 6, true | multi-resolution refinement |
 | `exact_search_*` | k ≤ 4, ≤ 48 atoms, 6000 subsets | exhaustive whole-municipality search |
 | `restarts`, `restart_jitter` | 12, 0.25 | multi-start |
+| `merge_split.enabled`, `.restarts`, `.max_passes`, `.max_region_districts` | true, 3, 2, 4 | recombination of the best restarts (§2.4) |
 | `cut.*` | see file | cut score weights |
 | `local_search.*` | see file | move types, chains, objective weights |
 | `water_link_border_m` | 250 | nominal border of a water link |
@@ -209,9 +244,16 @@ limits are used anywhere, so results never depend on machine speed.
 ### 2.8 Results on the CBS 2025 store
 
 Seed 2028, default configuration, 14 729 buurten, 342 municipalities: 150 districts, all
-contiguous, maximum deviation 1.97 %, mean absolute deviation ≈ 0.6 %, 65 split municipalities
-(23 of them are larger than a district and must be split), Polsby-Popper median ≈ 0.27.
-Generation takes ≈ 25 s serially and ≈ 10 s with four workers (whole country, 12 restarts).
+contiguous (water links are used only for Texel, the Wadden islands, IJburg and a few uninhabited
+islets), every district within ±2 % (maximum 1.97 %, mean absolute deviation 0.64 %), 60 split
+municipalities with 98 extra fragments (23 municipalities exceed a district by more than the
+tolerance and must be split; no municipality under half a district is cut into more than three
+pieces), Polsby-Popper median ≈ 0.29 (the lowest values are the coastal and island districts of
+Zeeland, Fryslân and Goeree-Overflakkee).  Generation takes ≈ 30 s serially and ≈ 10–15 s with
+four workers (whole country, 12 restarts, 3 recombined); `store_plan` needs ≈ 6 s (mostly the
+coverage simplification of the WKB geometry; the 14.7k assignments are bulk-inserted in < 1 s) and
+`load_plan_mapping` ≈ 0.03 s.  Repeated runs — serial or parallel, any unit-row order — are
+bit-identical (tested in `tests/districts/test_realdata.py`).
 
 ## 3. Split policy
 
@@ -221,7 +263,8 @@ Generation takes ≈ 25 s serially and ≈ 10 s with four workers (whole country
 * Splits prefer municipalities that are already split and large ones (`small_split` penalty),
   and follow wijk boundaries before buurt boundaries.
 * The local search removes splits whenever the deviations allow it (ejection chains) and never
-  introduces one unless that improves feasibility.
+  introduces one unless that improves feasibility; recombination (§2.4) re-draws the districts
+  around every municipality split into more parts than its population requires.
 * `stats.district_municipality_fragments` lists every district × municipality fragment
   (population, units, share of municipality, share of district); `HouseDistrict` stores
   `n_municipalities` and `n_split_municipalities`.
@@ -235,7 +278,8 @@ circle radius), convex-hull ratio, units, municipalities, split municipalities, 
 (graph components) and a label point (centroid, or a point on the surface when the centroid falls
 outside) in lon/lat.
 
-`stats.district_geometries` dissolves the buurten (fast coverage union, with a robust
+A `geometries` frame passed to `district_stats` is matched to the plan's districts on its `code`
+column (any row order; missing districts are an error).  `stats.district_geometries` dissolves the buurten (fast coverage union, with a robust
 `union_all` fallback for imperfect source coverages); `geometries_wkb` / `write_districts_geojson`
 produce coverage-simplified (`shapely.coverage_simplify`, shared borders stay shared) EPSG:4326
 output.  `stats.district_adjacency` lists adjacent district pairs with the shared border (km) and
@@ -263,17 +307,23 @@ plan, so re-check overrides after changing the seed or configuration.
 ## 6. Validation
 
 `validate_plan(plan, units_df, seats_by_province)` checks: 150 districts (the constitution's
-`house_seats`), each province exactly its apportioned number, every unit assigned exactly once
-(no missing, unknown or duplicate units), no district crossing a province boundary, no empty or
-zero-population district, contiguity, and deviation ≤ the hard maximum (beyond the target
-tolerance: warning).
+`house_seats`), each province exactly its apportioned number, district codes `<PV>-<NN>` numbered
+1 … k per province, consistent plan arrays, every unit assigned exactly once (no missing, unknown
+or duplicate units), no district crossing a province boundary, no empty or zero-population
+district, contiguity, targets equal to province population / seats (recomputed from the unit
+table, whose populations are used when they differ from the plan's — with a warning), and
+deviation ≤ the hard maximum (beyond the target tolerance: warning).
+
+The result is a `PlanValidation`, which **is** the `list[str]` of errors required by
+docs/ARCHITECTURE.md (`for e in validate_plan(...)`, `len(...)`, `== []`; truthy ⇔ invalid) and
+additionally carries `warnings`, `ok` and `raise_if_invalid()`.
 
 ## 7. Senate classes
 
 Every province has two seats (`SEN-<PV>-1`, `SEN-<PV>-2`) in different classes; each class
 holds 8 seats and is elected every two years.  `config/senate.yaml` partitions the provinces into
 three groups of four with seat pairs {1,2}, {2,3} and {1,3}, drawn snake-style from the population
-ranking so each group mixes large and small provinces and each class election covers 11.4–12.4 M
+ranking so each group mixes large and small provinces and each class election covers 11.5–12.5 M
 inhabitants.  If the configuration does not cover exactly the provinces a deterministic
 round-robin assignment is generated (seat `j` of the `i`-th province → class `(2i+j) mod 3 + 1`).
 `service.ensure_senate_seats` creates the 24 `SenateSeat` rows and their `Office` rows.
@@ -289,8 +339,16 @@ previously active plan of the chamber is deactivated), `service.active_plan`,
 ## 9. Limitations
 
 * Recursive bisection fixes the population of large regions early; restarts, the exact search,
-  the balancing fallback and ejection chains mitigate but do not guarantee the minimum number of
-  split municipalities.
+  the balancing fallback, ejection chains and recombination mitigate but do not guarantee the
+  minimum number of split municipalities.  Small provinces are close to optimal: Zeeland and
+  Drenthe admit no plan of whole municipalities within ±2 % (exhaustive check; Groningen,
+  Flevoland and Fryslân contain a municipality larger than a district), and most remaining
+  small-municipality splits are forced by the geography (e.g. inside OV-05 ∪ OV-06, Almelo is
+  adjacent only to Borne and Wierden, so one of Almelo and Borne must be split).
+* The objective prefers keeping municipalities whole over compactness (`weight_cut_km` 0.2 per km
+  against 10 per split): raising the compactness weight to 1.0 gives Polsby-Popper median 0.30 but
+  68 split municipalities.  Haarlemmermeer (split between NH-22 and NH-23) is the least compact
+  inland boundary.
 * Compactness is optimised through cut lengths (not directly through Polsby-Popper); coastal and
   island districts (Zeeland, Fryslân) have low Polsby-Popper values because of their coastlines.
 * Buurten are indivisible; a buurt larger than the tolerance window (the largest has ≈ 30 000

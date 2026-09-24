@@ -86,7 +86,9 @@ centroids (EPSG:28992) with length scale `spatial_length_km`; fields are drawn a
 `L = chol(K + jitter·I)` (`spatial.gp_cholesky`, cached; jitter grows until positive definite).
 `ι_p` is the party's ideology vector: a share `ρ = ideological_share` of the lean variance lies on
 three shared ideological axes, so a place that leans left leans towards *all* left parties.
-Every party's draws use its own RNG stream, so adding a party does not change the others.
+Every party's draws use its own RNG stream, so adding a party does not change the others' raw
+draws (only the normalisation `‖ι‖`, the root-mean-square ideology norm over all parties, which
+scales the ideological part).
 
 ### 2.3 Turnout
 
@@ -125,7 +127,10 @@ maximum error; inconsistent targets produce a warning, never silent drift.
 
 Local targets (`calibration.provinces`, `calibration.municipalities`) may list a subset of parties:
 listed parties get their target, unlisted ones share the remainder in proportion to their current
-shares (rows listing every party are normalised).
+shares (rows listing every party are normalised).  National targets must lie strictly between 0
+and 1 (a zero target would need an infinitely negative intercept) and local targets in [0, 1];
+anything else — like a scenario without parties or an `environment.president_party` that is not
+a scenario party — is a `ScenarioError` at build time (and a problem in `validate_scenario`).
 
 ### 2.5 Elasticity
 
@@ -172,11 +177,21 @@ environment of the scenario's election.  An event with `probability < 1` enters 
 ### 3.1 Context
 
 `ElectionContext` carries what is election-specific but not structural: year, election type,
-`president_party` (defaults to the party of the scenario candidate with `incumbent_office: PRES`),
-incumbents per race (`IncumbentInfo`), the candidate lookup (key → `CandidateSpec`),
-`campaign_effects` (race key → {party|line: shift}, or `(level, code)` / `"level:code"` →
-{party: shift} for every race in a national/province/municipality area), `turnout_effects`
-(`(level, code)` → turnout logit shift) and `national_shifts` (e.g. from polls; × `e_u`).
+`president_party`, incumbents per race (`IncumbentInfo`), the candidate lookup (key →
+`CandidateSpec`), `campaign_effects` (race key → {party|line: shift}, or `(level, code)` /
+`"level:code"` → {party: shift} for every race in a national / province / district /
+municipality area), `turnout_effects` (`(level, code)` → turnout logit shift of everybody),
+`party_turnout_effects` (`(level, code)` → {party: logit shift of that party's supporters'
+turnout} — the campaigns engine's mobilisation effects, docs/CAMPAIGNS.md), `national_shifts`
+(e.g. from polls; × `e_u`) and `unit_district` (unit → House district code, needed to resolve
+`district` keys, which is the level the campaigns engine uses for House races).
+
+`ElectionContext.from_scenario(doc, president_party=None, **overrides)` resolves the president's
+party as: the explicit argument (services chaining elections pass the actual office holder's
+party) → `environment.president_party` → the party of the candidate with `incumbent_office:
+PRES`; any other field (including `year` / `election_type`) can be overridden.  Effects must be
+finite numbers (`ElectionError` otherwise); a race-level entry whose key is both the line key
+and its party code (party-list lines) is applied once.
 
 ### 3.2 Shocks and their correlation structure
 
@@ -192,7 +207,7 @@ changes never perturb other draws.  SDs come from the scenario (`environment.sho
 | unit | `N(0, unit_sd²)` | unit × party | |
 | turnout | national `N(0, turnout_national_sd²)`, municipal `N(0, turnout_local_sd²)`, unit `N(0, (unit_shock_share·turnout_local_sd)²)` | | plus a differential mobilisation `N(0, party_turnout_shock_sd²)` of each party's supporters |
 | events | Bernoulli(`probability`) | per event | deviation from the expectation |
-| race line | `N(0, race_line_sd²)` | race × line | candidate-specific campaign performance |
+| race line | `N(0, race_line_sd²)` | race × line | candidate-specific campaign performance; a presidential ticket runs one national campaign, so all `PRES` / `PRES-<PV>` contests share the ticket's shock (`race_line_shocks`) |
 
 `ElectionDraw.environment` records all realised components (national, ideological swing,
 province, municipal iid/spatial/turnout arrays, events, turnout, race-line shocks, strategic
@@ -239,16 +254,18 @@ W[u,ℓ] = log m[u,ℓ] + Δ[u,ℓ] (+ race-line shock),     sincere shares = so
 ### 3.6 Strategic voting (FPTP and winner-take-all, single seat)
 
 From the **expected** (no-shock) jurisdiction shares `S_ℓ` — what voters know before the
-election — each active line more than `viability_gap_start` behind the second-placed line loses a
-fraction
+election — each active line more than `viability_gap_start` behind the `viable_lines`-th line
+(default: the second) loses a fraction
 
 ```
-f_ℓ = strategic_voting · race_type_weight · clip((S_2nd − S_ℓ − gap_start)/(gap_full − gap_start), 0, 1)
+f_ℓ = min(1, strategic_voting · race_type_weight) · ramp_ℓ,
+ramp_ℓ = clip((S_2nd − S_ℓ − gap_start)/(gap_full − gap_start), 0, 1)
 ```
 
-of its supporters to the viable lines (the top `viable_lines`, default 2) by affinity
-(`strategic.temperature`).  This is a linear map `G`: `shares = sincere @ G`.  Proportional
-multi-seat races (councils) are never subject to it.
+of its supporters to the lines ranked ahead of it, weighted by affinity (`strategic.temperature`)
+and by each target's perceived viability `1 − ramp_j` (1 for the leading lines), so `G` stays
+continuous when two lines swap places.  This is a linear, row-stochastic map `G`:
+`shares = sincere @ G`.  Proportional multi-seat races (councils) are never subject to it.
 
 ### 3.7 Counting
 
@@ -264,18 +281,29 @@ plus ballot composition, candidate effects and strategic voting), which the race
 forecasting engines use as the pre-election model view.  `expected_race_shares(model, race,
 context)` returns the same (n, L) array without simulating; `race_expectation(...)` returns the
 full `RacePlan` (unit shares, turnout, jurisdiction shares, strategic defection fractions), whose
-`shares(vote_share, line_shock)` method can be reused across Monte Carlo draws.
+`shares(vote_share, line_shock)` method can be reused across Monte Carlo draws.  The draw-level
+pieces are public too, so a Monte Carlo engine reproduces `simulate_election` exactly:
+`draw_shocks(model, seed, context)`, `realised_party_state(model, shocks, context)` (expectation +
+shocks, what ballots and votes are drawn from) and `race_line_shocks(model, race, seed)`.
 
 A `PRESIDENT` parent race passed together with its `PRESIDENT_PROVINCE` children is assembled
-from the children, so the national popular vote is exactly the sum of the province contests.
+from the children, so the national popular vote is exactly the sum of the province contests; the
+children must then cover exactly the parent's units (a partial set raises `ElectionError` instead
+of silently dropping votes).  Without children the national race is simulated directly — its
+strategic voting then uses national rather than provincial viability, so
+`expected_race_shares(model, PRES)` differs slightly from the stitched parent's expectation.
+Race units are validated (`race_units`): indices in range, no duplicates (a boolean mask over all
+units is accepted); `ElectionDraw.races` keeps the input order of the races.
 
 ### 3.8 Performance
 
 Everything is vectorised over units; per race the work is a few (n × P)·(P × L) products.
-Measured on the REAL country (14,729 units): model build ≈ 0.2–1.0 s (first call includes the
-Cholesky factor), one full general election with 183 races (12 + 1 presidential, 150 House,
-8 Senate, 12 governors) ≈ 1.1 s, a midterm with 500 races (incl. 342 mayors) ≈ 0.9 s, the 13
-presidential races alone ≈ 0.05 s.
+Measured on the REAL country (14,729 units, shared 4-CPU machine): model build ≈ 0.2–0.5 s
+(first call includes the Cholesky factor), one full general election with 183 races (12 + 1
+presidential, 150 House, 8 Senate, 12 governors) ≈ 0.2–1.1 s, a midterm with 500 races (incl. 342
+mayors) ≈ 0.3–0.9 s, the 12 province presidential contests alone ≈ 0.05 s; `race_expectation` for
+all 182 contests ≈ 0.15 s, and a Monte Carlo step reusing the plans (`realised_party_state` +
+`RacePlan.shares` for 182 contests) ≈ 0.04 s per draw.
 
 ---
 
@@ -308,8 +336,13 @@ presidential races alone ≈ 0.05 s.
 * a party contests when its `ContestRule` says so: `always`, or expected jurisdiction share ≥
   `min_expected_share` and (optionally) the race's province is listed and/or ≥
   `region_overlap_threshold` (25 %) of the jurisdiction's eligible voters live in a listed region;
-  at most `max_candidates` lines, never fewer than two;
-* the sitting office holder runs again with probability `incumbent_runs_again_prob`;
+  at most `max_candidates` lines (an independent — generated or a sitting independent — takes one
+  of them; `always` parties and a re-running incumbent are guaranteed a line even if they alone
+  exceed the maximum), never fewer than two lines;
+* the sitting office holder runs again with probability `incumbent_runs_again_prob`, under their
+  party's label — an incumbent whose party is not in the scenario (dissolved, merged) does not run.
+  `RaceCandidates.incumbent_party` keeps the holder's party, and `races_from_candidates` stores it
+  as `RaceSpec.incumbent_party` of an open seat so the open-seat party bonus applies;
 * `explicit_candidates[race]` overrides generation;
 * an independent joins with probability `independents_prob`;
 * people are FICTIONAL: `fictional_name(rng, gender, province=…, heritage_prob=…)` combines common
@@ -351,7 +384,9 @@ parties with weights (one real party can be split over several model parties).  
 > **DERIVED from real election results via mapping — not a result of this fictional system**
 
 (`data_category = DERIVED`); municipality codes of other vintages are reported and skipped,
-unmapped parties dropped (or an error with `unmapped: error`).  It is only used when a scenario
+unmapped parties dropped (or an error with `unmapped: error`), rows without a municipality or
+party skipped and non-numeric / negative vote counts counted as 0 (both logged); mapping weights
+must be non-negative.  It is only used when a scenario
 sets `calibration.imported_baseline: <mapping.yaml>` (the mapping names its `source_csv`); the
 municipality targets are then `w · imported + (1 − w) · model` with
 `imported_baseline_weight = w`.  `config/baselines/example/` ships a tiny **synthetic** example
@@ -371,17 +406,23 @@ Electoral College battlegrounds).
 
 * `load_scenario(path_or_slug)` resolves `config/scenarios/<slug>.yaml` or any file whose
   `scenario.slug` matches, applies the loader directives `parties_file`, `candidates_file` and
-  `party_overrides`, and validates (`ScenarioError` on failure);
+  `party_overrides`, and validates (`ScenarioError` on failure).  A slug must look like one
+  (`[a-z0-9][a-z0-9-_]*`) and includes must stay inside `config/` or the scenario's directory, so
+  requests and uploaded scenario text cannot read other files;
 * `dump_scenario(doc)` writes the fully merged document (round-trips exactly);
   `list_scenarios()`, `duplicate_scenario(doc, new_slug, new_seed=None)`, `save_scenario`;
 * `validate_scenario(doc, frame, regions)` lists unknown province/municipality codes, undefined
-  regions, inconsistent candidate homes, malformed race codes, Senate classes outside the
-  constitution, missing imported baselines …;
+  regions, demographic variables the frame lacks, inconsistent candidate homes, malformed race and
+  special-election seat codes, Senate classes outside the constitution, missing imported
+  baselines, out-of-range calibration targets, an unknown `environment.president_party` and
+  unknown parties in campaign budgets/strategies and pollster house effects …;
+* `list_scenarios()` never fails on a broken file: it is listed with `valid=False` and its error;
 * `apply_edits(doc, edits, frame=None)` applies editor operations (`set_national_environment`,
   `set_province_environment`, `set_candidate_quality`, `set_party_base_share`,
   `set_party_field`, `add_ticket`, `remove_ticket`, `withdraw_ticket`, `set_ev_allocation`,
   `set_seed`, `set_political_geography_seed`, `add_candidate`, `remove_candidate`, generic
-  `set` with dotted paths) to a copy and re-validates.
+  `set` with dotted paths) to a copy and re-validates; malformed edit payloads raise
+  `ScenarioError` (never a bare `TypeError`/`ValueError`).
 
 ### 7.1 The demo scenarios (FICTIONAL)
 
@@ -390,11 +431,56 @@ PA (green-left), SAP (left-populist), VLP (economic-liberal), DM (social-liberal
 (Christian-democratic), NVB (national-populist), PLB (agrarian; renamed *Plattelands- en
 Regiopartij* in 2027) and RV (orthodox-Protestant).  All share `political_geography_seed: 1848`.
 
-| scenario | slug | contests | design (measured on the REAL country, shocks only, 600–1000 draws) |
+| scenario | slug | contests | design (FICTIONAL model output: REAL country, shocks only, campaigns off, 1000 draws) |
 |---|---|---|---|
-| `founding_2024.yaml` | `founding-2024` | President, all 150 House seats, all 24 Senate seats (classes 1–3), 12 governors | VLP ticket wins outright ≈ 57 %, contingent election ≈ 42 %; CVU carries Overijssel and contests Brabant; NVB the periphery |
-| `midterm_2026.yaml` | `midterm-2026` | House, Senate class 1, mayors + councils | president's party (VLP) pays the midterm penalty; agrarian surge; turnout ≈ 63 % |
-| `general_2028.yaml` | `demo-2028` | President, House, Senate class 2, 12 governors | PA ≈ 47 % outright, incumbent VLP ≈ 15 %, contingent ≈ 38 %; ZH/UT/GE are toss-ups, CVU favoured in Brabant, NVB carries LI/DR/FR/ZE |
+| `founding_2024.yaml` | `founding-2024` | President, all 150 House seats, all 24 Senate seats (classes 1–3), 12 governors | VLP ticket wins outright ≈ 59 %, contingent election ≈ 40 %; CVU carries Overijssel and contests Brabant; NVB the periphery; turnout ≈ 80 % |
+| `midterm_2026.yaml` | `midterm-2026` | House, Senate class 1, mayors + councils | president's party (`environment.president_party: VLP`) pays the midterm penalty; agrarian surge; turnout ≈ 63 % |
+| `general_2028.yaml` | `demo-2028` | President, House, Senate class 2, 12 governors | VLP ≈ 49 % outright, PA ≈ 39 %, contingent ≈ 12 %; ZH/GE/UT decide it, OV/FR/ZE are three-way, NVB carries LI (and usually DR), CVU contests NB/OV/ZE; turnout ≈ 79 % |
+
+#### Calibration of the flagship demo `demo-2028` — FICTIONAL model output
+
+Not a forecast of anything real: every party, coefficient and result is invented.  Measured with
+`simulate_election` over the 12 `PRES-<PV>` contests for seeds 1–1000 (no campaigns, no polls),
+electoral votes by Huntington–Hill on the REAL 2025 frame (House seats + 2), winner-take-all,
+88 of 174 to win.  A second, independent range of 600 seeds gave VLP 48 %, PA 40 %, contingent
+12 %; `tests/simulation/test_realdata.py` guards the design bands.
+
+Expected (no-shock) national vote: PA 27.5 %, VLP 24.1 %, NVB 12.8 %, CVU 12.0 %, PLB 7.3 %,
+DM 7.1 %, SAP 6.2 %, RV 2.9 %; turnout 79.2 % (realised 79.2 ± 1.3 %).  The PA usually wins the
+popular vote, but its vote is concentrated in Noord-Holland, Groningen and the university towns
+while the VLP's is spread efficiently over the suburbs — the race is decided in Zuid-Holland,
+Gelderland and Utrecht.
+
+| outcome | share of draws |
+|---|---|
+| VLP ticket wins outright (≥ 88 EV) | 48.8 % |
+| PA ticket wins outright | 39.0 % |
+| contingent election (nobody ≥ 88) | 12.2 % |
+| a third party carries ≥ 1 province | 94 % |
+
+| ticket | mean EV | p10 | median | p90 |
+|---|---|---|---|---|
+| PA | 75.9 | 34 | 46 | 152 |
+| VLP | 70.2 | 0 | 78 | 123 |
+| NVB | 20.1 | 6 | 22 | 30 |
+| CVU | 7.7 | 0 | 0 | 36 |
+| DM, SAP | 0 | 0 | 0 | 0 |
+
+| province (EV) | win probability | | province (EV) | win probability |
+|---|---|---|---|---|
+| ZH (34) | VLP 59, PA 41 | | OV (12) | PA 60, CVU 22, VLP 18 |
+| NH (27) | PA 100 | | LI (11) | NVB 88, CVU 4, PA 4, VLP 4 |
+| NB (24) | VLP 67, PA 18, CVU 14 | | FR (8) | NVB 44, PA 31, VLP 24 |
+| GE (20) | VLP 61, PA 39 | | GR (7) | PA 100 |
+| UT (14) | VLP 67, PA 33 | | DR (6) | NVB 80, VLP 19, CVU 1 |
+| FL (6) | VLP 80, PA 19, NVB 1 | | ZE (5) | VLP 44, NVB 38, CVU 18 |
+
+Tuning (2028 only; the shared parties and the 2024/2026 scenarios are unchanged): baseline
+shares PA 26 %, VLP 24.5 %, NVB 13 %, CVU 12 %, DM 7.5 %, SAP 6.5 %, PLB 7.5 %, RV 3 %; province
+environment ZH PA +0.15, UT PA +0.05, NB CVU +0.05 / VLP +0.03, FR NVB −0.05 (plus the existing
+LI/GE shifts); a more nationalised shock structure (`province_sd` 0.025, `spatial_sd` 0.02,
+`national_sd` 0.12).  The previous calibration (PA 47 %, VLP 15 %, contingent 38 %) left ≈ 50 EV
+with the NVB and CVU on average, so the two big tickets needed 88 of ≈ 124.
 
 (Probabilities move once campaigns and polls are layered on; they are design targets, not
 promises.)
@@ -407,9 +493,10 @@ promises.)
 * Persistent draws use `political_geography_seed`, election draws the election seed; every
   component, party, race and line has its own stream, so unrelated edits do not perturb other draws
   (tested: removing races leaves the remaining races' votes unchanged).
-* Same model config + scenario + frame + seed ⇒ bit-identical `ElectionDraw`;
-  `model.fingerprint` hashes scenario + model config + frame size and is stored in
-  `ElectionDraw.environment`.
+* Same model config + scenario + frame + regions + seed ⇒ bit-identical `ElectionDraw`,
+  independent of the order in which the races are passed; `model.fingerprint` hashes scenario +
+  model config + frame identity (vintage, unit codes, eligible voters, municipality links) +
+  resolved region membership and is stored in `ElectionDraw.environment`.
 
 ---
 

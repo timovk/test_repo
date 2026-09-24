@@ -74,6 +74,10 @@ def create_apportionment(
     Idempotent per (vintage, method): an existing apportionment with the same population basis is
     returned unchanged; one with a different basis is recomputed in place.  With ``set_active``
     the apportionment becomes the vintage's active one (others are deactivated).
+
+    Raises:
+        NotFoundError: a province is not in the database.
+        ApportionmentError: not exactly the constitution's provinces, or an invalid apportionment.
     """
     cons = constitution or get_constitution()
     meth = canonical_method(method or cons.apportionment_method)
@@ -81,6 +85,12 @@ def create_apportionment(
     unknown = sorted(set(populations_by_code) - set(pids))
     if unknown:
         raise NotFoundError(f"provinces not in the database: {unknown}")
+    if len(populations_by_code) != cons.province_count:
+        # a partial apportionment would silently change the EV total (seats + 2 × provinces)
+        raise ApportionmentError(
+            f"apportionment needs the populations of all {cons.province_count} provinces, "
+            f"got {len(populations_by_code)}"
+        )
     result = apportion(
         populations_by_code, cons.house_seats, meth, cons.min_house_seats_per_province, constitution=cons
     )

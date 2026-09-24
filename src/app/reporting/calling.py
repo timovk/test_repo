@@ -88,6 +88,24 @@ def _softmax(logits: np.ndarray) -> np.ndarray:
     return ez / ez.sum(axis=-1, keepdims=True)
 
 
+def _finite_nonneg(a: np.ndarray) -> np.ndarray:
+    """``a`` as float64 with NaN/±inf and negative entries replaced by 0 (input hygiene)."""
+    v = np.asarray(a, dtype=np.float64)
+    return np.where(np.isfinite(v) & (v > 0.0), v, 0.0)
+
+
+def _expected_composition(shares: np.ndarray) -> np.ndarray:
+    """Row-normalised expected shares, floored at 1e-9; invalid rows (NaN, negative, all
+    zero) become uniform, so a corrupt expectation can never make one line a certain winner."""
+    raw = np.asarray(shares, dtype=np.float64)
+    if raw.size and raw.min() >= 0.0 and np.isfinite(raw.max()):  # fast path (NaN fails min ≥ 0)
+        e = np.maximum(raw, 1e-9)
+    else:
+        bad = ~(np.isfinite(raw) & (raw >= 0.0)).all(axis=1)
+        e = np.maximum(np.where(bad[:, None], 1.0, np.nan_to_num(raw, nan=0.0)), 1e-9)
+    return e / e.sum(axis=1, keepdims=True)
+
+
 def _r(x: float, nd: int = 6) -> float:
     """Round for JSON evidence (non-finite values become 0.0)."""
     x = float(x)
@@ -383,9 +401,10 @@ class RaceCaller:
         if L == 0:
             raise ElectionNightError(f"{progress.race_key}: race has no ballot lines")
         counted = np.asarray(progress.counted_votes, dtype=np.int64)
-        f = np.clip(np.asarray(progress.reported_fraction, dtype=np.float64), 0.0, 1.0)
+        f = np.asarray(progress.reported_fraction, dtype=np.float64)
+        f = np.clip(np.where(np.isfinite(f), f, 0.0), 0.0, 1.0)
         cb = np.asarray(progress.counted_ballots, dtype=np.int64)
-        x = np.maximum(np.asarray(progress.expected_ballots, dtype=np.float64), 0.0)
+        x = _finite_nonneg(progress.expected_ballots)
         el = np.asarray(progress.eligible, dtype=np.int64)
         n = len(f)
 
@@ -399,6 +418,7 @@ class RaceCaller:
             rshare = float(f @ el) / float(el.sum())
         else:
             rshare = float(f.mean()) if n else 1.0
+        rshare = min(max(rshare, 0.0), 1.0)  # a dot product and a sum may differ by an ulp
         units_reported = int(np.count_nonzero(f >= 1.0))
         units_partial = int(np.count_nonzero(f > 0)) - units_reported
         has_results = units_reported + units_partial > 0
@@ -588,8 +608,10 @@ class RaceCaller:
             return []
         sticky = prior is not None and prior.status in CALL_STATUSES and prior_i is not None
         if not has_results:
-            if sticky or not cfg.call_at_poll_close:
+            if not cfg.call_at_poll_close:
                 return []
+            if sticky:
+                return [(prior_i, cfg.retraction_threshold)]
             return [(None, cfg.projected_threshold), (None, cfg.called_threshold)]
         if sticky:
             targets: list[tuple[int | None, float]] = [(prior_i, cfg.retraction_threshold)]
@@ -631,9 +653,13 @@ class RaceCaller:
         if prior is not None and prior.is_manual and not prior.locked:
             return prior.status, prior.key, "manual", False, None
         if prior is not None and prior.status in CALL_STATUSES and prior_i is not None:
-            if not has_results:
-                return prior.status, prior.key, "poll_close", False, None
             p_k = float(prob[prior_i])
+            if not has_results:
+                # only a poll-close call (or a cleared manual call) can precede any result: keep
+                # it only when poll-close calls are allowed and the expectation still supports it
+                if cfg.call_at_poll_close and p_k >= cfg.retraction_threshold:
+                    return prior.status, prior.key, "poll_close", False, None
+                return RaceStatus.POLLS_CLOSED, None, "retraction", True, prior.key
             certain_k = math_certain and prior_i == lead_i
             if p_k < cfg.retraction_threshold and not certain_k:
                 return RaceStatus.TOO_CLOSE, None, "retraction", True, prior.key
@@ -805,9 +831,8 @@ class RaceCaller:
         else:
             _, cl = np.unique(progress.unit_cluster, return_inverse=True)
             M = int(cl.max()) + 1 if n else 0
-        # --- expected shares (normalised, floored)
-        e = np.maximum(np.asarray(progress.expected_shares, dtype=np.float64), 1e-9)
-        e = e / e.sum(axis=1, keepdims=True)
+        # --- expected shares (normalised, floored; corrupt rows → uniform)
+        e = _expected_composition(progress.expected_shares)
         exp_race = x @ e
         exp_race = exp_race / exp_race.sum() if exp_race.sum() > 0 else np.full(L, 1.0 / L)
 
@@ -962,15 +987,24 @@ class RaceCaller:
                     return True
             return False
 
+        def _wins(block: np.ndarray) -> np.ndarray:
+            """Win counts; a non-finite draw (defensive: never expected) is won by nobody, so
+            numerical trouble can only lower win probabilities, never produce a call."""
+            ok = np.isfinite(block).all(axis=1)
+            if not ok.all():
+                log.warning("%s: %d non-finite projection draws ignored", progress.race_key, int((~ok).sum()))
+                block = block[ok]
+            return np.bincount(np.argmax(block, axis=1), minlength=L) if len(block) else np.zeros(L, np.int64)
+
         draws = _draw(cfg.n_draws_min)
-        wins = np.bincount(np.argmax(draws, axis=1), minlength=L)
+        wins = _wins(draws)
         for target, need in ((cfg.n_draws, _near), (cfg.n_draws_max, _confirm)):
             D = draws.shape[0]
             if target <= D or not need(wins, D):
                 continue
             extra = _draw(target - D)
             draws = np.vstack([draws, extra])
-            wins = wins + np.bincount(np.argmax(extra, axis=1), minlength=L)
+            wins = wins + _wins(extra)
 
         D = draws.shape[0]
         k05, k95 = round(0.05 * (D - 1)), round(0.95 * (D - 1))

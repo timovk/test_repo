@@ -39,6 +39,8 @@ from app.scenarios.schema import ScenarioDocument
 log = get_logger(__name__)
 
 LOADER_DIRECTIVES: tuple[str, ...] = ("parties_file", "candidates_file", "party_overrides")
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]*$")
+_SEAT_CODE_RE = re.compile(r"^(SEN-)?[A-Z]{2}-[12]$")
 _RACE_CODE_RE = re.compile(
     r"^(PRES(-[A-Z]{2})?|HOUSE-[A-Z]{2}-\d{2}|SEN-[A-Z]{2}-[12]|GOV-[A-Z]{2}|MAYOR-GM\d{4}|COUNCIL-GM\d{4}|PROVLEG-[A-Z]{2})$"
 )
@@ -74,14 +76,25 @@ def _merge_by(items: list[dict], extra: list[dict], key: str, what: str) -> list
 
 
 def _resolve_include(ref: str, base_dir: Path | None) -> Path:
+    """Resolve an include path inside ``config/`` or the scenario's own directory.
+
+    Includes may not escape those roots (``../`` or absolute paths elsewhere), so a scenario
+    uploaded through the editor cannot read arbitrary files on the server.
+    """
     p = Path(ref)
+    roots = [get_settings().config_dir.resolve()]
+    if base_dir is not None:
+        roots.append(Path(base_dir).resolve())
     candidates = [p] if p.is_absolute() else [get_settings().config_dir / p]
     if base_dir is not None and not p.is_absolute():
         candidates.append(base_dir / p)
     for c in candidates:
         if c.exists():
+            resolved = c.resolve()
+            if not any(resolved.is_relative_to(r) for r in roots):
+                raise ScenarioError(f"included file {ref} lies outside config/ and the scenario directory")
             return c
-    raise ScenarioError(f"included file not found: {ref} (looked in {', '.join(str(c) for c in candidates)})")
+    raise ScenarioError(f"included file not found: {ref}")
 
 
 def _read_yaml(path: Path) -> Any:
@@ -116,6 +129,8 @@ def merge_includes(data: Mapping[str, Any], base_dir: Path | None = None) -> dic
     if parties or "parties" in doc:
         parties = _merge_by(parties, list(doc.get("parties") or []), "code", "parties")
     overrides = data.get("party_overrides") or {}
+    if not isinstance(overrides, Mapping):
+        raise ScenarioError("party_overrides must be a mapping {CODE: {field: value}}")
     if overrides:
         pos = {p.get("code"): i for i, p in enumerate(parties)}
         for code, patch in overrides.items():
@@ -141,7 +156,12 @@ def _validate(data: Mapping[str, Any], source: str) -> ScenarioDocument:
 
 # --------------------------------------------------------------------------- public API
 def scenario_path(path_or_slug: str | Path) -> Path:
-    """Resolve a file path or a slug (``config/scenarios/<slug>.yaml`` or ``scenario.slug`` match)."""
+    """Resolve a file path or a slug (``config/scenarios/<slug>.yaml`` or ``scenario.slug`` match).
+
+    Anything without a ``.yaml``/``.yml`` suffix is treated as a slug and must look like one
+    (``[a-z0-9][a-z0-9-_]*``), so a slug coming from an API request can never escape
+    ``config/scenarios``.
+    """
     p = Path(path_or_slug)
     if p.suffix in (".yaml", ".yml"):
         for c in (p, get_settings().config_dir / p, scenarios_dir() / p.name):
@@ -149,6 +169,8 @@ def scenario_path(path_or_slug: str | Path) -> Path:
                 return c
         raise ScenarioError(f"scenario file not found: {path_or_slug}")
     slug = str(path_or_slug)
+    if not _SLUG_RE.match(slug):
+        raise ScenarioError(f"invalid scenario slug {slug!r}")
     d = scenarios_dir()
     for name in (f"{slug}.yaml", f"{slug.replace('-', '_')}.yaml", f"{slug}.yml"):
         if (d / name).exists():
@@ -226,21 +248,33 @@ def list_scenarios(directory: str | Path | None = None) -> list[ScenarioInfo]:
             m = doc.scenario
             out.append(ScenarioInfo(m.slug, m.name, m.year, m.election_type, m.seed, f, m.description))
         except ScenarioError as exc:
-            raw = _read_yaml(f) if f.exists() else {}
+            # a broken file is listed with its error; it must never break the listing itself
+            try:
+                raw = _read_yaml(f)
+            except ScenarioError:
+                raw = {}
             meta = raw.get("scenario", {}) if isinstance(raw, dict) else {}
+            meta = meta if isinstance(meta, dict) else {}
             out.append(
                 ScenarioInfo(
                     slug=str(meta.get("slug", f.stem)),
                     name=str(meta.get("name", f.stem)),
-                    year=int(meta.get("year", 0) or 0),
+                    year=_int_or_zero(meta.get("year")),
                     election_type=str(meta.get("election_type", "general")),
-                    seed=int(meta.get("seed", 0) or 0),
+                    seed=_int_or_zero(meta.get("seed")),
                     path=f,
                     valid=False,
                     error=str(exc).splitlines()[0],
                 )
             )
     return sorted(out, key=lambda s: (s.year, s.slug))
+
+
+def _int_or_zero(v: Any) -> int:
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def duplicate_scenario(
@@ -270,9 +304,8 @@ def validate_scenario(
     inconsistent candidate homes, malformed race codes, unknown ticket candidates, Senate classes
     outside the constitution and missing imported baselines are reported.
     """
-    from app.geography.frame import DEMOGRAPHIC_VARIABLES
     from app.simulation.regions import RegionsConfig, ResolvedRegions, load_regions_config
-    from app.simulation.structural import parse_events
+    from app.simulation.structural import calibration_value_problems, numeric_problems, parse_events
 
     if regions is None:
         region_names = set(load_regions_config().regions)
@@ -308,10 +341,12 @@ def validate_scenario(
             if k not in region_names:
                 problems.append(f"party {p.code}.regions: undefined region {k!r}")
         for k in p.demographics:
-            if k not in DEMOGRAPHIC_VARIABLES and k not in frame.demo_names:
+            if k not in frame.demo_names:
                 problems.append(f"party {p.code}.demographics: unknown variable {k!r}")
         if p.successor is not None:
             party(f"party {p.code}.successor", p.successor)
+    if doc.environment.president_party is not None:
+        party("environment.president_party", doc.environment.president_party)
     for pc, shifts in doc.environment.provinces.items():
         prov("environment.provinces", pc)
         for c in shifts:
@@ -334,6 +369,8 @@ def validate_scenario(
         muni("calibration.municipalities", mc)
         for c in tgt:
             party(f"calibration.municipalities.{mc}", c)
+    problems.extend(calibration_value_problems(doc))
+    problems.extend(numeric_problems(doc))
     if doc.calibration.imported_baseline:
         p = Path(doc.calibration.imported_baseline)
         if not (p if p.is_absolute() else get_settings().config_dir / p).exists():
@@ -383,6 +420,19 @@ def validate_scenario(
     for c in doc.senate.classes_up or []:
         if not 1 <= c <= classes:
             problems.append(f"senate.classes_up: class {c} outside 1..{classes}")
+    for seat in doc.senate.special_elections:
+        if not _SEAT_CODE_RE.match(seat):
+            problems.append(
+                f"senate.special_elections: malformed seat code {seat!r} (expected e.g. 'SEN-NB-1')"
+            )
+        elif seat.removeprefix("SEN-")[:2] not in provs:
+            problems.append(f"senate.special_elections: unknown province in {seat!r}")
+    for block in ("budgets", "strategies"):
+        for c in getattr(doc.campaigns, block):
+            party(f"campaigns.{block}", c)
+    for ps in doc.polling.pollsters:
+        for c in ps.house_effects:
+            party(f"polling.pollsters[{ps.name}].house_effects", c)
     for ev in doc.party_events:
         party(f"party_events {ev.year}", ev.party)
         if ev.related_party is not None:

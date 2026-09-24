@@ -183,3 +183,43 @@ def test_senate_seats(db_session, fine_geo) -> None:  # type: ignore[no-untyped-
     assert [x.id for x in again] == [x.id for x in seats]
     assert db_session.scalar(select(func.count()).select_from(SenateSeat)) == SENATE_SEATS
     assert db_session.scalar(select(func.count()).select_from(Office)) == SENATE_SEATS
+
+
+def test_partial_apportionment_is_rejected(db_session, fine_geo) -> None:  # type: ignore[no-untyped-def]
+    from app.core.errors import ApportionmentError
+
+    vintage = _load_geography(db_session, fine_geo)
+    pops = fine_geo.units.groupby("province_code")["population"].sum().astype(int).to_dict()
+    pops.pop("ZE")
+    with pytest.raises(ApportionmentError, match="all 12 provinces"):
+        create_apportionment(db_session, vintage.id, pops)
+
+
+def test_overridden_units_are_stored_with_their_source(db_session, fine_geo, fine_plan) -> None:  # type: ignore[no-untyped-def]
+    from app.districts.overrides import apply_overrides
+
+    e, ud = fine_plan.edges, fine_plan.unit_district
+    a, b = next(
+        (a, b)
+        for a, b in e.tolist()
+        if ud[a] != ud[b] and fine_plan.unit_province[a] == fine_plan.unit_province[b]
+    )
+    plan = apply_overrides(
+        fine_plan, [{"unit": str(fine_plan.unit_codes[a]), "district": fine_plan.district_codes[ud[b]]}]
+    )
+    vintage = _load_geography(db_session, fine_geo)
+    row = store_plan(db_session, plan, vintage.id, None, 2028, fine_geo.units.drop(columns="geometry"))
+    assert row.overrides_applied == 1 and row.config_hash == plan.config_hash
+    src = db_session.execute(
+        select(GeoUnit.cbs_code, DistrictAssignment.source)
+        .join(GeoUnit, GeoUnit.id == DistrictAssignment.geo_unit_id)
+        .where(DistrictAssignment.source == "override")
+    ).all()
+    assert src == [(str(fine_plan.unit_codes[a]), "override")]
+    # without geometry the districts are stored without WKB and compactness
+    d = db_session.scalars(select(HouseDistrict)).first()
+    assert d.geometry_wkb is None and d.polsby_popper is None
+    frame = frame_from_tables(fine_geo.units, fine_geo.municipalities, fine_geo.provinces, year=2025)
+    mapping = load_plan_mapping(db_session, row.id, frame)
+    got = np.asarray(mapping.district_codes, dtype=object)[mapping.unit_district]
+    assert got[frame.unit_index(str(fine_plan.unit_codes[a]))] == fine_plan.district_codes[ud[b]]

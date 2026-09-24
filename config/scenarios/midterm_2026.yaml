@@ -137,6 +137,9 @@ environment:
     midterm_penalty: 0.05
   strategic_voting: 0.30
   elasticity_strength: 0.6
+  # Party of the sitting President (pays the midterm penalty).  Services chaining elections pass
+  # the actual office holder's party instead (ElectionContext.president_party).
+  president_party: VLP
 
 # Baseline for 2026 (FICTIONAL drift since 2024).
 calibration:

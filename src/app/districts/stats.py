@@ -169,8 +169,8 @@ def district_stats(
     target_population, deviation_pct, area_km2, polsby_popper, reock, convex_hull_ratio, n_units,
     n_municipalities, n_split_municipalities, urban_share, rural_share, is_contiguous,
     n_components, centroid_lon, centroid_lat``.  Geometric metrics need a geometry column in
-    ``units_gdf`` (or ``geometries``); without one they are NaN and the centroid is the
-    population-weighted unit centroid.
+    ``units_gdf`` (or ``geometries``, matched to the plan's districts on their ``code`` column); without
+    one they are NaN and the centroid is the population-weighted unit centroid.
     """
     n_d = plan.n_districts
     pos = _positions(plan, units_gdf)
@@ -222,7 +222,11 @@ def district_stats(
         land = pd.to_numeric(units["land_area_km2"], errors="coerce").fillna(0).to_numpy(dtype=float)
         stats["area_km2"] = np.bincount(ud, weights=land, minlength=n_d)
     if has_geom:
-        geo = geometries if geometries is not None else district_geometries(plan, units_gdf)  # type: ignore[arg-type]
+        geo = (
+            _align_geometries(plan, geometries)
+            if geometries is not None
+            else district_geometries(plan, units_gdf)  # type: ignore[arg-type]
+        )
         stats = stats.join(compactness(geo).set_index(stats.index))
         if "area_km2" not in stats.columns:
             stats["area_km2"] = shapely.area(np.asarray(geo.geometry.values, dtype=object)) / 1e6
@@ -244,6 +248,24 @@ def district_stats(
         "centroid_lon", "centroid_lat",
     ]  # fmt: skip
     return stats[cols]
+
+
+def _align_geometries(plan: GeneratedPlan, geometries: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """``geometries`` in plan district order (matched on ``code`` when the column is present)."""
+    if "code" in geometries.columns:
+        codes = geometries["code"].astype(str)
+        if not codes.is_unique:
+            raise DistrictingError("district geometries contain duplicate codes")
+        pos = pd.Index(codes).get_indexer(plan.district_codes)
+        if (pos < 0).any():
+            missing = [c for c, i in zip(plan.district_codes, pos, strict=True) if i < 0]
+            raise DistrictingError(f"district geometries lack {len(missing)} districts (e.g. {missing[:5]})")
+        return geometries.iloc[pos]
+    if len(geometries) != plan.n_districts:
+        raise DistrictingError(
+            f"{len(geometries)} district geometries for {plan.n_districts} districts (and no 'code' column)"
+        )
+    return geometries
 
 
 def has_geometry(df: pd.DataFrame) -> bool:

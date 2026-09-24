@@ -107,3 +107,73 @@ def test_real_frame_scale(real_frame, make_synthetic_pres) -> None:
     fl = H.municipality_flips(prev, curr)
     assert len(fl) == real_frame.n_munis
     assert time.perf_counter() - t0 < 60.0
+
+
+@pytest.mark.realdata
+@pytest.mark.slow
+def test_million_row_history_on_the_real_frame(real_frame, make_engine_election, tmp_path) -> None:
+    """Four full general elections stored like the services store them (every race at every level
+    down to the 14,729 CBS buurten): ~1M rows through the history, seat and export paths."""
+    from app.core.constitution import HOUSE_SEATS
+    from app.elections import electoral_college as EC
+    from app.elections.tabulation import tabulate_totals
+    from app.export import builders as B
+    from app.export import writers as W
+
+    t_build = time.perf_counter()
+    elections = [
+        make_engine_election(real_frame, 17, i + 1, 2024 + 4 * i, tilt={"A": 0.08 * i}, local=False)
+        for i in range(4)
+    ]
+    frame = pd.concat(elections, ignore_index=True)
+    build_s = time.perf_counter() - t_build
+    assert len(frame) > 1_000_000
+    t0 = time.perf_counter()
+    assert validate_results_frame(frame) == []
+    units = frame[(frame["level"] == "unit") & (frame["race_type"] == "PRESIDENT_PROVINCE")]
+    nat = national_party_totals(frame)
+    pres = nat[nat["race_family"] == "PRESIDENT"].set_index(["election_id", "party"])["votes"]
+    assert pres.sort_index().tolist() == units.groupby(["election_id", "party_code"])["votes"].sum().tolist()
+    st = H.seat_totals(frame)
+    assert (st.groupby("election_id")["seats"].sum() == HOUSE_SEATS).all()
+    assert len(H.closest_races(frame, 25)) == 25
+    el = M.elasticity(frame, level="municipality", by="family", parties=["A", "B"])
+    ok = el[el["race_family"] == "PRESIDENT"]
+    assert set(ok["method"]) == {"ols"} and ok["geo_code"].nunique() == real_frame.n_munis
+    rs = M.race_summaries(elections[3], prev=frame)
+    assert set(rs["flip_status"]) <= {"hold", "flip", "undecided"} and rs["race_code"].is_unique
+    cmp = H.compare_elections(elections[2], elections[3], "unit", race_type="PRESIDENT")
+    assert cmp["geo_code"].nunique() == real_frame.n_units and set(cmp["status"]) == {"both"}
+    mt = M.margin_table(frame, level="unit")
+    assert len(mt) == int(
+        frame.loc[frame["level"] == "unit", ["election_id", "race_code", "geo_code"]]
+        .drop_duplicates()
+        .shape[0]
+    )
+    ev = {
+        p: e
+        for p, e in zip(real_frame.province_codes, (7, 8, 6, 12, 6, 20, 14, 27, 34, 5, 24, 11), strict=True)
+    }
+    last = elections[3]
+    tally = M.electoral_college_tally(frame, ev, by="line")
+    assert (tally.groupby("election_id")["electoral_votes"].sum() == 174).all()
+    prov = last[(last["race_type"] == "PRESIDENT_PROVINCE") & (last["level"] == "province")]
+    tabs = {
+        g["geo_code"].iloc[0]: tabulate_totals(r, g["line_key"].tolist(), g["votes"].to_numpy())
+        for r, g in prov.groupby("race_code", sort=False)
+    }
+    for key in ("t-A", "t-B"):
+        ours = M.tipping_point_from_frame(last, ev, key=key, by="line")
+        assert (ours.tipping_province, ours.tipping_margin_pp) == EC.tipping_point(tabs, ev, key)
+    house = [e[e["race_type"] == "HOUSE"] for e in elections[2:]]
+    proj = M.uniform_swing_projection(house[0], M.national_swing(house[0], house[1]))
+    assert proj.seats["seats_projected"].sum() == HOUSE_SEATS
+    comp = M.competitiveness(frame)
+    assert comp["race_code"].nunique() == frame["race_code"].nunique()
+    unit_export = B.results_export(last, "unit")
+    W.write_csv(unit_export, "unit_results", tmp_path / "units.csv")
+    with (tmp_path / "units.csv").open(encoding="utf-8") as fh:
+        assert sum(1 for _ in fh) == len(unit_export) + 1
+    assert len(B.house_results_export(last, prev=frame)) == HOUSE_SEATS
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 240.0, f"analytics on {len(frame):,} rows took {elapsed:.1f}s (build {build_s:.1f}s)"

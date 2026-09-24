@@ -271,3 +271,75 @@ def test_seat_totals(house_curr: pd.DataFrame, house_prev: pd.DataFrame) -> None
     prev = st[st["election_id"] == 1]
     assert prev["seats"].sum() == 3
     assert H.seat_totals(house_curr, "GOVERNOR").empty
+
+
+# --------------------------------------------------------------------------- lineage on the services layout
+@pytest.fixture(scope="module")
+def engine_prev(synthetic, make_engine_election) -> pd.DataFrame:
+    return make_engine_election(synthetic.frame, 5, 1, 2028)
+
+
+def test_remap_lineage_merges_races_at_every_level(synthetic, engine_prev: pd.DataFrame) -> None:
+    geo = synthetic.frame
+    m0, m1 = geo.muni_codes[0], geo.muni_codes[1]
+    lineage = pd.DataFrame({"from_code": [m0, m1], "to_code": [m0, m0], "population_weight": [1.0, 1.0]})
+    out = H.remap_lineage(engine_prev, lineage)
+    assert validate_results_frame(out) == []
+    assert f"MAYOR-{m1}" not in set(out["race_code"]) and f"COUNCIL-{m1}" not in set(out["race_code"])
+    for level in ("municipality", "province", "national"):
+        before = engine_prev[engine_prev["race_code"].isin([f"COUNCIL-{m0}", f"COUNCIL-{m1}"])]
+        before = before[before["level"] == level].groupby("line_key")["votes"].sum()
+        after = out[(out["race_code"] == f"COUNCIL-{m0}") & (out["level"] == level)]
+        assert after["geo_code"].nunique() == 1, level
+        assert after.set_index("line_key")["votes"].sort_index().tolist() == before.sort_index().tolist()
+        mayor = out[(out["race_code"] == f"MAYOR-{m0}") & (out["level"] == level)]
+        assert len(mayor) == 6 and mayor["winner"].sum() <= 1, level  # 3 + 3 candidates pooled
+    munis = out[out["level"] == "municipality"]
+    assert m1 not in set(munis["geo_code"])
+    keep = engine_prev[(engine_prev["level"] == "municipality") & (engine_prev["race_type"] == "GOVERNOR")]
+    got = munis[munis["race_type"] == "GOVERNOR"]
+    assert got["votes"].sum() == keep["votes"].sum()
+    units_before = engine_prev[engine_prev["level"] == "unit"].drop(columns="race_code")
+    units_after = out[out["level"] == "unit"].drop(columns="race_code")
+    assert len(units_before) == len(units_after) and units_after["votes"].sum() == units_before["votes"].sum()
+
+
+def test_remap_lineage_with_compute_lineage_output(synthetic, engine_prev: pd.DataFrame) -> None:
+    from app.geography.lineage import compute_lineage
+
+    geo = synthetic.frame
+    old = synthetic.units.drop(columns="geometry")
+    new = old.copy()
+    new.loc[new["municipality_code"] == geo.muni_codes[3], "municipality_code"] = geo.muni_codes[2]
+    lineage = compute_lineage(old, new)
+    assert set(lineage["event"]) >= {"unchanged", "merger"}
+    out = H.remap_lineage(engine_prev, lineage)
+    assert validate_results_frame(out) == []
+    munis = out[out["level"] == "municipality"]
+    assert munis["geo_code"].nunique() == geo.n_munis - 1
+    fam = lambda f: f[(f["level"] == "municipality") & (f["race_type"] == "PRESIDENT")]["votes"].sum()  # noqa: E731
+    assert fam(out) == fam(engine_prev)
+
+
+def test_lineage_weights_are_validated_and_rounding_is_absorbed(make_rows) -> None:
+    prev = _muni_frame(make_rows, 1, 2028, {"GM0001": (300, 600), "GM0002": (10, 20)})
+    rounded = pd.DataFrame(
+        {
+            "from_code": ["GM0001"] * 3 + ["GM0002"],
+            "to_code": ["GM0101", "GM0102", "GM0103", "GM0104"],
+            "population_weight": [0.3333336, 0.3333336, 0.3333336, 1.0],  # 6-dp rounding: sums to 1.000001
+        }
+    )
+    out = H.remap_lineage(prev, rounded)
+    assert validate_results_frame(out) == []
+    g = out.set_index(["geo_code", "line_key"])["votes"]
+    assert [g[(c, "ta")] for c in ("GM0101", "GM0102", "GM0103")] == [100, 100, 100]
+    assert out["votes"].sum() == prev["votes"].sum()
+    with pytest.raises(ResultsFrameError, match="more than 1"):
+        H.remap_lineage(prev, rounded.assign(population_weight=[0.4, 0.4, 0.4, 1.0]))
+    with pytest.raises(ResultsFrameError, match="finite"):
+        H.remap_lineage(prev, rounded.assign(population_weight=[np.inf, 0.0, 0.0, 1.0]))
+    with pytest.raises(ResultsFrameError, match="unknown level"):
+        H.remap_lineage(prev, rounded, level="galaxy")
+    partial = H.remap_lineage(prev, rounded.assign(population_weight=[0.25, 0.25, 0.25, 1.0]))
+    assert partial.loc[partial["geo_code"] == "GM0101", "votes"].sum() == 225  # a genuinely partial split

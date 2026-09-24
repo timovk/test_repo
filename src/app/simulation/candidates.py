@@ -27,7 +27,7 @@ from app.core.rng import derive_seed, make_rng
 from app.elections.types import BallotLine
 from app.scenarios.schema import CandidateSpec, ContestRule, DownBallotSpec, ScenarioDocument
 from app.simulation import names as name_pools
-from app.simulation.structural import StructuralModel
+from app.simulation.structural import StructuralModel, as_unit_index
 
 log = get_logger(__name__)
 
@@ -347,7 +347,7 @@ def generate_race_candidates(
       drawn by eligible voters within the jurisdiction.
     """
     rt = RaceType(race_type)
-    units = np.asarray(unit_index, dtype=np.int64)
+    units = as_unit_index(unit_index, model.frame.n_units, what=race_key)
     existing = existing_keys if existing_keys is not None else set()
     scenario_candidates = scenario_candidates or {}
     office = office_label or _OFFICE_LABEL.get(rt, rt.value.title())
@@ -491,11 +491,14 @@ def generate_down_ballot(
     """Candidates for many races (rules default to the model scenario's sections per race type).
 
     ``incumbents`` maps race key → sitting office holder; candidate keys are unique across the
-    whole batch (and against ``existing_keys``).
+    whole batch, against the scenario's candidates and against ``existing_keys`` (a set that is
+    updated in place with every key used, so it can be shared between batches).
     """
     doc = model.scenario
     incumbents = incumbents or {}
-    existing = existing_keys if existing_keys is not None else {c.key for c in doc.candidates}
+    # the scenario's own people always count as taken, also when the caller tracks its own keys
+    existing = existing_keys if existing_keys is not None else set()
+    existing.update(c.key for c in doc.candidates)
     scenario_candidates = {c.key: c for c in doc.candidates}
     out: dict[str, RaceCandidates] = {}
     for slot in slots:

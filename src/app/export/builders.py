@@ -79,15 +79,46 @@ def _summary(
     return _parties_to_codes(out)
 
 
+def _code_part(race_codes: pd.Series, index: int) -> pd.Series:
+    """``index``-th ``-``-separated part of each race code (``SEN-NB-2`` → ``NB`` for 1)."""
+    return race_codes.astype(str).str.split("-").str[index]
+
+
+def _at_jurisdiction(summary: pd.DataFrame, level: str) -> np.ndarray:
+    return (summary["level"] == level).to_numpy()
+
+
 def house_results_export(
     frame: pd.DataFrame,
     prev: pd.DataFrame | None = None,
     incumbents: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """One row per House race conformed to ``house_results`` (flip vs ``prev`` / incumbents)."""
+    """One row per House race conformed to ``house_results`` (flip vs ``prev`` / incumbents).
+
+    ``district_code`` is the race's district-level geo code; for a frame without district rows
+    it is taken from the race code (``HOUSE-NB-07`` → ``NB-07``) and ``district_name`` is null.
+    """
     s = _summary(frame, RaceType.HOUSE, prev, incumbents)
-    s = s.rename(columns={"geo_code": "district_code", "geo_name": "district_name"})
+    at = _at_jurisdiction(s, "district")
+    from_code = s["race_code"].astype(str).str.removeprefix(f"{RaceType.HOUSE.value}-")
+    s["district_code"] = np.where(at, s["geo_code"].to_numpy(dtype=object), from_code.to_numpy(dtype=object))
+    s["district_name"] = np.where(at, s["geo_name"].to_numpy(dtype=object), None)
+    s["province_code"] = s["province_code"].where(s["province_code"].notna(), _code_part(s["race_code"], 1))
+    s = s.drop(columns=["geo_code", "geo_name"])
     return conform(s, "house_results", allow_unknown=True)
+
+
+def _province_summary(s: pd.DataFrame) -> pd.DataFrame:
+    """Province columns of a province-level race summary (``province_code`` from the race code
+    when the frame lacks the race's province rows)."""
+    at = _at_jurisdiction(s, "province")
+    s = s.copy()
+    s["province_name"] = np.where(at, s["geo_name"].to_numpy(dtype=object), None)
+    code = np.where(
+        at, s["geo_code"].to_numpy(dtype=object), _code_part(s["race_code"], 1).to_numpy(dtype=object)
+    )
+    s["province_code"] = code
+    return s.drop(columns=["geo_code", "geo_name"])
 
 
 def senate_results_export(
@@ -103,8 +134,7 @@ def senate_results_export(
     ``seat_number`` is parsed from the race code (``SEN-NB-2`` → 2); ``senate_classes`` maps race
     codes to their class; ``special_races`` lists race codes held as special elections.
     """
-    s = _summary(frame, RaceType.SENATE, prev, incumbents)
-    s = s.rename(columns={"geo_name": "province_name"})
+    s = _province_summary(_summary(frame, RaceType.SENATE, prev, incumbents))
     tail = s["race_code"].astype(str).str.rsplit("-", n=1).str[-1]
     s["seat_number"] = pd.to_numeric(tail, errors="coerce")
     s["senate_class"] = s["race_code"].map(dict(senate_classes)) if senate_classes else None
@@ -118,8 +148,7 @@ def governor_results_export(
     incumbents: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """One row per governor race conformed to ``governor_results``."""
-    s = _summary(frame, RaceType.GOVERNOR, prev, incumbents)
-    s = s.rename(columns={"geo_name": "province_name"})
+    s = _province_summary(_summary(frame, RaceType.GOVERNOR, prev, incumbents))
     return conform(s, "governor_results", allow_unknown=True)
 
 

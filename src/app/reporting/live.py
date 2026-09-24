@@ -45,14 +45,21 @@ Snapshot schema (``snapshot(detail)``; every value is JSON-serialisable)::
       "races": [compact race: {key, type, name, parent, province_code, district_code,
                 municipality_code, status, is_manual, leader, called_key, lean_key,
                 win_probability, reporting_pct, margin_pct, projected_margin_pct, math_certain,
-                votes: {key: int}}  (+ with detail="full": counted_valid, win_probabilities,
-                projected_share_mean/p05/p95, projected_votes, outstanding_ballots_est,
-                outstanding_ballots_upper, line_labels, line_parties, line_colors)],
+                evaluated_seq, votes: {key: int}}  (+ with detail="full": counted_valid,
+                win_probabilities, projected_share_mean/p05/p95, projected_votes,
+                outstanding_ballots_est, outstanding_ballots_upper, line_labels, line_parties,
+                line_colors)],
       "recent_calls": [call record without evidence], "lead_changes": {"count", "recent"},
       # detail="full" only:
       "municipalities": [{code, name, province_code, reporting_pct, units_total,
                           units_reported, leader, margin_pct, race_key}]
     }
+
+Counted quantities (``votes``, ``reporting_pct``, ``margin_pct``, ``counted_valid``, ``leader``)
+are always current; model outputs (``win_probability``, projections, ``math_certain``) are those
+of the race's last evaluation, at ``evaluated_seq`` (see the evaluation schedule).  ``control``
+is the party whose *called* seats (plus Senate holdovers) currently reach the majority — a
+retraction below it clears it — and ``control_at_seq`` the seq at which it reached it.
 
 ``race_detail(race_key)`` returns meta, the current decision (with evidence), the complete call
 history (with evidence), lead changes and a per-municipality breakdown; ``municipality_detail
@@ -63,8 +70,9 @@ municipality.
 from __future__ import annotations
 
 from bisect import insort
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import pairwise
 
 import numpy as np
@@ -92,6 +100,7 @@ from app.reporting.timeline import Timeline
 log = get_logger(__name__)
 
 __all__ = [
+    "MANUAL_STATUSES",
     "CallRecord",
     "LeadChange",
     "ManualCall",
@@ -99,6 +108,7 @@ __all__ = [
     "PlaybackClock",
     "PlaybackState",
     "RaceMeta",
+    "manual_calls_from_history",
 ]
 
 #: Key used for the national presidential parent race.
@@ -114,6 +124,20 @@ _TYPE_PRIORITY = {
     RaceType.MUNICIPAL_COUNCIL: 6,
     RaceType.PRESIDENT: 7,
 }
+#: Statuses a producer may set by hand.  FINAL and RECOUNT are reached only by the count itself
+#: (100 % reported); a manual FINAL would otherwise lock a race before its votes are counted.
+MANUAL_STATUSES: frozenset[RaceStatus] = frozenset(
+    {
+        RaceStatus.POLLS_CLOSED,
+        RaceStatus.TOO_EARLY,
+        RaceStatus.TOO_CLOSE,
+        RaceStatus.LEAN,
+        RaceStatus.PROJECTED,
+        RaceStatus.CALLED,
+    }
+)
+#: Manual statuses that name a line (the others carry no key).
+_KEYED_STATUSES: frozenset[RaceStatus] = frozenset({RaceStatus.LEAN, RaceStatus.PROJECTED, RaceStatus.CALLED})
 
 
 # --------------------------------------------------------------------------- public records
@@ -136,7 +160,15 @@ class RaceMeta:
 
 @dataclass(frozen=True)
 class CallRecord:
-    """A change of a race's published state (maps onto ``race_call``)."""
+    """A change of a race's published state (maps onto ``race_call``).
+
+    ``seq``/``sim_time_s``/``timestamp`` locate the change in the night (``timestamp`` is the
+    tz-aware simulated local time → ``race_call.called_at``); ``win_probability`` is the model
+    probability of ``key`` (or of the counted leader when no line is named); ``margin_pct`` is the
+    counted leader's margin.  A record produced by clearing a manual override carries
+    ``evidence["manual_cleared"] = True`` and the clear's reason in ``override_reason``, so
+    :func:`manual_calls_from_history` can rebuild every :class:`ManualCall` from stored rows.
+    """
 
     race_key: str
     seq: int
@@ -152,12 +184,19 @@ class CallRecord:
     retracted: bool = False
     previous_status: RaceStatus | None = None
     previous_key: str | None = None
+    timestamp: datetime | None = None
+
+    @property
+    def clears_manual(self) -> bool:
+        """True when this record was produced by clearing a manual override."""
+        return bool(self.evidence.get("manual_cleared", False))
 
     def to_dict(self, include_evidence: bool = True) -> dict:
         d = {
             "race_key": self.race_key,
             "seq": self.seq,
             "sim_time_s": self.sim_time_s,
+            "timestamp": None if self.timestamp is None else self.timestamp.isoformat(),
             "status": self.status.value,
             "key": self.key,
             "win_probability": self.win_probability,
@@ -202,6 +241,11 @@ class ManualCall:
 
     ``status=None`` clears the override: the race is re-evaluated at once and the model treats
     the former manual state as its own prior (a manual call it still believes stays called).
+    ``status`` must be one of :data:`MANUAL_STATUSES`; LEAN / PROJECTED / CALLED need a ``key``.
+    ``sim_time_s`` is the simulated time the override was made at (the playback clock may be
+    between two events); a replay stamps the override's records with it, so they are identical
+    to the live ones.  ``None`` (e.g. a hand-written override) uses the time of event ``seq``.
+    It does not take part in equality.
     """
 
     race_key: str
@@ -209,6 +253,46 @@ class ManualCall:
     status: RaceStatus | None
     key: str | None = None
     reason: str | None = None
+    sim_time_s: float | None = field(default=None, compare=False)
+
+
+def manual_calls_from_history(records: Iterable[CallRecord | Mapping]) -> list[ManualCall]:
+    """Rebuild the :class:`ManualCall` list of a night from its call records.
+
+    Accepts :class:`CallRecord` objects or mappings with the keys of :meth:`CallRecord.to_dict`
+    (``race_key``, ``seq``, ``sim_time_s``, ``status``, ``key``, ``is_manual``,
+    ``override_reason`` and ``evidence``), e.g. ``race_call`` rows mapped back by services.
+    Manual records become overrides; records carrying ``evidence["manual_cleared"]`` become
+    clears (``status=None``).  Order is preserved (sort the input by ``seq`` and insertion).
+    """
+    out: list[ManualCall] = []
+    for rec in records:
+        if isinstance(rec, CallRecord):
+            row: Mapping = {
+                "race_key": rec.race_key,
+                "seq": rec.seq,
+                "sim_time_s": rec.sim_time_s,
+                "status": rec.status,
+                "key": rec.key,
+                "is_manual": rec.is_manual,
+                "override_reason": rec.override_reason,
+                "evidence": rec.evidence,
+            }
+        else:
+            row = rec
+        evidence = row.get("evidence") or {}
+        t = row.get("sim_time_s")
+        common = {
+            "race_key": str(row["race_key"]),
+            "seq": int(row["seq"]),
+            "reason": row.get("override_reason"),
+            "sim_time_s": None if t is None else float(t),
+        }
+        if row.get("is_manual"):
+            out.append(ManualCall(status=RaceStatus(row["status"]), key=row.get("key"), **common))
+        elif isinstance(evidence, Mapping) and evidence.get("manual_cleared"):
+            out.append(ManualCall(status=None, key=None, **common))
+    return out
 
 
 # --------------------------------------------------------------------------- internal state
@@ -245,6 +329,22 @@ class _Race:
     def locked(self) -> bool:
         return self.state.status in LOCKED_STATUSES
 
+    def reporting_pct(self) -> float:
+        """Current reporting (% of expected ballots), exact — not the last evaluation's value."""
+        if self.x_total > 0:
+            return min(100.0, 100.0 * float(self.f @ self.exp_ballots) / self.x_total)
+        return 100.0 * float(self.f.mean()) if len(self.f) else 0.0
+
+    def counted_margin(self) -> tuple[int, float]:
+        """Current counted margin of the top line over the runner-up: ``(votes, pp of valid)``."""
+        tot = self.totals
+        valid = int(tot.sum())
+        if valid <= 0:
+            return 0, 0.0
+        top2 = np.sort(tot)[::-1][:2]
+        margin = int(top2[0] - (top2[1] if len(top2) > 1 else 0))
+        return margin, 100.0 * margin / valid
+
     def progress(self) -> RaceProgress:
         return RaceProgress(
             race_key=self.key,
@@ -261,6 +361,19 @@ class _Race:
         )
 
 
+@dataclass
+class _Checkpoint:
+    """Complete mutable state of a :class:`NightEngine` after event ``seq`` (fast rewinds)."""
+
+    seq: int
+    sim_time_s: float
+    f: np.ndarray
+    races: list[tuple]
+    records: list[CallRecord]
+    lead_changes: list[LeadChange]
+    national: tuple
+
+
 # --------------------------------------------------------------------------- engine
 class NightEngine:
     """Deterministic live election night over a timeline and final results.
@@ -269,14 +382,23 @@ class NightEngine:
         frame: the geography the races and timeline refer to.
         timeline: reporting events (:func:`~app.reporting.timeline.generate_timeline`).
         races: race key → final :class:`RaceVotes` (with ``expected_shares``/``expected_turnout``
-            = pre-election expectation, used by the caller).
+            = pre-election expectation, used by the caller).  A national ``PRESIDENT`` race
+            next to ``PRESIDENT_PROVINCE`` races is not called: the presidency ('PRES') follows
+            the Electoral College (see :attr:`derived_races`).
         race_meta: race key → :class:`RaceMeta`.
         config: night configuration (default ``config/night.yaml``).
         seed: root seed of the night (call draws use ``make_rng(seed, "call", race, seq)``).
         holdover_senate: party → Senate seats not up in this election.
         recount_check: injected automatic-recount rule (fallback: ``recount.margin_pct``).
         manual_calls: manual overrides to apply at their ``seq`` (replayed on rebuild).
+
+    Moving backwards restores the nearest state checkpoint (taken every
+    :attr:`checkpoint_every` events while playing forward) and replays from there, so a rewind
+    costs at most ``checkpoint_every`` events instead of the whole night.
     """
+
+    #: Events between two state checkpoints (a few MB each on the real geography).
+    checkpoint_every: int = 250
 
     def __init__(
         self,
@@ -302,10 +424,35 @@ class NightEngine:
         missing = sorted(set(races) - set(race_meta))
         if missing:
             raise ElectionNightError(f"race_meta missing for {missing[:5]}")
+        for key in races:
+            if not isinstance(race_meta[key], RaceMeta):
+                raise ElectionNightError(
+                    f"race_meta[{key!r}] must be a RaceMeta (race type, electoral votes, lines …), "
+                    f"got {type(race_meta[key]).__name__}"
+                )
+        # With an Electoral College the national presidency is *derived* from the province races
+        # (published under 'PRES').  The national popular-vote race the simulation also produces
+        # must not be called as a plurality race: its calls would be published under the same
+        # key and could name the popular-vote winner who loses the Electoral College.
+        ec = any(race_meta[k].race_type == RaceType.PRESIDENT_PROVINCE for k in races)
+        self.derived_races: list[str] = sorted(
+            k for k in races if ec and race_meta[k].race_type == RaceType.PRESIDENT
+        )
+        if ec and PRESIDENT_RACE_KEY in races and PRESIDENT_RACE_KEY not in self.derived_races:
+            raise ElectionNightError(
+                f"race key {PRESIDENT_RACE_KEY!r} is reserved for the Electoral College result"
+            )
+        if self.derived_races:
+            log.info(
+                "national presidential race(s) %s follow the Electoral College; not called by popular vote",
+                self.derived_races,
+            )
         self._races: list[_Race] = []
         self._by_key: dict[str, _Race] = {}
-        for i, key in enumerate(sorted(races)):
-            r = self._build_race(i, key, races[key], race_meta[key])
+        for key in sorted(races):
+            if key in self.derived_races:
+                continue
+            r = self._build_race(len(self._races), key, races[key], race_meta[key])
             self._races.append(r)
             self._by_key[key] = r
         self._build_index()
@@ -320,9 +467,16 @@ class NightEngine:
                     tickets.append(k)
         self._tickets = tickets
         self._manual_all: list[ManualCall] = sorted(manual_calls, key=lambda m: m.seq)  # stable
-        for m in self._manual_all:
+        for i, m in enumerate(self._manual_all):
             if m.race_key not in self._by_key:
                 raise ElectionNightError(f"manual call for unknown race {m.race_key}")
+            if not 0 <= int(m.seq) <= timeline.n_events:
+                raise ElectionNightError(f"manual call for {m.race_key} at seq {m.seq} is outside the night")
+            key = self._check_manual(self._by_key[m.race_key], m.status, m.key)
+            status = None if m.status is None else RaceStatus(m.status)
+            if key != m.key or type(m.status) is not type(status) or int(m.seq) != m.seq:
+                self._manual_all[i] = ManualCall(m.race_key, int(m.seq), status, key, m.reason, m.sim_time_s)
+        self._checkpoints: dict[int, _Checkpoint] = {}
         self.reset()
 
     # ------------------------------------------------------------------ construction
@@ -333,6 +487,25 @@ class NightEngine:
         n, L = rv.votes.shape
         if len(rv.line_keys) != L:
             raise ElectionNightError(f"{key}: line_keys do not match the votes array")
+        if L == 0:
+            raise ElectionNightError(f"{key}: race has no ballot lines")
+        if len(set(rv.line_keys)) != L:
+            raise ElectionNightError(f"{key}: duplicate line keys")
+        for name in ("blank", "invalid", "eligible"):
+            if np.shape(getattr(rv, name)) != (n,):
+                raise ElectionNightError(f"{key}: {name} must have shape ({n},)")
+        if len(units) != n:
+            raise ElectionNightError(f"{key}: unit_index must have {n} entries")
+        if rv.expected_shares is not None and np.shape(rv.expected_shares) != (n, L):
+            raise ElectionNightError(f"{key}: expected_shares must have shape ({n}, {L})")
+        if rv.expected_turnout is not None and np.shape(rv.expected_turnout) != (n,):
+            raise ElectionNightError(f"{key}: expected_turnout must have shape ({n},)")
+        if (rv.votes < 0).any() or (np.asarray(rv.blank) < 0).any() or (np.asarray(rv.invalid) < 0).any():
+            raise ElectionNightError(f"{key}: negative vote counts")
+        # the mathematical-certainty bound (eligible − counted ballots) needs ballots ≤ eligible
+        cast = rv.votes.sum(axis=1) + np.asarray(rv.blank) + np.asarray(rv.invalid)
+        if (cast > np.asarray(rv.eligible)).any():
+            raise ElectionNightError(f"{key}: ballots exceed eligible voters in some units")
         if rv.expected_shares is None or rv.expected_turnout is None:
             log.warning("race %s has no pre-election expectation; the caller uses flat priors", key)
         exp_shares = (
@@ -345,6 +518,10 @@ class NightEngine:
             if rv.expected_turnout is not None
             else np.full(n, 0.78)
         )
+        if not np.isfinite(exp_turnout).all() or not np.isfinite(exp_shares).all():
+            log.warning("race %s has non-finite expectations; those units use flat priors", key)
+        exp_turnout = np.where(np.isfinite(exp_turnout), np.clip(exp_turnout, 0.0, 1.0), 0.78)
+        exp_ballots = exp_turnout * np.asarray(rv.eligible, dtype=np.float64)
         munis = self.frame.unit_muni[units]
         cluster_muni, cluster = np.unique(munis, return_inverse=True)
         final = np.asarray(rv.votes, dtype=np.int64)
@@ -361,12 +538,12 @@ class NightEngine:
             final_invalid=np.asarray(rv.invalid, dtype=np.int64),
             eligible=np.asarray(rv.eligible, dtype=np.int64),
             exp_shares=exp_shares,
-            exp_ballots=exp_turnout * np.asarray(rv.eligible, dtype=np.float64),
+            exp_ballots=exp_ballots,
             f=np.zeros(n),
             counted=np.zeros((n, L), dtype=np.int64),
             counted_ballots=np.zeros(n, dtype=np.int64),
             totals=np.zeros(L, dtype=np.int64),
-            x_total=float((exp_turnout * np.asarray(rv.eligible, dtype=np.float64)).sum()),
+            x_total=float(exp_ballots.sum()),
             n_incomplete=n,
         )
 
@@ -469,6 +646,13 @@ class NightEngine:
         return self._race(race_key).state
 
     def counted_votes(self, race_key: str) -> dict[str, int]:
+        """Counted votes per line; for 'PRES' (Electoral College) the national popular vote."""
+        if race_key == PRESIDENT_RACE_KEY and race_key not in self._by_key and self._pres_races:
+            votes = dict.fromkeys(self._tickets, 0)
+            for r in self._pres_races:
+                for k, v in zip(r.line_keys, r.totals.tolist(), strict=True):
+                    votes[k] += v
+            return votes
         r = self._race(race_key)
         return dict(zip(r.line_keys, r.totals.tolist(), strict=True))
 
@@ -484,17 +668,90 @@ class NightEngine:
         return self.advance_to_seq(min(self.seq + max(int(n), 0), self.timeline.n_events))
 
     def advance_to_seq(self, seq: int) -> int:
-        """Move to exactly ``seq`` (rewinding by deterministic replay when ``seq`` < current)."""
+        """Move to exactly ``seq`` (rewinding by deterministic replay from the nearest earlier
+        state checkpoint when ``seq`` < current)."""
         seq = int(seq)
         if not 0 <= seq <= self.timeline.n_events:
             raise ElectionNightError(f"seq {seq} out of range 0..{self.timeline.n_events}")
         if seq < self.seq:
-            self.reset()
+            self._rewind(seq)
+        every = max(int(self.checkpoint_every), 1)
         while self.seq < seq:
             self._apply_event(self.seq + 1)
+            if self.seq % every == 0 and self.seq not in self._checkpoints:
+                self._checkpoints[self.seq] = self._capture()
         if seq > 0:
             self.sim_time_s = max(self.sim_time_s, float(self.timeline.sim_time_s[seq - 1]))
         return self.seq
+
+    def _capture(self) -> _Checkpoint:
+        races = [
+            (
+                r.f.copy(),
+                r.counted.copy(),
+                r.counted_ballots.copy(),
+                r.totals.copy(),
+                r.fx,
+                r.n_incomplete,
+                r.last_eval_share,
+                r.state,
+                r.decision,
+                r.leader,
+                list(r.history),
+                list(r.lead_changes),
+            )
+            for r in self._races
+        ]
+        national = (
+            self._pres_state,
+            list(self._pres_history),
+            self._pres_winner,
+            self._pres_majority_seq,
+            self._contingent_seq,
+            self._contingent,
+            self._house_control,
+            self._senate_control,
+        )
+        return _Checkpoint(
+            self.seq,
+            self.sim_time_s,
+            self._f.copy(),
+            races,
+            list(self._records),
+            list(self._lead_changes),
+            national,
+        )
+
+    def _restore(self, cp: _Checkpoint) -> None:
+        self.seq, self.sim_time_s = cp.seq, cp.sim_time_s
+        self._f = cp.f.copy()
+        for r, st in zip(self._races, cp.races, strict=True):
+            f, counted, cballots, totals = st[:4]
+            r.f[:], r.counted[:], r.counted_ballots[:], r.totals[:] = f, counted, cballots, totals
+            r.fx, r.n_incomplete, r.last_eval_share, r.state, r.decision, r.leader = st[4:10]
+            r.history, r.lead_changes = list(st[10]), list(st[11])
+        self._records, self._lead_changes = list(cp.records), list(cp.lead_changes)
+        (
+            self._pres_state,
+            pres_history,
+            self._pres_winner,
+            self._pres_majority_seq,
+            self._contingent_seq,
+            self._contingent,
+            self._house_control,
+            self._senate_control,
+        ) = cp.national
+        self._pres_history = list(pres_history)
+        # every override up to the checkpoint is already in the restored state
+        self._manual_pending = [m for m in self._manual_all if m.seq > cp.seq]
+
+    def _rewind(self, seq: int) -> None:
+        """Go back to the latest checkpoint at or before ``seq`` (or to polls closing)."""
+        usable = [c for c in self._checkpoints if c <= seq]
+        if usable:
+            self._restore(self._checkpoints[max(usable)])
+        else:
+            self.reset()
 
     def advance_to(self, seq: int) -> int:
         """Alias of :meth:`advance_to_seq` (name used in ``docs/ARCHITECTURE.md``)."""
@@ -595,8 +852,10 @@ class NightEngine:
         r.leader = new
 
     # ------------------------------------------------------------------ evaluation
-    def _evaluate(self, r: _Race) -> bool:
-        """Evaluate one race at the current seq; returns True when its published state changed."""
+    def _evaluate(self, r: _Race, cleared: ManualCall | None = None) -> bool:
+        """Evaluate one race at the current seq; returns True when its published state changed.
+
+        ``cleared`` is the manual clear that triggered the evaluation (its record is marked)."""
         d = self.caller.evaluate(r.progress(), self.seed, self.seq, r.state)
         r.decision = d
         prev = r.state
@@ -606,6 +865,9 @@ class NightEngine:
         if not changed:
             return False
         r.state = CallState(status=d.status, key=d.winner_key, seq=self.seq)
+        evidence = d.evidence
+        if cleared is not None:
+            evidence = {**evidence, "manual_cleared": True, "manual_reason": cleared.reason}
         rec = CallRecord(
             race_key=r.key,
             seq=self.seq,
@@ -615,27 +877,67 @@ class NightEngine:
             win_probability=d.win_probability_of(d.winner_key or d.leader_key),
             reporting_pct=d.reporting_pct,
             margin_pct=d.margin_pct,
-            evidence=d.evidence,
+            evidence=evidence,
+            override_reason=None if cleared is None else cleared.reason,
             retracted=d.retracted,
             previous_status=prev.status if r.history else None,
             previous_key=prev.key if r.history else None,
+            timestamp=self._local_now(),
         )
         r.history.append(rec)
         self._records.append(rec)
         return True
 
+    def _local_now(self) -> datetime:
+        """Simulated local wall-clock time (tz-aware) of the engine's current ``sim_time_s``."""
+        return self.timeline.local_datetime(self.sim_time_s)
+
     # ------------------------------------------------------------------ manual overrides
+    def _check_manual(self, r: _Race, status: RaceStatus | None, key: str | None) -> str | None:
+        """Validate a manual override; returns the key to store (None for keyless statuses)."""
+        if status is None:
+            return None
+        status = RaceStatus(status)
+        if status not in MANUAL_STATUSES:
+            allowed = sorted(s.value for s in MANUAL_STATUSES)
+            raise ElectionNightError(
+                f"{r.key}: {status.value} cannot be set manually (allowed: {allowed}); "
+                "FINAL/RECOUNT are reached when the count is complete"
+            )
+        if status in _KEYED_STATUSES:
+            if key is None:
+                raise ElectionNightError(f"{r.key}: a manual {status.value} needs a line key")
+            if key not in r.line_keys:
+                raise ElectionNightError(f"{r.key}: unknown line {key}")
+            return key
+        return None
+
     def apply_manual_call(
         self, race_key: str, status: RaceStatus | None, key: str | None = None, reason: str | None = None
     ) -> CallRecord | None:
         """Apply a manual override now (``status=None`` clears it).  The override is kept in
-        :attr:`manual_calls` so a rebuilt engine replays it at the same ``seq``."""
+        :attr:`manual_calls` so a rebuilt engine replays it at the same ``seq``.
+
+        ``status`` must be one of :data:`MANUAL_STATUSES` (LEAN / PROJECTED / CALLED need a
+        ``key`` of the race; other statuses carry no key).  Returns the published record, or
+        None when nothing changed (the race is already FINAL/RECOUNT, or a clear without an
+        active override); such no-ops are not added to :attr:`manual_calls`."""
         r = self._race(race_key)
-        if status is not None and key is not None and key not in r.line_keys:
-            raise ElectionNightError(f"{race_key}: unknown line {key}")
-        m = ManualCall(race_key=race_key, seq=self.seq, status=status, key=key, reason=reason)
-        insort(self._manual_all, m, key=lambda c: c.seq)
-        return self._apply_manual(m)
+        key = self._check_manual(r, status, key)
+        m = ManualCall(
+            race_key=race_key,
+            seq=self.seq,
+            status=None if status is None else RaceStatus(status),
+            key=key,
+            reason=reason,
+            sim_time_s=float(self.sim_time_s),
+        )
+        rec = self._apply_manual(m)
+        if rec is not None:  # no-ops (locked race, clear without override) are not replayed
+            insort(self._manual_all, m, key=lambda c: c.seq)
+            # checkpoints taken at or after this seq do not contain the new override
+            self._checkpoints = {c: cp for c, cp in self._checkpoints.items() if c < self.seq}
+        return rec
 
     def clear_manual_call(self, race_key: str, reason: str | None = None) -> CallRecord | None:
         """Return a race to the model (see :class:`ManualCall`)."""
@@ -653,45 +955,62 @@ class NightEngine:
         r = self._race(m.race_key)
         if r.locked:
             return None
-        prev = r.state
-        if m.status is None:
-            if not prev.is_manual:
-                return None
-            r.state = CallState(prev.status, prev.key, prev.seq, is_manual=False)
-            before = len(r.history)
-            self._evaluate(r)
+        # records of the override carry the time it was made at (identical live and on replay)
+        event_time = self.sim_time_s
+        if m.sim_time_s is not None:
+            self.sim_time_s = float(m.sim_time_s)
+        try:
+            prev = r.state
+            if m.status is None:
+                if not prev.is_manual:
+                    return None
+                r.state = CallState(prev.status, prev.key, prev.seq, is_manual=False)
+                before = len(r.history)
+                self._evaluate(r, cleared=m)
+                if len(r.history) > before:
+                    rec = r.history[-1]
+                else:
+                    rec = self._manual_record(r, m, prev, is_manual=False)
+                self._refresh_after_change(r)
+                return rec
+            r.state = CallState(m.status, m.key, self.seq, is_manual=True)
+            rec = self._manual_record(r, m, prev, is_manual=True)
             self._refresh_after_change(r)
-            if len(r.history) > before:
-                return r.history[-1]
-            return self._manual_record(r, m, prev, is_manual=False)
-        r.state = CallState(m.status, m.key, self.seq, is_manual=True)
-        rec = self._manual_record(r, m, prev, is_manual=True)
-        self._refresh_after_change(r)
-        return rec
+            return rec
+        finally:
+            self.sim_time_s = event_time
 
     def _manual_record(self, r: _Race, m: ManualCall, prev: CallState, *, is_manual: bool) -> CallRecord:
         d = r.decision
         model_ev = {} if d is None else {"model_status": d.status.value, "model_key": d.winner_key}
+        margin_votes, margin_pct = r.counted_margin()
+        evidence = {
+            "basis": "manual" if is_manual else "manual_cleared",
+            "data_category": "SIMULATED",
+            "reason": m.reason,
+            **model_ev,
+            "model_win_probability": {} if d is None else d.win_probability,
+            "model_seq": None if d is None else d.seq,
+            "counted": {"votes": dict(zip(r.line_keys, r.totals.tolist(), strict=True))},
+            "leader": {"key": r.leader, "margin_votes": margin_votes, "margin_pct": round(margin_pct, 4)},
+        }
+        if not is_manual:
+            evidence.update({"manual_cleared": True, "manual_reason": m.reason})
         rec = CallRecord(
             race_key=r.key,
             seq=self.seq,
             sim_time_s=self.sim_time_s,
             status=r.state.status,
             key=r.state.key,
-            win_probability=None if d is None else d.win_probability_of(r.state.key),
-            reporting_pct=0.0 if d is None else d.reporting_pct,
-            margin_pct=None if d is None else d.margin_pct,
-            evidence={
-                "basis": "manual" if is_manual else "manual_cleared",
-                "data_category": "SIMULATED",
-                "reason": m.reason,
-                **model_ev,
-                "model_win_probability": {} if d is None else d.win_probability,
-            },
+            win_probability=None if d is None else d.win_probability_of(r.state.key or r.leader),
+            reporting_pct=r.reporting_pct(),
+            margin_pct=margin_pct,
+            evidence=evidence,
             is_manual=is_manual,
             override_reason=m.reason,
             previous_status=prev.status,
             previous_key=prev.key,
+            timestamp=self._local_now(),
         )
         r.history.append(rec)
         self._records.append(rec)
@@ -759,12 +1078,13 @@ class NightEngine:
             if r.state.status == RaceStatus.FINAL and r.state.key == winner
         )
         prev = self._pres_state
-        retracted = False
+        # the previously declared winner lost the majority (a province call was retracted)
+        lost = prev.status in (RaceStatus.CALLED, RaceStatus.FINAL) and prev.key not in (None, winner)
+        retracted = lost
         if winner is not None:
             status = RaceStatus.FINAL if all_locked and ev_final >= maj else RaceStatus.CALLED
-        elif prev.status in (RaceStatus.CALLED, RaceStatus.FINAL) and prev.key is not None:
-            status, retracted = RaceStatus.TOO_CLOSE, True
-        elif contingent:
+        elif lost or contingent or prev.status == RaceStatus.TOO_CLOSE:
+            # like a race, the presidency never goes back from TOO_CLOSE to TOO_EARLY
             status = RaceStatus.TOO_CLOSE
         elif not any_results:
             status = RaceStatus.POLLS_CLOSED
@@ -803,6 +1123,7 @@ class NightEngine:
             retracted=retracted,
             previous_status=prev.status if self._pres_history else None,
             previous_key=prev.key if self._pres_history else None,
+            timestamp=self._local_now(),
         )
         self._pres_history.append(rec)
         self._records.append(rec)
@@ -854,25 +1175,42 @@ class NightEngine:
         return by, called, leading, uncalled
 
     def _update_house_control(self) -> None:
-        if not self._house_races or self._house_control[0] is not None:
+        """Party whose called (decided) seats reach ``house_majority`` — recomputed after every
+        House state change, so a retraction below the majority clears it again."""
+        if not self._house_races:
             return
         by, *_ = self._seat_tallies(self._house_races)
         maj = self.constitution.house_majority
-        for party, v in sorted(by.items()):
-            if v["called"] >= maj:
-                self._house_control = (party, self.seq)
-                log.info("House control decided", extra={"ctx": {"party": party, "seq": self.seq}})
-                return
+        party = next((p for p, v in sorted(by.items()) if v["called"] >= maj), None)
+        self._house_control = self._control_change("House", self._house_control, party)
 
     def _update_senate_control(self) -> None:
-        if (not self._senate_races and not self.holdover_senate) or self._senate_control[0] is not None:
+        """Party whose holdovers + called seats reach ``senate_majority`` (recomputed)."""
+        if not self._senate_races and not self.holdover_senate:
             return
         by, *_ = self._seat_tallies(self._senate_races)
         maj = self.constitution.senate_majority
-        for party in sorted(set(by) | set(self.holdover_senate)):
-            if self.holdover_senate.get(party, 0) + by.get(party, {}).get("called", 0) >= maj:
-                self._senate_control = (party, self.seq)
-                return
+        party = next(
+            (
+                p
+                for p in sorted(set(by) | set(self.holdover_senate))
+                if self.holdover_senate.get(p, 0) + by.get(p, {}).get("called", 0) >= maj
+            ),
+            None,
+        )
+        self._senate_control = self._control_change("Senate", self._senate_control, party)
+
+    def _control_change(
+        self, chamber: str, current: tuple[str | None, int | None], party: str | None
+    ) -> tuple[str | None, int | None]:
+        """``(party, seq at which it reached the majority)``; unchanged while the same party holds it."""
+        if party == current[0]:
+            return current
+        if party is not None:
+            log.info(f"{chamber} control decided", extra={"ctx": {"party": party, "seq": self.seq}})
+        else:
+            log.info(f"{chamber} control retracted", extra={"ctx": {"party": current[0], "seq": self.seq}})
+        return (party, self.seq if party is not None else None)
 
     # ------------------------------------------------------------------ snapshot
     def _line_info(self, key: str) -> dict:
@@ -913,16 +1251,18 @@ class NightEngine:
             "called_key": called_key,
             "lean_key": lean_key,
             "win_probability": None if d is None else d.win_probability_of(wp_key),
-            "reporting_pct": 0.0 if d is None else round(d.reporting_pct, 3),
-            "margin_pct": 0.0 if d is None else round(d.margin_pct, 4),
+            # counted quantities are live; model outputs are those of the last evaluation
+            "reporting_pct": round(r.reporting_pct(), 3),
+            "margin_pct": round(r.counted_margin()[1], 4),
             "projected_margin_pct": 0.0 if d is None else round(d.projected_margin_pct, 4),
             "math_certain": False if d is None else d.math_certain,
+            "evaluated_seq": None if d is None else d.seq,
             "votes": dict(zip(r.line_keys, r.totals.tolist(), strict=True)),
         }
         if full and d is not None:
             out.update(
                 {
-                    "counted_valid": d.counted_valid,
+                    "counted_valid": int(r.totals.sum()),
                     "win_probabilities": d.win_probability,
                     "projected_share_mean": d.projected_share_mean,
                     "projected_share_p05": d.projected_share_p05,
@@ -971,9 +1311,13 @@ class NightEngine:
                 votes[k] += v
             d = r.decision
             if d is not None:
-                for k, v in d.projected_votes.items():
-                    proj[k] += v
+                # the projection is from the last evaluation: never below what is counted now
+                for k, v in zip(r.line_keys, r.totals.tolist(), strict=True):
+                    proj[k] += max(float(d.projected_votes.get(k, 0.0)), float(v))
                 outstanding += d.outstanding_ballots_est
+            else:
+                for k, v in zip(r.line_keys, r.totals.tolist(), strict=True):
+                    proj[k] += float(v)
         tot = sum(votes.values())
         ptot = sum(proj.values())
         lines = []
@@ -1051,7 +1395,7 @@ class NightEngine:
             row = {
                 "code": code,
                 "name": self.frame.province_names[p],
-                "ev": None if r is None else r.meta.electoral_votes,
+                "ev": None if r is None or r.meta.electoral_votes is None else int(r.meta.electoral_votes),
                 "race_key": None if r is None else r.key,
                 "status": None if r is None else r.state.status.value,
                 "leader": None if r is None else r.leader,
@@ -1067,8 +1411,8 @@ class NightEngine:
             if r is not None and r.decision is not None:
                 d = r.decision
                 row["win_probability"] = d.win_probability_of(r.state.key or r.leader)
-                row["reporting_pct"] = round(d.reporting_pct, 3)
-                row["margin_pct"] = round(d.margin_pct, 4)
+                row["reporting_pct"] = round(r.reporting_pct(), 3)
+                row["margin_pct"] = round(r.counted_margin()[1], 4)
                 row["votes"] = dict(zip(r.line_keys, r.totals.tolist(), strict=True))
             out.append(row)
         return out
@@ -1153,8 +1497,8 @@ class NightEngine:
                     "leader": r.leader,
                     "called_key": called_key,
                     "party": self._party_of(r, called_key or r.leader),
-                    "reporting_pct": 0.0 if d is None else round(d.reporting_pct, 3),
-                    "margin_pct": 0.0 if d is None else round(d.margin_pct, 4),
+                    "reporting_pct": round(r.reporting_pct(), 3),
+                    "margin_pct": round(r.counted_margin()[1], 4),
                     "win_probability": None if d is None else d.win_probability_of(st.key or r.leader),
                 }
             )
@@ -1291,7 +1635,7 @@ class NightEngine:
             "province_code": meta.province_code,
             "district_code": meta.district_code,
             "municipality_code": meta.municipality_code,
-            "electoral_votes": meta.electoral_votes,
+            "electoral_votes": None if meta.electoral_votes is None else int(meta.electoral_votes),
             "incumbent_party": meta.incumbent_party,
             "lines": [
                 {

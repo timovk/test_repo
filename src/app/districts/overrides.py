@@ -102,6 +102,14 @@ def apply_overrides(plan: GeneratedPlan, overrides: Sequence[Any]) -> GeneratedP
     new.unit_district = plan.unit_district.copy()
     new.unit_overridden = plan.unit_overridden.copy()
     new.warnings = list(plan.warnings)
+    # the copy must not share mutable containers with the original plan
+    new.district_codes = list(plan.district_codes)
+    new.district_names = list(plan.district_names)
+    new.district_province = list(plan.district_province)
+    new.district_numbers = list(plan.district_numbers)
+    new.seats_by_province = dict(plan.seats_by_province)
+    new.timings = dict(plan.timings)
+    new.diagnostics = dict(plan.diagnostics)
     new.overrides = [*plan.overrides, *(e.canonical() for e in entries)]
     new.invalidate_caches()
     district_idx = {c: i for i, c in enumerate(plan.district_codes)}

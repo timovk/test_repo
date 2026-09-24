@@ -68,10 +68,41 @@ class ProvinceResult:
 
 
 # =========================================================================== graph helpers
+#: Graphs up to this size (nodes + edges) use a pure-Python union-find, which is several times
+#: faster than building a sparse matrix for the many tiny atom graphs of the bisection.
+_SMALL_GRAPH = 600
+
+
 def components(n: int, a: np.ndarray, b: np.ndarray) -> tuple[int, np.ndarray]:
-    """Connected components of the undirected graph with ``n`` nodes and edges ``(a, b)``."""
+    """Connected components of the undirected graph with ``n`` nodes and edges ``(a, b)``.
+
+    Labels are numbered in order of each component's lowest node (the SciPy convention), so both
+    code paths return identical results.
+    """
     if n == 0:
         return 0, np.zeros(0, dtype=np.int64)
+    if n + len(a) <= _SMALL_GRAPH:
+        parent = list(range(n))
+        for x, y in zip(np.asarray(a).tolist(), np.asarray(b).tolist(), strict=True):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            while parent[y] != y:
+                parent[y] = parent[parent[y]]
+                y = parent[y]
+            if x < y:
+                parent[y] = x
+            elif y < x:
+                parent[x] = y
+        labels = [0] * n
+        roots: dict[int, int] = {}
+        for i in range(n):
+            r = parent[i]
+            while parent[r] != r:
+                r = parent[r]
+            parent[i] = r
+            labels[i] = roots.setdefault(r, len(roots))
+        return len(roots), np.asarray(labels, dtype=np.int64)
     g = csr_matrix((np.ones(len(a), dtype=np.int8), (a, b)), shape=(n, n))
     nc, lab = connected_components(g, directed=False)
     return int(nc), lab.astype(np.int64)
@@ -1140,8 +1171,9 @@ def plan_objective(
     """Local-search objective of a (province) assignment and its components.
 
     ``weight_hard × Σ excess over the hard maximum + weight_target × Σ excess over the target
-    tolerance + weight_split × split municipalities + weight_fragment × extra fragments +
-    weight_deviation × Σ deviation² + weight_cut_km × internal boundary length`` (deviations in %).
+    tolerance + weight_target_district × districts beyond it + weight_split × split municipalities
+    + weight_fragment × extra fragments + weight_deviation × Σ deviation² + weight_cut_km ×
+    internal boundary length`` (deviations in %).
     """
     ls = cfg.local_search
     dpop = np.bincount(assignment, weights=weights, minlength=k)
@@ -1200,6 +1232,201 @@ def restart_config(cfg: DistrictConfig, seed: int, code: str, restart: int) -> D
     return cfg.model_copy(update={"cut": cut, "tolerance_exponent": exponent})
 
 
+# =========================================================================== merge-split
+def merge_split(
+    prob: ProvinceProblem,
+    cfg: DistrictConfig,
+    assignment: np.ndarray,
+    weights: np.ndarray,
+    target: float,
+    seed: int,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Recombination passes: merge adjacent districts, re-draw them, keep improvements.
+
+    Two kinds of regions are re-drawn by the province's :class:`_Bisector` (same targets, funnel,
+    municipal-split penalties and exact whole-municipality search as the initial bisection) and
+    polished by a local search restricted to the region:
+
+    * every pair of adjacent districts (seeded order) — straightens boundaries and removes splits
+      that the top-down bisection committed to early;
+    * for every municipality split into more districts than its population requires, the union of
+      the districts holding it (optionally plus one neighbouring district), up to
+      ``merge_split.max_region_districts`` districts.
+
+    A re-drawn region is accepted when :func:`plan_objective` of the province decreases.  Passes
+    repeat until one brings no improvement.  Deterministic for a given seed.
+    """
+    ms = cfg.merge_split
+    k = prob.seats
+    info: dict[str, Any] = {"merge_split_tried": 0, "merge_split_accepted": 0, "merge_split_passes": 0}
+    if not ms.enabled or ms.max_passes <= 0 or k < 2 or len(prob.edges) == 0:
+        return assignment, info
+    assignment = assignment.astype(np.int64).copy()
+    value, _ = plan_objective(assignment, weights, prob.muni, prob.edges, prob.edge_km, k, target, cfg)
+    bis = _Bisector(prob, cfg, seed)
+    tried: set[bytes] = set()
+
+    def attempt(districts: list[int], tag: str) -> bool:
+        nonlocal assignment, value
+        districts = sorted(set(districts))
+        region = np.flatnonzero(np.isin(assignment, districts))
+        key = (
+            np.packbits(np.isin(assignment, districts)).tobytes()
+            + np.asarray(assignment[region], dtype=np.int64).tobytes()
+        )
+        if key in tried:  # this exact configuration was already re-drawn without success
+            return False
+        tried.add(key)
+        info["merge_split_tried"] += 1
+        local = _redraw_region(bis, prob, cfg, region, len(districts), weights, target, tag, seed)
+        if local is None:
+            return False
+        new = assignment.copy()
+        new[region] = np.asarray(districts, dtype=np.int64)[local]
+        if np.array_equal(new, assignment):
+            return False
+        v, _ = plan_objective(new, weights, prob.muni, prob.edges, prob.edge_km, k, target, cfg)
+        if v < value - 1e-9:
+            assignment, value = new, v
+            info["merge_split_accepted"] += 1
+            return True
+        return False
+
+    ei, ej = prob.edges[:, 0], prob.edges[:, 1]
+    tol = cfg.target_deviation_pct / 100.0
+    muni_pop = np.bincount(prob.muni, weights=weights, minlength=int(prob.muni.max()) + 1)
+    for rnd in range(ms.max_passes):
+        info["merge_split_passes"] += 1
+        rng = make_rng(seed, "districts", "merge-split", prob.code, rnd)
+        improved = False
+        # ---- adjacent pairs
+        pairs = _district_pairs(assignment, ei, ej)
+        for i in rng.permutation(len(pairs)).tolist():
+            d, e = int(pairs[i, 0]), int(pairs[i, 1])
+            if not _adjacent(assignment, ei, ej, d, e):
+                continue  # no longer adjacent after an earlier recombination
+            improved |= attempt([d, e], f"ms{rnd}.{d}.{e}")
+        # ---- municipalities split into more districts than needed
+        if ms.max_region_districts >= 2:
+            pairs_m = np.unique(prob.muni.astype(np.int64) * k + assignment)
+            m_of, d_of = pairs_m // k, pairs_m % k
+            n_parts = np.bincount(m_of, minlength=len(muni_pop))
+            need = np.maximum(1, np.ceil(muni_pop / (target * (1.0 + tol)) - 1e-9)).astype(np.int64)
+            excess = np.flatnonzero(n_parts > need)
+            for m in rng.permutation(excess).tolist():
+                districts = sorted(d_of[m_of == m].tolist())
+                if len(districts) < 2 or len(districts) > ms.max_region_districts:
+                    continue
+                if attempt(districts, f"mm{rnd}.{m}"):
+                    improved = True
+                    continue
+                if len(districts) + 1 > ms.max_region_districts:
+                    continue
+                for f in _neighbour_districts(assignment, ei, ej, districts, prob.edge_km)[:2]:
+                    if attempt([*districts, f], f"mn{rnd}.{m}.{f}"):
+                        improved = True
+                        break
+        if not improved:
+            break
+    return assignment, info
+
+
+def _district_pairs(assignment: np.ndarray, ei: np.ndarray, ej: np.ndarray) -> np.ndarray:
+    """Sorted unique pairs ``(d, e)``, ``d < e``, of adjacent districts."""
+    da, db = assignment[ei], assignment[ej]
+    cross = da != db
+    if not cross.any():
+        return np.zeros((0, 2), dtype=np.int64)
+    return np.unique(np.sort(np.column_stack([da[cross], db[cross]]), axis=1), axis=0)
+
+
+def _adjacent(assignment: np.ndarray, ei: np.ndarray, ej: np.ndarray, d: int, e: int) -> bool:
+    da, db = assignment[ei], assignment[ej]
+    return bool(np.any(((da == d) & (db == e)) | ((da == e) & (db == d))))
+
+
+def _neighbour_districts(
+    assignment: np.ndarray, ei: np.ndarray, ej: np.ndarray, districts: list[int], edge_km: np.ndarray
+) -> list[int]:
+    """Districts adjacent to the union of ``districts``, longest shared boundary first."""
+    inside = np.isin(assignment, districts)
+    a_in, b_in = inside[ei], inside[ej]
+    cross = a_in != b_in
+    other = np.where(a_in[cross], assignment[ej[cross]], assignment[ei[cross]])
+    if len(other) == 0:
+        return []
+    border = np.bincount(other, weights=edge_km[cross] + 1e-6)
+    cand = np.flatnonzero(border > 0)
+    return [int(c) for c in cand[np.lexsort((cand, -border[cand]))]]
+
+
+def _redraw_region(
+    bis: _Bisector,
+    prob: ProvinceProblem,
+    cfg: DistrictConfig,
+    region: np.ndarray,
+    k: int,
+    weights: np.ndarray,
+    target: float,
+    path: str,
+    seed: int,
+) -> np.ndarray | None:
+    """New ``k``-district partition (local labels ``0 … k−1``) of the sorted unit set ``region``.
+
+    Recursive bisection of the region with the province's bisector, then a local search restricted
+    to the region.  ``None`` when a part would be empty or non-contiguous.
+    """
+    labels = np.full(len(region), -1, dtype=np.int64)
+    saved_warnings, saved_stats = list(bis.warnings), dict(bis.stats)
+    try:
+        stack: list[tuple[np.ndarray, int, str]] = [(region, k, path)]
+        next_id = 0
+        while stack:
+            reg, kk, pth = stack.pop()
+            if kk == 1:
+                labels[np.searchsorted(region, reg)] = next_id
+                next_id += 1
+                continue
+            if len(reg) < kk:
+                return None
+            (side_a, k_a), (side_b, k_b) = bis._bisect(reg, kk, pth)
+            if len(side_a) < k_a or len(side_b) < k_b:
+                return None
+            stack.append((np.sort(side_b), k_b, pth + "1"))
+            stack.append((np.sort(side_a), k_a, pth + "0"))
+    finally:
+        bis.warnings, bis.stats = saved_warnings, saved_stats
+    if (labels < 0).any():
+        return None
+    pos = np.full(len(prob.pop), -1, dtype=np.int64)
+    pos[region] = np.arange(len(region))
+    inside = (pos[prob.edges[:, 0]] >= 0) & (pos[prob.edges[:, 1]] >= 0)
+    sub_edges = pos[prob.edges[inside]]
+    if cfg.local_search.enabled and cfg.local_search.max_passes > 0:
+        sub = ProvinceProblem(
+            code=prob.code,
+            seats=k,
+            pop=weights[region],
+            xy=prob.xy[region],
+            area=prob.area[region],
+            muni=prob.muni[region],
+            wijk=prob.wijk[region],
+            edges=sub_edges,
+            edge_km=prob.edge_km[inside],
+            seed=seed,
+            config=cfg,
+        )
+        search = _LocalSearch(sub, cfg, labels, weights[region], target)
+        labels = search.run(make_rng(seed, "districts", "merge-split-polish", prob.code, path))
+    if len(np.unique(labels)) != k:
+        return None
+    same = labels[sub_edges[:, 0]] == labels[sub_edges[:, 1]]
+    nc, _ = components(len(region), sub_edges[same, 0], sub_edges[same, 1])
+    if nc != k:
+        return None
+    return labels
+
+
 # =========================================================================== entry point
 def _single_run(
     prob: ProvinceProblem, cfg: DistrictConfig, seed: int
@@ -1226,8 +1453,9 @@ def partition_province(prob: ProvinceProblem) -> ProvinceResult:
     """Partition one province into ``prob.seats`` contiguous, population-balanced districts.
 
     Runs ``config.restarts`` independent attempts (restart 0 uses the root seed and the configured
-    weights; later restarts use derived seeds and jittered weights) and keeps the assignment with
-    the lowest :func:`plan_objective` (ties: lowest restart number).
+    weights; later restarts use derived seeds and jittered weights), recombines the best
+    ``merge_split.restarts`` of them (:func:`merge_split`) and keeps the assignment with the lowest
+    :func:`plan_objective` (ties: lowest restart number).
     """
     t0 = time.perf_counter()
     n = len(prob.pop)
@@ -1236,9 +1464,10 @@ def partition_province(prob: ProvinceProblem) -> ProvinceResult:
         raise ValueError(f"{prob.code}: seats must be >= 1")
     if n < prob.seats:
         raise ValueError(f"{prob.code}: {n} units cannot form {prob.seats} non-empty districts")
-    best: tuple[float, int, np.ndarray, list[str], dict[str, Any], dict[str, float]] | None = None
+    runs: list[tuple[float, int, np.ndarray, list[str], dict[str, Any], dict[str, float]]] = []
     objectives: list[float] = []
     n_restarts = cfg.restarts if prob.seats > 1 else 1
+    balance_by_units = False
     for r in range(n_restarts):
         cfg_r = restart_config(cfg, prob.seed, prob.code, r)
         seed_r = prob.seed if r == 0 else derive_seed(prob.seed, "districts", "restart", prob.code, r)
@@ -1247,11 +1476,31 @@ def partition_province(prob: ProvinceProblem) -> ProvinceResult:
             assignment, bis.weights, prob.muni, prob.edges, prob.edge_km, prob.seats, bis.T, cfg
         )
         objectives.append(round(value, 4))
-        if best is None or value < best[0] - 1e-9:
-            best = (value, r, assignment, warnings, info, parts)
+        runs.append((value, r, assignment, warnings, info, parts))
         balance_by_units = bis.balance_by_units
-    assert best is not None
-    value, r, assignment, warnings, info, parts = best
+    # best restarts first (ties: lowest restart number); the winner is chosen after recombination
+    runs.sort(key=lambda t: (round(t[0], 9), t[1]))
+    ms = cfg.merge_split
+    if ms.enabled and ms.max_passes > 0 and prob.seats > 1:
+        weights = np.ones(n) if balance_by_units else prob.pop.astype(float)
+        target = float(weights.sum()) / prob.seats
+        recombined = []
+        for value, r, assignment, warnings, info, parts in runs[: ms.restarts]:
+            seed_r = prob.seed if r == 0 else derive_seed(prob.seed, "districts", "restart", prob.code, r)
+            assignment, ms_info = merge_split(prob, cfg, assignment, weights, target, seed_r)
+            if (
+                ms_info["merge_split_accepted"]
+                and cfg.local_search.enabled
+                and cfg.local_search.max_passes > 0
+            ):
+                search = _LocalSearch(prob, cfg, assignment, weights, target)
+                assignment = search.run(make_rng(seed_r, "districts", "final-local-search", prob.code))
+            value, parts = plan_objective(
+                assignment, weights, prob.muni, prob.edges, prob.edge_km, prob.seats, target, cfg
+            )
+            recombined.append((value, r, assignment, warnings, {**info, **ms_info}, parts))
+        runs = sorted(recombined, key=lambda t: (round(t[0], 9), t[1]))
+    value, r, assignment, warnings, info, parts = runs[0]
     if balance_by_units:
         warnings = [*warnings, f"{prob.code}: province has no population; balancing by unit count"]
     info = {**info, **parts, "restart": r, "restarts": n_restarts, "restart_objectives": objectives}

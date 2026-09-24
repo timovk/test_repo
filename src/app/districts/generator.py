@@ -138,21 +138,23 @@ def generate_plan(
     Args:
         units_gdf: one row per geographic unit (CBS buurt) with at least
             :data:`REQUIRED_UNIT_COLUMNS`; ``wijk_code``, ``land_area_km2`` (or a geometry),
-            ``urbanity_class`` and ``municipality_name`` are used when present.  A plain
-            DataFrame works too (geometry is only used for the area fallback).
+            ``municipality_name`` and ``address_density`` (or ``density``; locates city centres
+            for district names) are used when present.  A plain DataFrame works too (geometry is
+            only used for the area fallback).
         adjacency: unit adjacency ``a, b, shared_border_m, kind`` (``border`` / ``water_link``).
         seats_by_province: province code → number of districts (e.g. ``apportion(...).seats``).
         config: generation parameters (default: ``config/districts.yaml``).
         seed: root seed; the same seed, data and configuration always give the same plan.
         overrides: manual assignments applied after generation (``OverrideEntry`` objects or
             dicts, see :mod:`app.districts.overrides`); ``None`` applies none.
-        municipality_names: code → display name used for district names (falls back to a
-            ``municipality_name`` column, then to the code).
+        municipality_names: code → display name used for district names (merged over a
+            ``municipality_name`` column).  ``None`` also consults the processed store's
+            municipality names when they cover every municipality; otherwise codes are used.
         workers: worker processes (overrides ``config.workers``; 0 = auto, 1 = serial).
 
     Raises:
-        DistrictingError: missing columns, units in provinces without seats, a province with
-            fewer units than seats, or an invalid override.
+        DistrictingError: missing columns, duplicate unit codes, units in provinces without
+            seats, a province with fewer units than seats, or an invalid override.
     """
     t_start = time.perf_counter()
     cfg = config if config is not None else load_district_config()
@@ -164,10 +166,19 @@ def generate_plan(
     seats = {str(p): int(s) for p, s in seats_by_province.items()}
     with Timer(log, "district plan: prepare") as tm:
         codes = units_gdf["code"].astype(str).to_numpy(dtype=object)
+        if len(np.unique(codes)) != len(codes):
+            dup = pd.Index(codes)[pd.Index(codes).duplicated()].unique()[:5].tolist()
+            raise DistrictingError(f"duplicate unit codes in units table (e.g. {dup})")
         prov = units_gdf["province_code"].astype(str).to_numpy(dtype=object)
         muni = units_gdf["municipality_code"].astype(str).to_numpy(dtype=object)
-        pop = pd.to_numeric(units_gdf["population"], errors="coerce").fillna(0).clip(lower=0).to_numpy()
-        pop = np.round(pop).astype(np.int64)
+        raw_pop = pd.to_numeric(units_gdf["population"], errors="coerce").to_numpy(dtype=float)
+        bad_pop = ~np.isfinite(raw_pop) | (raw_pop < 0)
+        if bad_pop.any():
+            warnings.append(
+                f"{int(bad_pop.sum())} units have a missing, non-numeric or negative population "
+                f"(treated as 0), e.g. {', '.join(codes[bad_pop][:5].tolist())}"
+            )
+        pop = np.round(np.where(bad_pop, 0.0, raw_pop)).astype(np.int64)
         xy = units_gdf[["centroid_x", "centroid_y"]].to_numpy(dtype=float)
         if not np.isfinite(xy).all():
             raise DistrictingError("units table has missing centroid coordinates")
@@ -237,7 +248,10 @@ def generate_plan(
         if (unit_district < 0).any():
             raise DistrictingError(f"{int((unit_district < 0).sum())} units were not assigned to a district")
         names_map = _municipality_names(units_gdf, municipality_names)
-        d_names = name_districts(unit_district, muni, pop, xy, len(d_codes), names_map, cfg.naming)
+        density = _unit_density(units_gdf)
+        d_names = name_districts(
+            unit_district, muni, pop, xy, len(d_codes), names_map, cfg.naming, unit_density=density
+        )
     timings["naming"] = tm.elapsed
 
     plan = GeneratedPlan(
@@ -270,7 +284,20 @@ def generate_plan(
 
         with Timer(log, "district plan: overrides") as tm:
             plan = apply_overrides(plan, overrides)
+            if plan.overrides_applied:
+                # names describe the final districts (an override may move a whole municipality)
+                plan.district_names = name_districts(
+                    plan.unit_district,
+                    muni,
+                    pop,
+                    xy,
+                    plan.n_districts,
+                    names_map,
+                    cfg.naming,
+                    unit_density=density,
+                )
         timings["overrides"] = tm.elapsed
+        plan.timings = timings  # apply_overrides returns a copy with its own containers
     _post_checks(plan)
     timings["total"] = time.perf_counter() - t_start
     log.info(
@@ -301,6 +328,14 @@ def _unit_area(units: pd.DataFrame) -> np.ndarray:
     return np.clip(a, 0.0, None)
 
 
+def _unit_density(units: pd.DataFrame) -> np.ndarray | None:
+    """Per-unit address density (CBS ``address_density``, else ``density``) for naming, or ``None``."""
+    for col in ("address_density", "density"):
+        if col in units.columns:
+            return pd.to_numeric(units[col], errors="coerce").to_numpy(dtype=float)
+    return None
+
+
 def _wijk_keys(units: pd.DataFrame, muni: np.ndarray, use_wijk: bool) -> np.ndarray:
     """Per-unit wijk key (always nested in the municipality)."""
     if use_wijk and "wijk_code" in units.columns:
@@ -310,13 +345,40 @@ def _wijk_keys(units: pd.DataFrame, muni: np.ndarray, use_wijk: bool) -> np.ndar
 
 
 def _municipality_names(units: pd.DataFrame, names: Mapping[str, str] | None) -> dict[str, str]:
+    """Municipality display names: ``municipality_name`` column, then the explicit mapping.
+
+    Without an explicit mapping, codes still unnamed are looked up in the processed store's
+    ``municipalities.parquet`` (default vintage) — but only when it names *every* municipality of
+    the units, so synthetic or foreign geographies keep their codes.
+    """
     out: dict[str, str] = {}
     if "municipality_name" in units.columns:
         df = units[["municipality_code", "municipality_name"]].dropna().drop_duplicates("municipality_code")
         out.update(zip(df["municipality_code"].astype(str), df["municipality_name"].astype(str), strict=True))
-    if names:
+    if names is not None:
         out.update({str(k): str(v) for k, v in names.items()})
+        return out
+    missing = set(units["municipality_code"].astype(str)) - set(out)
+    if missing:
+        store_names = _store_municipality_names()
+        if store_names and missing <= set(store_names):
+            out.update({c: store_names[c] for c in missing})
     return out
+
+
+def _store_municipality_names() -> dict[str, str]:
+    """``code → name`` of the processed store's municipalities (empty when unavailable)."""
+    try:
+        from app.geography import store
+
+        if not store.is_prepared():
+            return {}
+        df = pd.read_parquet(store.store_dir() / "municipalities.parquet", columns=["code", "name"])
+    except Exception as exc:  # the store is optional here: names fall back to CBS codes
+        log.debug("municipality names unavailable from the processed store (%s)", exc)
+        return {}
+    df = df.dropna()
+    return dict(zip(df["code"].astype(str), df["name"].astype(str), strict=True))
 
 
 def _build_problems(

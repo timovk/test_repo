@@ -70,6 +70,29 @@ class LocalSearchConfig(_Model):
     weight_cut_km: float = Field(0.2, ge=0, description="per km of district boundary inside the province")
 
 
+class MergeSplitConfig(_Model):
+    """Recombination ("merge-split") after the local search of the winning restart.
+
+    Every pair of adjacent districts of a province — and the districts sharing a municipality that
+    is split into more parts than its population requires — is merged and re-drawn by the
+    multi-resolution bisection (which prefers whole municipalities, runs the exact whole-municipality
+    search and minimises the cut length), polished by the local search, and kept when the province
+    objective (see :class:`LocalSearchConfig`) improves.  Passes repeat until one brings no
+    improvement.  This removes municipal splits and C-shaped boundaries that the top-down
+    bisection had to commit to early.
+    """
+
+    enabled: bool = True
+    #: Maximum number of passes (each over all adjacent pairs and over-split municipalities).
+    max_passes: int = Field(2, ge=0, le=50)
+    #: Largest region (in districts) re-drawn around a municipality split into more districts than
+    #: its population requires (the districts holding it, plus one neighbour when that fits);
+    #: values below 2 disable this phase.
+    max_region_districts: int = Field(4, ge=0, le=8)
+    #: Number of best restarts (by objective) that are recombined; the best result wins.
+    restarts: int = Field(3, ge=1, le=256)
+
+
 class NamingConfig(_Model):
     """Descriptive district names."""
 
@@ -137,6 +160,7 @@ class DistrictConfig(_Model):
     water_link_border_m: float = Field(250.0, ge=0)
     cut: CutWeights = Field(default_factory=CutWeights)
     local_search: LocalSearchConfig = Field(default_factory=LocalSearchConfig)
+    merge_split: MergeSplitConfig = Field(default_factory=MergeSplitConfig)
     naming: NamingConfig = Field(default_factory=NamingConfig)
     #: Worker processes (0 = auto, 1 = serial).  Results are identical for every value.  Worker
     #: processes are started with ``spawn``: scripts must guard their entry point with

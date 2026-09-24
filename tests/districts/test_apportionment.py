@@ -96,8 +96,7 @@ def test_deterministic_ties() -> None:
     # Equal populations: the tie is broken by code (ascending).
     r = apportion({"B": 100, "A": 100, "C": 100}, 4, "huntington_hill")
     assert r.seats == {"B": 1, "A": 2, "C": 1}
-    # Equal priority but different populations cannot occur for a single divisor step, so check
-    # that repeated calls are identical and independent of dict order.
+    # Repeated calls are identical and independent of dict order.
     r2 = apportion({"C": 100, "A": 100, "B": 100}, 4, "huntington_hill")
     assert r2.seats == {"C": 1, "A": 2, "B": 1}
     h = apportion({"B": 50, "A": 50}, 3, "hamilton", min_seats=0)
@@ -151,3 +150,46 @@ def test_compare_methods_table() -> None:
     df = compare_methods(REAL_2025, 150)
     assert list(df.columns) == ["population", *METHODS]
     assert (df[list(METHODS)].sum() == 150).all()
+
+
+@pytest.mark.parametrize(
+    ("pops", "seats", "expected"),
+    [
+        # A (2 seats) and B (24 seats) tie exactly for seat 27: 1/√(2·3) = 10/√(24·25).  In floating
+        # point A's priority is the larger one; the documented rule gives the seat to the more
+        # populous province.
+        ({"A": 1, "B": 10}, 27, {"A": 2, "B": 25}),
+        # A (3 seats) and B (48 seats) tie for seat 52: 1/√12 = 14/√2352
+        ({"A": 1, "B": 14}, 52, {"A": 3, "B": 49}),
+        ({"A": 1_000, "B": 10_000}, 27, {"A": 2, "B": 25}),
+    ],
+)
+def test_huntington_hill_exact_ties_are_not_decided_by_rounding(pops, seats, expected) -> None:  # type: ignore[no-untyped-def]
+    assert 1 / math.sqrt(6) > 10 / math.sqrt(600)  # the float comparison gets this tie wrong
+    r = apportion(pops, seats, "huntington_hill", min_seats=1)
+    assert r.seats == expected
+    # the tied seat is reported with (numerically) equal priorities: the last seat and first out
+    assert math.isclose(r.priority_order[-1].priority, r.first_out[0].priority)
+    assert r.priority_order[-1].province == "B" and r.first_out[0].province == "A"
+
+
+def test_hamilton_exact_remainder_ties() -> None:
+    # Quotas 2/3, 8/3 and 20/3: all remainders are exactly 2/3 (floats: 0.666…6, 0.666…5,
+    # 0.666…7).  The two leftover seats go to the most populous provinces, C and B.
+    r = apportion({"A": 1, "B": 4, "C": 10}, 10, "hamilton", min_seats=0)
+    assert r.seats == {"A": 0, "B": 3, "C": 7}
+    assert [s.province for s in r.priority_order] == ["C", "B"]
+    assert r.first_out[0].province == "A"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), "12", None, 2.5, -3])
+def test_invalid_population_values(bad) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ApportionmentError, match="non-negative integer"):
+        apportion({"A": bad, "B": 10}, 5)
+
+
+def test_numpy_and_float_integral_populations_are_accepted() -> None:
+    import numpy as np
+
+    r = apportion({"A": np.int64(600), "B": 300.0}, 3)
+    assert r.seats == {"A": 2, "B": 1} and r.populations == {"A": 600, "B": 300}

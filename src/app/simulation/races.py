@@ -29,6 +29,12 @@ def _home_province(frame: GeographyFrame | None, muni_code: str | None, explicit
     return frame.province_codes[int(frame.muni_province[m])] if m is not None else None
 
 
+def _indices(units: np.ndarray | Sequence[int]) -> np.ndarray:
+    """Unit indices as int64 (a boolean mask becomes the indices of its True entries)."""
+    arr = np.asarray(units)
+    return np.flatnonzero(arr) if arr.dtype == bool else arr.astype(np.int64)
+
+
 def ticket_lines(doc: ScenarioDocument, frame: GeographyFrame | None = None) -> list[BallotLine]:
     """Presidential ballot lines (one per ticket; line key = presidential candidate key)."""
     lines = []
@@ -172,7 +178,7 @@ def races_from_candidates(slots: Sequence[RaceSlot], fielded: Mapping[str, RaceC
             RaceSpec(
                 key=s.key,
                 race_type=s.race_type,
-                unit_index=np.asarray(s.unit_index, dtype=np.int64),
+                unit_index=_indices(s.unit_index),
                 lines=list(rc.lines),
                 electoral_system=ElectoralSystem.FPTP,
                 province_code=s.province_code,

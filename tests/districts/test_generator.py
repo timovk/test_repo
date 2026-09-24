@@ -256,3 +256,61 @@ def test_degenerate_geographies_still_give_valid_structure(n, pops, edges, seats
     assert plan.n_districts == seats
     assert (np.bincount(plan.unit_district, minlength=seats) > 0).all()
     assert plan.noncontiguous_districts() == []
+
+
+def test_duplicate_unit_codes_are_rejected_even_without_adjacency(fast_config) -> None:  # type: ignore[no-untyped-def]
+    units, _ = _toy(4, [100, 100, 100, 100], [])
+    units.loc[3, "code"] = units.loc[2, "code"]
+    with pytest.raises(DistrictingError, match="duplicate unit codes"):
+        generate_plan(units, None, {"XX": 2}, fast_config, seed=1)
+
+
+def test_invalid_populations_are_reported_not_silently_dropped(fast_config) -> None:  # type: ignore[no-untyped-def]
+    units, adj = _toy(6, [100, 100, 100, 100, 100, 100], [(i, i + 1) for i in range(5)])
+    units["population"] = units["population"].astype(object)
+    units.loc[1, "population"] = -50
+    units.loc[2, "population"] = None
+    units.loc[3, "population"] = "n/a"
+    plan = generate_plan(units, adj, {"XX": 2}, fast_config, seed=1)
+    assert plan.unit_population.tolist() == [100, 0, 0, 0, 100, 100]
+    msg = next(w for w in plan.warnings if "population" in w)
+    assert msg.startswith("3 units") and "BU00000001" in msg
+
+
+def test_names_describe_the_districts_after_overrides(fine_geo, fine_plan, fast_config) -> None:  # type: ignore[no-untyped-def]
+    # the smallest province whose city is split over several districts
+    prov = min(
+        (p for p, c in fine_geo.city.items() if c in fine_plan.split_municipalities()),
+        key=lambda p: (fine_geo.seats[p], p),
+    )
+    units = fine_geo.units[fine_geo.units.province_code == prov]
+    seats = {prov: fine_geo.seats[prov]}
+    base = generate_plan(units, fine_geo.adjacency, seats, fast_config, seed=11)
+    city = fine_geo.city[prov]
+    city_districts = sorted(set(base.unit_district[base.unit_municipality == city].tolist()))
+    assert len(city_districts) >= 2
+    # pin the whole city into its first district: that district is now named after the city alone
+    target = base.district_codes[city_districts[0]]
+    plan = generate_plan(
+        units,
+        fine_geo.adjacency,
+        seats,
+        fast_config,
+        seed=11,
+        overrides=[{"municipality": city, "district": target}],
+    )
+    name = plan.district_names[plan.district_index(target)]
+    assert name.startswith(f"Gemeente {city[2:]}") and "-" not in name.split(" – ")[0].removeprefix(
+        "Gemeente "
+    )
+    assert not any(n.startswith(f"Gemeente {city[2:]}-") for n in plan.district_names)
+    assert len(set(plan.district_names)) == plan.n_districts
+
+
+def test_municipality_names_fall_back_to_codes(fast_config) -> None:  # type: ignore[no-untyped-def]
+    units, adj = _toy(4, [100, 100, 100, 100], [(i, i + 1) for i in range(3)])
+    units["municipality_code"] = ["GM9901", "GM9901", "GM9902", "GM9902"]
+    plan = generate_plan(units, adj, {"XX": 2}, fast_config, seed=1)
+    assert sorted(plan.district_names) == ["GM9901", "GM9902"]
+    named = generate_plan(units, adj, {"XX": 2}, fast_config, seed=1, municipality_names={"GM9901": "Oord"})
+    assert sorted(named.district_names) == ["GM9902", "Oord"]

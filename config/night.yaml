@@ -19,21 +19,21 @@ playback:
 reporting:
   size_ref_ballots: 2000      # reference municipality size for the first-report model
   first_report:               # minutes after the municipality's poll closing
-    base_minutes: 34
-    minutes_per_log10_ballots: 24
-    minutes_per_urbanity_step: 6
-    jitter_sd: 0.20           # multiplicative log-normal jitter (seeded)
-    min_minutes: 18
-    max_minutes: 240
+    base_minutes: 45
+    minutes_per_log10_ballots: 30
+    minutes_per_urbanity_step: 8   # per urbanity step (0 = rural … 4 = very urban)
+    jitter_sd: 0.22           # multiplicative log-normal jitter (seeded)
+    min_minutes: 24           # the smallest municipalities report from ≈ 21:25
+    max_minutes: 330
   duration:                   # minutes from first to last batch
     ref_ballots: 20000
-    base_minutes: 50
-    elasticity: 0.5
-    urbanity_factor_per_step: 0.08
+    base_minutes: 80
+    elasticity: 0.55
+    urbanity_factor_per_step: 0.10
     jitter_sd: 0.25
-    min_minutes: 4
-  latest_end_minutes: 470     # soft cap on the scheduled last batch (≈ 04:50)
-  end_spread_minutes: 45
+    min_minutes: 5
+  latest_end_minutes: 525     # soft cap on the scheduled last batch (≈ 05:45)
+  end_spread_minutes: 55      # capped ends fall between ≈ 04:50 and 05:45
   province_effect_minutes:    # FICTIONAL province counting-speed effects (minutes)
     GR: -3
     FR: -4

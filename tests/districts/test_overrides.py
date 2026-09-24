@@ -135,3 +135,18 @@ def test_load_overrides_file(tmp_path: Path) -> None:
     bad.write_text("overrides:\n  - {unit: BU1, municipality: GM1, district: NB-01}\n")
     with pytest.raises(ConfigError):
         load_overrides(bad)
+
+
+def test_applying_overrides_leaves_the_original_plan_untouched(fine_plan) -> None:  # type: ignore[no-untyped-def]
+    u, target = _boundary_unit(fine_plan)
+    before = (fine_plan.unit_district.copy(), list(fine_plan.district_names), dict(fine_plan.timings))
+    new = apply_overrides(
+        fine_plan, [{"unit": str(fine_plan.unit_codes[u]), "district": fine_plan.district_codes[target]}]
+    )
+    new.district_names[0] = "changed"
+    new.timings["extra"] = 1.0
+    new.warnings.append("extra")
+    assert np.array_equal(fine_plan.unit_district, before[0])
+    assert fine_plan.district_names == before[1] and fine_plan.timings == before[2]
+    assert "extra" not in fine_plan.warnings
+    assert new.district_index(fine_plan.district_codes[target]) == target

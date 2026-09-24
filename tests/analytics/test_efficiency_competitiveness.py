@@ -184,3 +184,13 @@ def test_uns_seat_vote_curve_monotone(house_prev: pd.DataFrame) -> None:
     assert np.allclose(curve["seat_share_a"] + curve["seat_share_b"] + curve["seat_share_other"], 1.0)
     with pytest.raises(ValueError):
         M.uns_seat_vote_curve(house_prev, "A", "Z")
+
+
+def test_competitiveness_summary_counts_ratings_of_rows_without_province(make_pres) -> None:
+    f = make_pres(1, 2028, {"NB": {"A": 60, "B": 40}, "UT": {"A": 30, "B": 70}})  # PRES: 45/55 nationally
+    s = M.competitiveness_summary(M.competitiveness(f))
+    nat = s[s["province_code"].isna()].iloc[0]
+    assert nat["n_contests"] == 1 and nat["n_likely"] == 1  # 10 pp national margin
+    assert (s[[f"n_{r}" for r in M.RATINGS]].sum(axis=1) == s["n_contests"]).all()
+    by_type = M.competitiveness_summary(M.competitiveness(f), by=["race_type", "province_code"])
+    assert by_type["n_contests"].sum() == 3 and by_type["n_safe"].sum() == 2

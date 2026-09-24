@@ -144,3 +144,86 @@ def test_naming_rules() -> None:
     assert names3[2] == "Dorp e.o."
     assert compass_label(1, 1) == "Noordoost" and compass_label(0, -1, eight=False) == "Zuid"
     assert roman(4) == "IV" and roman(9) == "IX"
+
+
+def test_supplied_geometries_are_matched_by_code(fine_plan, fine_geo, geoms, stats) -> None:  # type: ignore[no-untyped-def]
+    """Geometries in another order (e.g. sorted by name or read back from GeoJSON) must not be
+    silently attached to the wrong districts."""
+    from app.core.errors import DistrictingError
+
+    shuffled = geoms.sample(frac=1.0, random_state=3)
+    assert list(shuffled["code"]) != list(geoms["code"])
+    again = district_stats(fine_plan, fine_geo.units, shuffled)
+    pd.testing.assert_frame_equal(again, stats)
+    with pytest.raises(DistrictingError, match="lack"):
+        district_stats(fine_plan, fine_geo.units, geoms.iloc[1:])
+    with pytest.raises(DistrictingError, match="no 'code' column"):
+        district_stats(fine_plan, fine_geo.units, geoms.drop(columns="code").iloc[1:])
+
+
+def test_second_municipality_keeps_its_compass_label() -> None:
+    # GM1 is split north / south; district 2 = mostly GM2 plus the southern part of GM1 is named
+    # with the part's label so it cannot be confused with the district holding GM1's north.
+    d = np.array([0, 0, 0, 1, 1, 1, 1])
+    m = np.array(["GM1", "GM1", "GM2", "GM1", "GM2", "GM2", "GM2"], dtype=object)
+    pop = np.array([40, 40, 30, 30, 40, 20, 20])
+    xy = np.array([[0, 10], [1, 10], [3, 10], [0, 0], [3, 0], [4, 0], [5, 0]], dtype=float)
+    names = name_districts(d, m, pop, xy, 2, {"GM1": "Stad", "GM2": "Dorp"}, NamingConfig())
+    assert names[0] == "Stad-Noord – Dorp-Noord"
+    assert names[1] == "Dorp-Zuid – Stad-Zuid"
+
+
+def test_many_part_municipality_labels_are_balanced() -> None:
+    # 12 districts around one city: 9 labels (8 directions + Centrum) are each used at most twice
+    from collections import Counter
+
+    k = 12
+    ang = np.arange(k) * 2 * np.pi / k
+    xy = np.column_stack([np.cos(ang), np.sin(ang)]) * 1000.0
+    xy[0] = [0.0, 0.0]  # one part in the centre
+    names = name_districts(
+        np.arange(k),
+        np.array(["GM1"] * k, dtype=object),
+        np.full(k, 100),
+        xy,
+        k,
+        {"GM1": "Stad"},
+        NamingConfig(),
+    )
+    assert len(set(names)) == k
+    base = Counter(n.split(" ")[0] for n in names)
+    assert max(base.values()) <= 2 and "Stad-Centrum" in base
+    assert names[0] == "Stad-Centrum"
+
+
+def test_dedupe_names_never_collides() -> None:
+    from app.districts.naming import dedupe_names
+
+    out = dedupe_names(["A", "A", "A I", "B", "B", "B II"])
+    assert len(set(out)) == len(out)
+    assert out == ["A II", "A III", "A I", "B I", "B III", "B II"]
+
+
+def test_city_parts_are_named_from_the_dense_core() -> None:
+    """With unit densities, a city split into ≥ 4 parts is named from its dense core: the part
+    holding the core is "-Centrum" even when the population centroid lies elsewhere."""
+    # a dense core at the origin (district 0) and three big low-density suburbs east / north-east /
+    # south-east of it: the population centroid lies ~5 km east of the core
+    xy = np.array(
+        [[0, 0], [1000, 0], [8000, 0], [9000, 0], [6000, 6000], [6500, 6500], [6000, -6000], [6500, -6500]],
+        dtype=float,
+    )
+    d = np.array([0, 0, 1, 1, 2, 2, 3, 3])
+    m = np.array(["GM1"] * 8, dtype=object)
+    pop = np.array([30, 30, 40, 40, 40, 40, 40, 40])
+    dens = np.array([9000, 8000, 900, 900, 900, 900, 900, 900], dtype=float)
+    cfg = NamingConfig()
+    plain = name_districts(d, m, pop, xy, 4, {"GM1": "Stad"}, cfg)
+    cored = name_districts(d, m, pop, xy, 4, {"GM1": "Stad"}, cfg, unit_density=dens)
+    assert plain[0] == "Stad-West"  # measured from the population centroid
+    assert cored == ["Stad-Centrum", "Stad-Oost", "Stad-Noordoost", "Stad-Zuidoost"]
+    # two parts are always named by opposite directions (population centroid), density or not
+    two = name_districts(
+        np.array([0, 0, 1, 1]), m[:4], pop[:4], xy[:4], 2, {"GM1": "Stad"}, cfg, unit_density=dens[:4]
+    )
+    assert two == ["Stad-West", "Stad-Oost"]

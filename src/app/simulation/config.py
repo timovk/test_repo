@@ -148,6 +148,12 @@ class TurnoutConfig(_Model):
     _v_demo = field_validator("demographics")(_check_demo_keys)
     _v_urb = field_validator("urbanity")(_check_urbanity_keys)
 
+    @model_validator(mode="after")
+    def _probabilities(self) -> TurnoutConfig:
+        if self.min_probability >= self.max_probability:
+            raise ValueError("turnout.min_probability must be < turnout.max_probability")
+        return self
+
 
 class AffinityConfig(_Model):
     """Ideological affinity used for transfers between ballot lines.

@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from datetime import date, time
 from functools import lru_cache
+from itertools import pairwise
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -102,31 +103,38 @@ class PlaybackConfig(_Model):
 class FirstReportConfig(_Model):
     """Minutes from a municipality's poll closing to its first batch.
 
-    ``minutes = (base + per_log10 · log10(ballots / size_ref) + per_urbanity · (urbanity − 1)
-    + province_effect) · exp(N(0, jitter_sd))``, clipped to ``[min_minutes, max_minutes]``.
+    ``minutes = (base + per_log10 · log10(ballots / size_ref) + per_urbanity · u
+    + province_effect) · exp(N(0, jitter_sd))``, clipped to ``[min_minutes, max_minutes]``, where
+    ``u`` is the ballot-weighted urbanity step of the municipality (0 = rural … 4 = very urban).
     """
 
-    base_minutes: float = 34.0
-    minutes_per_log10_ballots: float = 24.0
-    minutes_per_urbanity_step: float = 6.0
-    jitter_sd: float = Field(0.20, ge=0)
-    min_minutes: float = Field(18.0, ge=0)
-    max_minutes: float = Field(240.0, gt=0)
+    base_minutes: float = 45.0
+    minutes_per_log10_ballots: float = 30.0
+    minutes_per_urbanity_step: float = 8.0
+    jitter_sd: float = Field(0.22, ge=0)
+    min_minutes: float = Field(24.0, ge=0)
+    max_minutes: float = Field(330.0, gt=0)
+
+    @model_validator(mode="after")
+    def _check(self) -> FirstReportConfig:
+        if self.max_minutes < self.min_minutes:
+            raise ValueError("first_report.max_minutes must be ≥ min_minutes")
+        return self
 
 
 class DurationConfig(_Model):
     """Minutes from a municipality's first to its last batch.
 
-    ``base · (ballots / ref_ballots)^elasticity · (1 + urbanity_factor · (urbanity − 1))
-    · exp(N(0, jitter_sd))``; single-batch municipalities have zero duration.
+    ``base · (ballots / ref_ballots)^elasticity · (1 + urbanity_factor · u)
+    · exp(N(0, jitter_sd)) · province factor``; single-batch municipalities have zero duration.
     """
 
     ref_ballots: float = Field(20_000.0, gt=0)
-    base_minutes: float = Field(50.0, ge=0)
-    elasticity: float = Field(0.5, ge=0)
-    urbanity_factor_per_step: float = Field(0.08, ge=0)
+    base_minutes: float = Field(80.0, ge=0)
+    elasticity: float = Field(0.55, ge=0)
+    urbanity_factor_per_step: float = Field(0.10, ge=0)
     jitter_sd: float = Field(0.25, ge=0)
-    min_minutes: float = Field(4.0, ge=0)
+    min_minutes: float = Field(5.0, ge=0)
 
 
 class BatchTier(_Model):
@@ -187,10 +195,11 @@ class ReportingSpeedConfig(_Model):
     size_ref_ballots: float = Field(2_000.0, gt=0)
     first_report: FirstReportConfig = Field(default_factory=FirstReportConfig)
     duration: DurationConfig = Field(default_factory=DurationConfig)
-    #: Latest scheduled last batch, in minutes after the earliest poll closing (soft cap).
-    latest_end_minutes: float = Field(470.0, gt=0)
+    #: Latest scheduled last batch, in minutes after the earliest poll closing (soft cap;
+    #: 525 → 05:45 with polls closing at 21:00).
+    latest_end_minutes: float = Field(525.0, gt=0)
     #: Spread of the scheduled ends that hit the cap (minutes before the cap).
-    end_spread_minutes: float = Field(45.0, ge=0)
+    end_spread_minutes: float = Field(55.0, ge=0)
     #: Fixed province effects (minutes added to the first-report delay).
     province_effect_minutes: dict[str, float] = Field(
         default_factory=lambda: dict(DEFAULT_PROVINCE_EFFECT_MINUTES)
@@ -216,8 +225,8 @@ class ReportingSpeedConfig(_Model):
         if not tiers or tiers[-1].max_ballots is not None:
             raise ValueError("batches_by_size must end with an open tier (max_ballots: null)")
         caps = [t.max_ballots for t in tiers[:-1]]
-        if any(c is None for c in caps) or caps != sorted(caps):  # type: ignore[type-var]
-            raise ValueError("batches_by_size tiers must have increasing max_ballots")
+        if any(c is None for c in caps) or any(b <= a for a, b in pairwise(caps)):  # type: ignore[operator]
+            raise ValueError("batches_by_size tiers must have strictly increasing max_ballots")
         return self
 
 

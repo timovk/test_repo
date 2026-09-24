@@ -25,7 +25,7 @@ from shapely.geometry import box
 
 from app.core.rng import make_rng
 from app.districts.apportionment import apportion
-from app.districts.config import DistrictConfig
+from app.districts.config import DistrictConfig, MergeSplitConfig
 from app.geography.frame import DEMOGRAPHIC_VARIABLES
 from app.geography.synthetic import PROVINCES
 
@@ -193,7 +193,7 @@ def fine_geo() -> FineGeo:
 @pytest.fixture(scope="session")
 def fast_config() -> DistrictConfig:
     """Default parameters with fewer restarts (unit tests must be fast)."""
-    return DistrictConfig(restarts=2, workers=1)
+    return DistrictConfig(restarts=2, workers=1, merge_split=MergeSplitConfig(restarts=1))
 
 
 @pytest.fixture(scope="session")

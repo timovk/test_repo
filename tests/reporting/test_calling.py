@@ -398,3 +398,131 @@ def test_close_band_and_decided_statuses(synthetic, caller: RaceCaller, tl: Time
             assert d.winner_key is not None
         if d.status == RaceStatus.TOO_CLOSE:
             assert d.winner_key is None
+
+
+# --------------------------------------------------------------------------- adversarial
+def _progress(
+    counted: np.ndarray,
+    f: np.ndarray,
+    exp_shares: np.ndarray,
+    eligible: np.ndarray,
+    cluster: np.ndarray,
+    turnout: float = 0.78,
+    key: str = "ADV",
+) -> RaceProgress:
+    L = counted.shape[1]
+    return RaceProgress(
+        race_key=key,
+        line_keys=[chr(ord("A") + i) for i in range(L)],
+        counted_votes=counted.astype(np.int64),
+        reported_fraction=f.astype(float),
+        counted_ballots=counted.sum(axis=1).astype(np.int64),
+        expected_shares=exp_shares,
+        expected_ballots=turnout * eligible.astype(float),
+        eligible=eligible.astype(np.int64),
+        unit_cluster=cluster,
+    )
+
+
+def test_counted_leader_is_not_called_when_the_outstanding_vote_favours_the_trailer(
+    caller: RaceCaller,
+) -> None:
+    """A's strongholds report first: A leads the count by ~35 pp, but the expectation of the
+    (much larger) outstanding vote favours B — never call A just because A leads."""
+    n_a, n_b = 6, 40
+    cluster = np.r_[np.zeros(n_a, int), 1 + np.arange(n_b) // 4]
+    eligible = np.full(n_a + n_b, 1000)
+    exp = np.r_[np.tile([0.70, 0.30], (n_a, 1)), np.tile([0.36, 0.64], (n_b, 1))]
+    final = np.floor(exp * 780).astype(np.int64)  # results exactly as expected: B wins
+    f = np.r_[np.ones(n_a), np.zeros(n_b)]
+    prog = _progress(np.floor(final * f[:, None]), f, exp, eligible, cluster)
+    d = caller.evaluate(prog, seed=3, seq=6)
+    assert d.leader_key == "A" and d.margin_pct > 30.0 and 10.0 < d.reporting_pct < 15.0
+    assert d.winner_key != "A"  # (projecting the trailer B from the expectation is legitimate)
+    assert d.win_probability["A"] < 0.05 and d.projected_share_mean["B"] > d.projected_share_mean["A"]
+    assert d.comeback["plausible"] is True
+    # a landslide lead in the first 3 % is still not enough to project anything
+    f2 = np.zeros(n_a + n_b)
+    f2[n_a : n_a + 1] = 1.0
+    d2 = caller.evaluate(_progress(np.floor(final * f2[:, None]), f2, exp, eligible, cluster), seed=3, seq=1)
+    assert d2.reporting_pct < 5.0 and d2.status not in DECIDED_STATUSES
+
+
+def test_mathematical_certainty_is_strict(caller: RaceCaller) -> None:
+    """Certainty needs a counted lead *strictly* above every ballot that could still exist."""
+    exp = np.full((3, 2), 0.5)
+    cluster = np.arange(3)
+    counted = np.array([[900, 400], [0, 0], [0, 0]])
+    f = np.array([1.0, 0.0, 0.0])
+    for outstanding, certain in ((500, False), (499, True)):
+        eligible = np.array([1500, outstanding // 2, outstanding - outstanding // 2])
+        d = caller.evaluate(_progress(counted, f, exp, eligible, cluster), seed=1, seq=1)
+        assert d.outstanding_ballots_upper == outstanding and d.margin_votes == 500
+        assert d.math_certain is certain
+        assert (d.basis == "mathematical") is certain
+        assert d.comeback["mathematically_possible"] is False  # a tie is the best B can do
+    counted_b = np.array([[900, 400], [0, 0], [0, 0]])
+    d = caller.evaluate(_progress(counted_b, f, exp, np.array([1500, 300, 201]), cluster), seed=1, seq=1)
+    assert d.comeback["mathematically_possible"] is True and not d.math_certain
+
+
+def test_corrupt_expectations_cannot_force_a_call(caller: RaceCaller) -> None:
+    """NaN / negative expectations used to make one line win every draw (a certain 'call' for
+    the counted trailer); they now fall back to flat priors."""
+    n = 40
+    eligible = np.full(n, 1000)
+    final = np.column_stack([np.full(n, 300), np.full(n, 480)])
+    f = np.zeros(n)
+    f[:10] = 1.0
+    counted = np.floor(final * f[:, None])
+    for poison in ("nan_row", "negative", "all_nan", "nan_turnout"):
+        exp = np.full((n, 2), 0.5)
+        turnout = 0.78
+        if poison == "nan_row":
+            exp[5] = np.nan
+        elif poison == "negative":
+            exp[12] = [-1.0, 2.0]
+        elif poison == "all_nan":
+            exp[:] = np.nan
+        prog = _progress(counted, f, exp, eligible, np.arange(n) // 4, turnout=turnout)
+        if poison == "nan_turnout":
+            prog.expected_ballots[3::5] = np.nan
+        d = caller.evaluate(prog, seed=1, seq=5)
+        assert not (d.status in DECIDED_STATUSES and d.winner_key == "A"), poison
+        assert all(np.isfinite(v) for v in d.win_probability.values()), poison
+        assert d.win_probability["A"] < 0.5, poison
+        json.dumps(d.to_dict(), allow_nan=False)
+
+
+def test_evaluation_has_no_hidden_state(synthetic) -> None:  # type: ignore[no-untyped-def]
+    """A caller that evaluated other races / seqs before gives exactly the fresh result."""
+    frame = synthetic.frame
+    units = frame.units_in_province(9)
+    rv = _race(frame, "STATE", units, np.array([0.48, 0.42, 0.10]), seed=31)
+    cl = frame.unit_muni[units]
+    f1 = np.zeros(len(units))
+    f1[::4] = 1.0
+    f2 = f1.copy()
+    f2[1::4] = 0.6
+    used = RaceCaller(default_night_config())
+    for s, f in ((3, f1), (4, np.ones(len(units))), (7, f2)):
+        used.evaluate(RaceProgress.from_race_votes(rv, f, cl), seed=5, seq=s)
+    a = used.evaluate(RaceProgress.from_race_votes(rv, f2, cl), seed=5, seq=9)
+    b = RaceCaller(default_night_config()).evaluate(RaceProgress.from_race_votes(rv, f2, cl), seed=5, seq=9)
+    assert a.to_dict() == b.to_dict()
+
+
+def test_reporting_share_is_clamped_at_100(caller: RaceCaller) -> None:
+    rng = make_rng(3, "clamp")
+    n = 257
+    eligible = rng.integers(200, 3000, n)
+    exp = np.full((n, 2), 0.5)
+    counted = np.column_stack([eligible // 3, eligible // 4])
+    f = np.ones(n)
+    prog = _progress(counted, f, exp, eligible, np.arange(n) // 9)
+    prog.expected_ballots = rng.uniform(0.3, 0.97, n) * eligible  # awkward floating sums
+    d = caller.evaluate(prog, seed=1, seq=1)
+    assert d.status in (RaceStatus.FINAL, RaceStatus.RECOUNT) and d.reporting_pct <= 100.0
+    prog.reported_fraction[0] = 0.5
+    d = caller.evaluate(prog, seed=1, seq=2)
+    assert 0.0 < d.reporting_pct < 100.0

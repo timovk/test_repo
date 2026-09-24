@@ -6,7 +6,7 @@ import csv
 import hashlib
 import io
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -224,3 +224,127 @@ def test_export_bundle_argument_errors(tmp_path: Path, timeline_df: pd.DataFrame
         W.export_bundle({"timeline": timeline_df}, tmp_path, formats=("xlsx",))
     with pytest.raises(ValueError):
         W.export_bundle({"timeline": timeline_df, "reporting_timeline": timeline_df}, tmp_path)
+
+
+def test_large_integers_round_trip_exactly(tmp_path: Path) -> None:
+    seed = 2**62 + 1  # not representable as a float64
+    df = pd.DataFrame(
+        {
+            "run_id": [1, 2],
+            "election_id": [2, 2],
+            "seed": pd.array([seed, None], dtype="Int64"),
+            "race_code": ["PRES", "PRES"],
+            "line_key": ["t-a", "t-a"],
+            "win_probability": [0.5, 0.5],
+        }
+    )
+    assert S.conform(df, "montecarlo_summary")["seed"].iloc[0] == seed
+    assert W.to_csv_text(df, "montecarlo_summary").splitlines()[1].split(",")[2] == str(seed)
+    back = W.read_csv(W.write_csv(df, "montecarlo_summary", tmp_path / "m.csv"), "montecarlo_summary")
+    assert back["seed"].iloc[0] == seed and pd.isna(back["seed"].iloc[1])
+    env = W.to_json_envelope(df, "montecarlo_summary", generated_at=STAMP)
+    assert env["rows"][0][2] == seed
+    back_json, _ = W.read_json(
+        W.write_json(df, "montecarlo_summary", tmp_path / "m.json", generated_at=STAMP)
+    )
+    assert back_json["seed"].iloc[0] == seed
+    from_text = S.conform(df.assign(seed=[str(seed), None]), "montecarlo_summary")
+    assert from_text["seed"].iloc[0] == seed
+
+
+def test_datetimes_of_mixed_precision_and_offsets_round_trip(
+    tmp_path: Path, timeline_df: pd.DataFrame
+) -> None:
+    tl = timeline_df.copy()
+    tl["time"] = [
+        datetime(2032, 11, 3, 21, 2, 0, 250_000),  # sub-second batch times next to whole seconds
+        datetime(2032, 11, 3, 21, 1, 0),
+        datetime(2032, 11, 3, 22, 0, 0),
+    ]
+    for fmt in ("csv", "json"):
+        path = tmp_path / f"t.{fmt}"
+        if fmt == "csv":
+            back = W.read_csv(W.write_csv(tl, "timeline", path), "timeline")
+        else:
+            back = W.read_json(W.write_json(tl, "timeline", path, generated_at=STAMP))[0]
+        pd.testing.assert_frame_equal(back, W.prepare(tl, "timeline"))
+    aware = tl.assign(time=pd.to_datetime(tl["time"]).dt.tz_localize("Europe/Amsterdam"))
+    back = W.read_csv(W.write_csv(aware, "timeline", tmp_path / "a.csv"), "timeline")
+    assert back["time"].dt.tz is not None
+    assert (
+        back["time"].dt.tz_convert("UTC") == W.prepare(aware, "timeline")["time"].dt.tz_convert("UTC")
+    ).all()
+    dst = pd.DataFrame(  # an election night across the end of daylight saving time: two UTC offsets
+        {
+            "election_id": [1, 1],
+            "seq": [1, 2],
+            "sim_time_s": [0.0, 3600.0],
+            "time": ["2032-10-31T02:30:00+02:00", "2032-10-31T02:30:00+01:00"],
+            "municipality_code": ["GM0001", "GM0002"],
+            "ballots_in_batch": [1, 1],
+        }
+    )
+    conformed = S.conform(dst, "timeline")
+    assert str(conformed["time"].dt.tz) == "UTC"
+    assert conformed["time"].tolist() == [
+        pd.Timestamp("2032-10-31T00:30Z"),
+        pd.Timestamp("2032-10-31T01:30Z"),
+    ]
+
+
+def test_metadata_conversions() -> None:
+    meta = {
+        "flag": np.bool_(True),
+        "missing": pd.NA,
+        "never": pd.NaT,
+        "at": np.datetime64("2032-11-03T21:00"),
+        "no_time": np.datetime64("NaT"),
+        "window": pd.Timedelta(hours=2),
+        "counts": pd.Series([1, 2], dtype="int64"),
+        "matrix": np.array([[1.5, np.nan]]),
+        "codes": pd.Index(["NB", "UT"]),
+        DataCategory.SIMULATED: "enum key",
+    }
+    out = W._jsonable(meta)
+    assert out == {
+        "SIMULATED": "enum key",
+        "at": "2032-11-03T21:00:00",
+        "codes": ["NB", "UT"],
+        "counts": [1, 2],
+        "flag": True,
+        "matrix": [1.5, None],
+        "missing": None,
+        "never": None,
+        "no_time": None,
+        "window": "P0DT2H0M0S",
+    }
+    json.dumps(out, allow_nan=False)
+    with pytest.raises(TypeError):
+        W._jsonable({"blob": b"raw bytes"})
+
+
+def test_chunked_files_equal_the_in_memory_serialisation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, polls_df: pd.DataFrame
+) -> None:
+    big = pd.concat(
+        [polls_df.assign(poll_id=polls_df["poll_id"] + 10 * i) for i in range(7)], ignore_index=True
+    )
+    monkeypatch.setattr(W, "CHUNK_ROWS", 4)
+    csv_path = W.write_csv(big, "polls", tmp_path / "p.csv")
+    assert csv_path.read_text(encoding="utf-8") == W.to_csv_text(big, "polls")
+    meta = {"note": "Fictief — ünïcode"}
+    json_path = W.write_json(big, "polls", tmp_path / "p.json", meta, generated_at=STAMP)
+    expected = W.dumps_envelope(W.to_json_envelope(big, "polls", meta, generated_at=STAMP))
+    assert json_path.read_text(encoding="utf-8") == expected
+    empty = big.iloc[0:0]
+    path = W.write_json(empty, "polls", tmp_path / "e.json", generated_at=STAMP)
+    assert path.read_text(encoding="utf-8") == W.dumps_envelope(
+        W.to_json_envelope(empty, "polls", generated_at=STAMP)
+    )
+
+
+def test_export_bundle_validates_everything_before_writing(tmp_path: Path, timeline_df, polls_df) -> None:
+    out = tmp_path / "bundle"
+    with pytest.raises(S.SchemaError):
+        W.export_bundle({"polls": polls_df, "timeline": timeline_df.assign(kind="party")}, out)
+    assert not out.exists() or not any(out.iterdir())

@@ -290,10 +290,12 @@ class Timeline:
         seed: int = 0,
         checkpoint_every: int = 500,
         config_fingerprint: str = "",
+        muni_close_offset_s: np.ndarray | None = None,
     ) -> Timeline:
         """Rebuild a timeline from persisted rows (inverse of :meth:`to_event_rows` /
         :meth:`to_unit_rows`).  Exact: increments are binary fractions, so cumulative values
-        are reproduced bit-for-bit."""
+        are reproduced bit-for-bit.  ``muni_close_offset_s`` (M,) restores the per-municipality
+        poll closings (e.g. from :func:`polls_close_times`); default: all zero."""
         ev_sorted = sorted(events, key=lambda r: int(r["seq"]))
         N = len(ev_sorted)
         seqs = [int(r["seq"]) for r in ev_sorted]
@@ -303,11 +305,15 @@ class Timeline:
         seq_arr = np.array([int(r[0]) for r in unit_rows], dtype=np.int64)
         unit_arr = np.array([frame.unit_index(str(r[1])) for r in unit_rows], dtype=np.int64)
         inc_arr = np.array([float(r[2]) for r in unit_rows], dtype=np.float64)
+        if len(seq_arr) and (seq_arr.min() < 1 or seq_arr.max() > N):
+            raise ElectionNightError("unit rows refer to events outside 1..N")
         order = np.lexsort((unit_arr, seq_arr))
         seq_arr, unit_arr, inc_arr = seq_arr[order], unit_arr[order], inc_arr[order]
         cum = _cumulative_from_increments(unit_arr, seq_arr, inc_arr)
         counts = np.bincount(seq_arr - 1, minlength=N)
         ptr = np.r_[0, np.cumsum(counts)].astype(np.int64)
+        if muni_close_offset_s is not None and np.shape(muni_close_offset_s) != (frame.n_munis,):
+            raise ElectionNightError("muni_close_offset_s must have one entry per municipality")
         mask = np.zeros(frame.n_units, dtype=bool)
         mask[unit_arr] = True
         # batch numbering within municipalities follows event order
@@ -340,7 +346,11 @@ class Timeline:
             units=unit_arr,
             increments=inc_arr,
             cumulative=cum,
-            muni_close_offset_s=np.zeros(frame.n_munis),
+            muni_close_offset_s=(
+                np.zeros(frame.n_munis)
+                if muni_close_offset_s is None
+                else np.asarray(muni_close_offset_s, dtype=np.float64).copy()
+            ),
             units_mask=mask,
             config_fingerprint=config_fingerprint,
             checkpoint_every=checkpoint_every,
@@ -501,6 +511,10 @@ def _municipality_batches(
             tol = rep.wijk_snap_tolerance * B / n_batches
             cuts = np.where(np.abs(cand - cuts) <= tol, cand, cuts)
     cuts = np.unique(cuts[(cuts > 0) & (cuts < B)])
+    if cuts.size > 1:
+        # cuts less than one ballot apart would give a split unit two pieces with the same
+        # (quantised) cumulative fraction, i.e. an empty increment — keep the first of them
+        cuts = cuts[np.r_[True, np.diff(cuts) >= 1.0]]
     # --- assign units (or pieces of units) to batches
     mid = 0.5 * (cs + ce)
     j_mid = np.searchsorted(cuts, mid, side="right")
@@ -588,6 +602,8 @@ def generate_timeline(
     ballots = np.asarray(ballots_per_unit)
     if ballots.shape != (U,):
         raise ElectionNightError(f"ballots_per_unit must have shape ({U},), got {ballots.shape}")
+    if ballots.dtype.kind == "f" and not np.isfinite(ballots).all():
+        raise ElectionNightError("ballots_per_unit must be finite")
     ballots = ballots.astype(np.int64)
     if (ballots < 0).any():
         raise ElectionNightError("ballots_per_unit must be non-negative")

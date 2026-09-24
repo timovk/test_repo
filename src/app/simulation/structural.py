@@ -399,7 +399,9 @@ class StructuralModel:
         tc = self.config.turnout
         tp = np.asarray(tp, dtype=float)
         q = np.clip(
-            expit(tau[:, None] + (tp if tp.ndim == 2 else tp[None, :])), tc.min_probability, tc.max_probability
+            expit(tau[:, None] + (tp if tp.ndim == 2 else tp[None, :])),
+            tc.min_probability,
+            tc.max_probability,
         )
         w = s * q
         T = w.sum(axis=1)
@@ -860,6 +862,28 @@ def calibration_value_problems(doc: ScenarioDocument) -> list[str]:
     return out
 
 
+def numeric_problems(doc: ScenarioDocument) -> list[str]:
+    """Non-finite numbers anywhere in the scenario (YAML ``.nan`` / ``.inf`` pass the schema but
+    would silently turn every utility into NaN) and negative shock standard deviations."""
+    out: list[str] = []
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, f"{path}.{k}" if path else str(k))
+        elif isinstance(value, list):
+            for i, v in enumerate(value):
+                walk(v, f"{path}[{i}]")
+        elif isinstance(value, float) and not np.isfinite(value):
+            out.append(f"{path}: {value!r} is not a finite number")
+
+    walk(doc.model_dump(mode="python"), "")
+    for name, sd in doc.environment.shocks.model_dump().items():
+        if name.endswith("_sd") and np.isfinite(sd) and sd < 0:
+            out.append(f"environment.shocks.{name}: standard deviation {sd} must be >= 0")
+    return out
+
+
 def _complete_national(listed: Mapping[str, float], base: np.ndarray, pidx: Mapping[str, int]) -> np.ndarray:
     """National target vector: listed shares (normalised if they cover every party or exceed 1);
     unlisted parties share the remainder in proportion to their ``base_share``."""
@@ -965,6 +989,7 @@ def _assemble(
     # --- references ------------------------------------------------------------------------
     if P == 0:
         raise ScenarioError("scenario does not fit the model:\n  - the scenario defines no parties")
+    problems.extend(numeric_problems(doc))
     problems.extend(calibration_value_problems(doc))
     pp = doc.environment.president_party
     if pp is not None and pp not in pidx:
@@ -1033,10 +1058,16 @@ def _assemble(
                 muni[m, j] = v
     if problems:
         raise ScenarioError("scenario does not fit the model:\n  - " + "\n  - ".join(problems))
+    used_regions = {r for p in parties for r in p.regions}
     for r in regions.names:
         if not regions.muni_mask(r).any() and any(p.regions.get(r) for p in parties):
             warnings.append(
                 f"region {r} has no municipalities in this frame; its party shifts have no effect"
+            )
+        elif r in used_regions and regions.unresolved.get(r):
+            items = regions.unresolved[r]
+            warnings.append(
+                f"region {r}: {len(items)} reference(s) not found in this frame: {', '.join(items[:8])}"
             )
 
     ideology = np.array([[getattr(p.ideology, d) for d in IDEOLOGY_DIMS] for p in parties], dtype=float)

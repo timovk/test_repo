@@ -2,13 +2,16 @@
 # every party, person, poll and number below is invented.
 #
 # Elected in 2028: the President, the entire Tweede Kamer, Senate class 2 (8 seats) and the 12
-# governors.  The Electoral College is designed to be genuinely multiparty: the green-left PA
-# (front-runner) and the incumbent liberal president (VLP) both have paths to 88 electoral votes
-# through the Zuid-Holland / Utrecht / Gelderland toss-ups, the national-populist NVB carries the
-# periphery (Limburg, Drenthe, Fryslân, Zeeland) and the Christian-democratic CVU is favoured in
-# Noord-Brabant and competitive in Overijssel — so a contingent election (no majority) is plausible
-# but not the most likely outcome.  Measured with shocks only (1000 draws, REAL geography):
-# PA ≈ 47 % outright, VLP ≈ 15 %, contingent ≈ 38 % (see docs/SIMULATION.md §7.1).
+# governors.  The Electoral College is designed as a genuine two-ticket race with multiparty
+# spoilers: the green-left PA wins the popular vote in most draws but its vote is concentrated in
+# Noord-Holland, Groningen and the university towns, while the incumbent liberal president (VLP) is
+# spread more efficiently over the suburbs — so the race is decided in the Zuid-Holland /
+# Gelderland / Utrecht toss-ups and three-way Overijssel.  The national-populist NVB carries
+# Limburg and Drenthe and contests Fryslân and Zeeland; the Christian-democratic CVU contests
+# Noord-Brabant, Overijssel and Zeeland.  A contingent election (nobody reaching 88 electoral
+# votes) is a real but minority outcome.  Measured with shocks only, campaigns off (1000 draws,
+# REAL geography, Huntington–Hill electoral votes): VLP ≈ 49 % outright, PA ≈ 39 %, contingent
+# ≈ 12 %; turnout ≈ 79 % (see docs/SIMULATION.md §7.1 — FICTIONAL model output, not a forecast).
 scenario:
   slug: demo-2028
   name: General Election 2028
@@ -242,10 +245,12 @@ municipal:
 environment:
   national: {PA: 0.05, VLP: 0.03, DM: -0.02, SAP: -0.02}
   provinces:
-    NB: {CVU: 0.02, VLP: 0.04}
+    NB: {CVU: 0.05, VLP: 0.03}   # Governor Pijnenburg's home province; VLP's business vote
     LI: {CVU: 0.05}
-    GE: {VLP: 0.05}
-    ZH: {PA: 0.03}
+    GE: {VLP: 0.03}
+    ZH: {PA: 0.15}               # the PA's big-city housing campaign (Rotterdam, The Hague, Leiden, Delft)
+    UT: {PA: 0.05}
+    FR: {NVB: -0.05}             # the NVB's Randstad-centred campaign plays badly in Fryslân
   events:
     - name: energy-price-shock
       description: Fictional — a winter energy-price spike hurts the governing party.
@@ -264,11 +269,11 @@ environment:
   blank_rate: 0.004
   invalid_rate: 0.003
   shocks:
-    national_sd: 0.12
-    province_sd: 0.04
+    national_sd: 0.12             # an unusually volatile, nationalised election …
+    province_sd: 0.025            # … in which the provinces move largely together
     municipality_sd: 0.03
     unit_sd: 0.06
-    spatial_sd: 0.03
+    spatial_sd: 0.02
     spatial_length_km: 40
     turnout_national_sd: 0.08
     turnout_local_sd: 0.06
@@ -284,10 +289,11 @@ environment:
   elasticity_strength: 0.6
 
 # Structural realignment since 2024 (FICTIONAL): part of the DM and SAP electorate has moved to
-# the PA, the NVB has lost ground to the governing VLP's tougher migration line.  These baseline
-# shares override the parties' base_share for this election (the political geography is kept).
+# the PA, the NVB has lost ground to the governing VLP's tougher migration line and the renamed
+# agrarian party has grown.  These baseline shares override the parties' base_share for this
+# election (the political geography is kept).
 calibration:
-  national: {PA: 0.255, VLP: 0.215, NVB: 0.16, CVU: 0.13, DM: 0.07, SAP: 0.07, PLB: 0.07, RV: 0.03}
+  national: {PA: 0.26, VLP: 0.245, NVB: 0.13, CVU: 0.12, DM: 0.075, SAP: 0.065, PLB: 0.075, RV: 0.03}
 
 polling:
   generate: true

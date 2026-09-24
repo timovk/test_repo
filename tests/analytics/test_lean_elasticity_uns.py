@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from app.analytics import metrics as M
-from app.analytics.results import build_results_frame
+from app.analytics.results import INDEPENDENT_KEY, build_results_frame
 from app.core.rng import make_rng
 
 NAT_A = [0.30, 0.35, 0.40, 0.33, 0.38]
@@ -167,3 +167,75 @@ def test_uns_from_national_swing_between_elections(
     proj = M.uniform_swing_projection(house_prev, sw)
     assert set(proj.contests["geo_code"]) == {"NB-01", "NB-02", "UT-01"}
     assert proj.seats["seats_projected"].sum() == 3
+
+
+def test_uns_zero_swing_keeps_lot_winners_and_does_not_pool_independents(make_rows) -> None:
+    rows = make_rows(
+        1,
+        2028,
+        "HOUSE-NB-01",
+        "HOUSE",
+        "district",
+        "NB-01",
+        [("a", "A", 50), ("b", "B", 50)],
+        province_code="NB",
+        winner="b",  # exact tie decided by lot for B
+    )
+    rows += make_rows(
+        1,
+        2028,
+        "HOUSE-NB-02",
+        "HOUSE",
+        "district",
+        "NB-02",
+        [("i1", None, 30), ("i2", None, 25), ("a", "A", 45)],  # independents: 55 % pooled, 30 % best
+        province_code="NB",
+    )
+    prev = build_results_frame(rows)
+    proj = M.uniform_swing_projection(prev, {})
+    c = proj.contests.set_index("geo_code")
+    assert c.loc["NB-01", "winner_projected"] == "B" and c.loc["NB-02", "winner_projected"] == "A"
+    assert not proj.contests["flipped"].any() and (proj.seats["change"] == 0).all()
+    assert c.loc["NB-02", "margin_projected_pp"] == pytest.approx(15.0)  # A 45 vs the best independent
+    sh = proj.shares.set_index(["geo_code", "party"])
+    assert sh.loc[("NB-02", INDEPENDENT_KEY), "share_projected"] == pytest.approx(0.55)  # shares stay pooled
+    # a pooled swing is shared by the independents in proportion to their votes
+    moved = M.uniform_swing_projection(prev, {INDEPENDENT_KEY: 40.0}).contests.set_index("geo_code")
+    assert moved.loc["NB-02", "winner_projected"] == INDEPENDENT_KEY and moved.loc["NB-02", "flipped"]
+    assert moved.loc["NB-02", "margin_projected_pp"] == pytest.approx(100 / 1.4 * (0.30 * 0.95 / 0.55 - 0.45))
+    small = M.uniform_swing_projection(prev, {INDEPENDENT_KEY: 20.0}).contests.set_index("geo_code")
+    assert small.loc["NB-02", "winner_projected"] == "A"  # pooled 62.5 % but no single independent leads
+
+
+def test_uns_party_projected_where_it_did_not_run(house_prev: pd.DataFrame) -> None:
+    proj = M.uniform_swing_projection(house_prev, {"C": 70.0}, contested_only=False, renormalize=False)
+    c = proj.contests.set_index("geo_code")
+    assert c.loc["NB-01", "winner_projected"] == "C" and c.loc["NB-01", "flipped"]
+    assert c.loc["NB-01", "margin_projected_pp"] == pytest.approx(10.0)  # C 70 % vs A 60 %
+    tie = M.uniform_swing_projection(house_prev, {"C": 60.0}, contested_only=False, renormalize=False)
+    assert tie.contests.set_index("geo_code").loc["NB-01", "winner_projected"] == "A"  # flagged winner first
+
+
+def test_partisan_bias_does_not_pool_independents(make_rows) -> None:
+    rows = make_rows(
+        1,
+        2028,
+        "HOUSE-NB-01",
+        "HOUSE",
+        "district",
+        "NB-01",
+        [("i1", None, 30), ("i2", None, 30), ("a", "A", 40)],
+        province_code="NB",
+    )
+    rows += make_rows(
+        1,
+        2028,
+        "HOUSE-NB-02",
+        "HOUSE",
+        "district",
+        "NB-02",
+        [("b", "B", 60), ("a", "A", 40)],
+        province_code="NB",
+    )
+    pb = M.partisan_bias(build_results_frame(rows), "A", "B")
+    assert pb.seat_share_a == pytest.approx(0.5) and pb.seat_share_b == pytest.approx(0.5)

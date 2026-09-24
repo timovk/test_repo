@@ -38,6 +38,7 @@ from app.analytics.results import (
     as_bool,
     at_level,
     contest_rows,
+    dedupe_family_rows,
     filter_family,
     geo_totals,
     national_party_totals,
@@ -199,6 +200,8 @@ def top_two_margin(votes: np.ndarray | Sequence[float]) -> np.ndarray | float:
     v = np.asarray(votes, dtype=float)
     scalar = v.ndim == 1
     v2 = np.atleast_2d(v)
+    if v2.shape[1] == 0:  # no lines at all
+        return float("nan") if scalar else np.full(v2.shape[0], np.nan)
     total = v2.sum(axis=1)
     s = -np.sort(-v2, axis=1)
     runner = s[:, 1] if s.shape[1] > 1 else np.zeros(len(s))
@@ -841,7 +844,8 @@ class UNSProjection:
     * ``shares`` — per contest × party: ``share_prev``, ``swing_pp`` applied, ``share_projected``;
     * ``contests`` — per contest: previous and projected winner, projected margin, ``flipped``,
       ``weight`` (seats / electoral votes the contest is worth);
-    * ``seats`` — per party: ``seats_prev``, ``seats_projected``, ``change``.
+    * ``seats`` — per race family × party: ``seats_prev``, ``seats_projected``, ``change`` (seats
+      of different families — House districts, EV contests, governors — are never added up).
     """
 
     shares: pd.DataFrame
@@ -870,17 +874,66 @@ def _share_matrix(base: pd.DataFrame) -> tuple[pd.DataFrame, list[str], np.ndarr
     return idx, parties, wide.to_numpy(dtype=float), ps
 
 
-def _argmax_winner(M: np.ndarray, parties: list[str]) -> tuple[np.ndarray, np.ndarray]:
-    """Row winners (None when all zero) and top-two margins in pp."""
-    if M.shape[1] == 0:
-        return np.full(M.shape[0], None, dtype=object), np.full(M.shape[0], np.nan)
-    arg = np.argmax(M, axis=1)
-    top = M[np.arange(len(M)), arg]
-    s = -np.sort(-M, axis=1)
-    second = s[:, 1] if M.shape[1] > 1 else np.zeros(len(M))
-    names = np.asarray(parties, dtype=object)[arg]
-    names = np.where(top > 0, names, None)
-    return names, np.where(top > 0, 100.0 * (top - second), np.nan)
+@dataclass(frozen=True)
+class _Lines:
+    """Ballot lines of the contests of a share matrix (see :func:`_contest_lines`)."""
+
+    contest: np.ndarray  # (L,) row of the share matrix
+    party: np.ndarray  # (L,) column of the share matrix
+    share: np.ndarray  # (L,) share of valid votes (0 without valid votes)
+    flag: np.ndarray  # (L,) flagged winner (e.g. an exact tie won by lot)
+    order: np.ndarray  # (L,) rank of the line key (last tie-break)
+    count: np.ndarray  # (N, P) number of lines per contest × party
+
+
+def _contest_lines(base: pd.DataFrame, idx: pd.DataFrame, parties: list[str]) -> _Lines:
+    r = with_keys(base)
+    keys = pd.MultiIndex.from_frame(idx[list(GEO_KEY)])
+    contest = keys.get_indexer(pd.MultiIndex.from_frame(r[list(GEO_KEY)]))
+    party = pd.Index(parties).get_indexer(r["party"])
+    ok = (contest >= 0) & (party >= 0)
+    share = np.nan_to_num(_safe_div(r["votes"], r["valid_votes"]))[ok]
+    order = pd.factorize(r["line_key"].astype(str), sort=True)[0][ok]
+    count = np.zeros((len(idx), len(parties)), dtype=np.int64)
+    np.add.at(count, (contest[ok], party[ok]), 1)
+    flag = as_bool(r["winner"]).to_numpy()[ok]
+    return _Lines(contest[ok], party[ok], share, flag, order, count)
+
+
+def _project_winners(
+    lines: _Lines, S: np.ndarray, P: np.ndarray, parties: list[str]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Projected winner (party key; None when nobody has a positive share) and top-two margin (pp)
+    per contest, decided between *lines*: each line keeps its fraction of its party's share
+    (pooled independents stay separate candidates); a party projected into a contest where it has
+    no line counts as one line.  Exact ties go to the flagged winner, then the lowest line key, so
+    a zero swing reproduces the previous winners exactly."""
+    n = S.shape[0]
+    names = np.full(n, None, dtype=object)
+    margins = np.full(n, np.nan)
+    c, j = lines.contest, lines.party
+    sp, pp = S[c, j], P[c, j]
+    value = lines.share * np.divide(pp, sp, out=np.zeros(len(c)), where=sp > 0)
+    # a party whose lines received no votes but which gains a share splits it equally
+    value = np.where((sp <= 0) & (pp > 0), pp / np.maximum(lines.count[c, j], 1), value)
+    vc, vj = np.nonzero((lines.count == 0) & (P > 0))
+    contest = np.concatenate([c, vc])
+    party = np.concatenate([j, vj])
+    value = np.concatenate([value, P[vc, vj]])
+    flag = np.concatenate([lines.flag, np.zeros(len(vc), dtype=bool)])
+    order = np.concatenate([lines.order, int(lines.order.max(initial=-1)) + 1 + vj])
+    if not len(contest):
+        return names, margins
+    srt = np.lexsort((order, ~flag, -value, contest))
+    cs, vs, ps = contest[srt], value[srt], party[srt]
+    first = np.flatnonzero(np.r_[True, cs[1:] != cs[:-1]])
+    nxt = np.minimum(first + 1, len(cs) - 1)
+    second = np.where((first + 1 < len(cs)) & (cs[nxt] == cs[first]), vs[nxt], 0.0)
+    top = vs[first]
+    ok = top > 0
+    names[cs[first][ok]] = np.asarray(parties, dtype=object)[ps[first][ok]]
+    margins[cs[first][ok]] = 100.0 * (top[ok] - second[ok])
+    return names, margins
 
 
 def uniform_swing_projection(
@@ -898,13 +951,21 @@ def uniform_swing_projection(
     swing keep their share).  With ``contested_only`` (default) a party gets no swing where it did
     not run.  Shares are clipped at 0 and, with ``renormalize``, rescaled so each contest's shares
     keep their original sum.  Contests are the seat contests of ``prev`` (House districts,
-    province EV contests, …) or all geos at ``level``.  ``seat_weights`` maps geo codes to the
+    province EV contests, …) or all race-geos at ``level`` (where the ``PRES`` parent and a
+    ``PRES-<PV>`` contest cover the same geo it counts once, see
+    :func:`~app.analytics.results.dedupe_family_rows`).  ``seat_weights`` maps geo codes to the
     seats a contest is worth (e.g. electoral votes by province); default 1.
+
+    The projected winner is decided between ballot *lines*: each line keeps its fraction of its
+    party's projected share, so independents pooled under ``_IND`` do not win as a bloc; exact ties
+    go to the line flagged ``winner`` (a tie won by lot), then the lowest line key — a zero swing
+    reproduces the previous winners exactly.
     """
-    base = seat_contests(prev) if level is None else at_level(prev, level)
+    base = seat_contests(prev) if level is None else dedupe_family_rows(at_level(prev, level))
     if base.empty:
         raise ResultsFrameError("uniform_swing_projection: no contest rows in the previous results")
     idx, parties, S, ps = _share_matrix(base)
+    lines = _contest_lines(base, idx, parties)
     sw = pd.Series(national_swing_pp, dtype=float)
     unknown = sorted(set(sw.index.astype(str)) - set(parties))
     if unknown:
@@ -916,7 +977,7 @@ def uniform_swing_projection(
         tot0, tot1 = S.sum(axis=1), P.sum(axis=1)
         scale = np.divide(tot0, tot1, out=np.ones_like(tot0), where=tot1 > 0)
         P = P * scale[:, None]
-    proj_w, proj_m = _argmax_winner(P, parties)
+    proj_w, proj_m = _project_winners(lines, S, P, parties)
     won = ps[as_bool(ps["won"]).to_numpy()][[*GEO_KEY, "party"]].rename(columns={"party": "winner_prev"})
     meta = ps.drop_duplicates(list(GEO_KEY))[[*GEO_KEY, "year", "race_family", "geo_name", "province_code"]]
     contests = idx.merge(meta, on=list(GEO_KEY), how="left").merge(won, on=list(GEO_KEY), how="left")
@@ -939,18 +1000,39 @@ def uniform_swing_projection(
     shares = shares[(shares["share_prev"] > 0).to_numpy() | (shares["share_projected"] > 0).to_numpy()]
     shares = shares.sort_values([*GEO_KEY, "party"], kind="mergesort").reset_index(drop=True)
 
-    w = contests["weight"].to_numpy(dtype=float)
-    prev_s = pd.Series(w).groupby(contests["winner_prev"].to_numpy(dtype=object)).sum()
-    proj_s = pd.Series(w).groupby(contests["winner_projected"].to_numpy(dtype=object)).sum()
-    seats = pd.DataFrame({"seats_prev": prev_s, "seats_projected": proj_s}).fillna(0.0)
+    seat_rows = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "race_family": contests["race_family"].to_numpy(dtype=object),
+                    "party": contests[col].to_numpy(dtype=object),
+                    "kind": kind,
+                    "w": contests["weight"].to_numpy(dtype=float),
+                }
+            )
+            for col, kind in (("winner_prev", "seats_prev"), ("winner_projected", "seats_projected"))
+        ],
+        ignore_index=True,
+    )
+    seat_rows = seat_rows[seat_rows["party"].notna().to_numpy()]
+    if seat_rows.empty:  # nobody received a vote anywhere
+        seat_rows = pd.DataFrame(
+            {"race_family": pd.Series(dtype=object), "party": pd.Series(dtype=object), "kind": "", "w": 0.0}
+        )
+    seats = seat_rows.pivot_table(
+        index=["race_family", "party"], columns="kind", values="w", aggfunc="sum", fill_value=0.0
+    )
+    seats = seats.reindex(columns=["seats_prev", "seats_projected"], fill_value=0.0)
+    seats.columns.name = None
+    seats = seats.reset_index()
     seats["change"] = seats["seats_projected"] - seats["seats_prev"]
-    seats.index.name = "party"
-    seats = seats.reset_index().sort_values(
-        ["seats_projected", "party"], ascending=[False, True], kind="mergesort"
+    seats = seats.sort_values(
+        ["race_family", "seats_projected", "party"], ascending=[True, False, True], kind="mergesort"
     )
     if seat_weights is None or all(float(v).is_integer() for v in seat_weights.values()):
         for c in ("seats_prev", "seats_projected", "change"):
             seats[c] = seats[c].round().astype(np.int64)
+    seats = seats.loc[:, ["race_family", "party", "seats_prev", "seats_projected", "change"]]
     return UNSProjection(shares=shares, contests=contests, seats=seats.reset_index(drop=True))
 
 
@@ -1012,9 +1094,12 @@ def competitiveness_summary(comp: pd.DataFrame, by: str | Sequence[str] = "provi
         median_margin_pp=("margin_pp", "median"),
         mean_enc=("enc", "mean"),
     )
-    counts = comp.groupby([*keys, "rating"], sort=True).size().unstack("rating", fill_value=0)
-    counts = counts.reindex(columns=list(RATINGS), fill_value=0)
-    counts.columns = [f"n_{c}" for c in counts.columns]
+    counts = pd.DataFrame(
+        {
+            f"n_{r}": (comp["rating"] == r).groupby([comp[k] for k in keys], sort=True, dropna=False).sum()
+            for r in RATINGS
+        }
+    )
     out = out.join(counts, how="left").fillna({f"n_{c}": 0 for c in RATINGS})
     for c in RATINGS:
         out[f"n_{c}"] = out[f"n_{c}"].astype(np.int64)
@@ -1360,7 +1445,8 @@ def uns_seat_vote_curve(
 
     For each target ``t`` in ``grid`` (default 0.30…0.70 step 0.01) the swing ``s = t·(A+B) − A``
     (national raw shares A, B) is added to ``a`` and subtracted from ``b`` in every contest they
-    ran in; shares are clipped at 0 and each contest goes to the plurality party.
+    ran in; shares are clipped at 0 and each contest goes to the plurality *line* (pooled
+    independents stay separate candidates; exact ties as in :func:`uniform_swing_projection`).
     """
     base = seat_contests(frame)
     single_election(base, "uns_seat_vote_curve")
@@ -1373,6 +1459,7 @@ def uns_seat_vote_curve(
         if p not in parties:
             raise ValueError(f"party {p!r} did not run in any seat contest")
     ia, ib = parties.index(a), parties.index(b)
+    lines = _contest_lines(base, idx, parties)
     valid = idx.merge(
         ps.drop_duplicates(list(GEO_KEY))[[*GEO_KEY, "valid_votes"]], on=list(GEO_KEY), how="left"
     )["valid_votes"].to_numpy(dtype=float)
@@ -1391,7 +1478,7 @@ def uns_seat_vote_curve(
         M = S.copy()
         M[:, ia] = np.clip(M[:, ia] + s * ma, 0.0, None)
         M[:, ib] = np.clip(M[:, ib] - s * mb, 0.0, None)
-        win, _ = _argmax_winner(M, parties)
+        win, _ = _project_winners(lines, S, M, parties)
         sa = float(w[win == a].sum() / W)
         sb = float(w[win == b].sum() / W)
         rows.append(
@@ -1525,7 +1612,7 @@ def electoral_college_tally(
         won = pd.DataFrame({"key": g[win_col].to_numpy(dtype=object), "ev": ev.to_numpy()})
         won = won[won["key"].notna().to_numpy()]
         ev_k = won.groupby("key")["ev"].agg(["sum", "size"])
-        nat = with_keys(_national_pres_rows(frame, int(eid)))
+        nat = with_keys(_national_pres_rows(frame, int(eid))).sort_values(["line_key"], kind="mergesort")
         pv = nat.groupby(kc, sort=True).agg(popular_votes=("votes", "sum"), label=("candidate", "first"))
         valid = float(nat.drop_duplicates(list(GEO_KEY))["valid_votes"].sum())
         t = pv.join(ev_k, how="outer")
@@ -1645,7 +1732,9 @@ def _key_margins(rows: pd.DataFrame, kc: str, key: str) -> pd.Series:
     own = v[key] if key in v.columns else pd.Series(0, index=v.index)
     others = v.drop(columns=[key], errors="ignore")
     best = others.max(axis=1) if others.shape[1] else pd.Series(0, index=v.index)
-    return pd.Series(100.0 * _safe_div(own - best, valid), index=v.index)
+    # same operation order as app.elections.electoral_college (100·Δ / V) so margins agree exactly
+    diff = 100.0 * (own - best).to_numpy(dtype=float)
+    return pd.Series(_safe_div(diff, valid), index=v.index)
 
 
 def tipping_point_from_frame(
@@ -1665,9 +1754,14 @@ def tipping_point_from_frame(
     """
     eid, _ = single_election(frame, "tipping_point_from_frame")
     kc = _key_col(by)
-    tally = electoral_college_tally(frame, ev_by_province, by=by)
-    k = key if key is not None else str(tally["key"].iloc[0])
     prov = with_keys(_province_contests(frame))
+    have, want = set(prov["geo_code"]), set(ev_by_province)
+    if have != want:
+        raise ResultsFrameError(
+            f"tipping_point_from_frame: provinces mismatch (missing {sorted(want - have)}, "
+            f"unexpected {sorted(have - want)})"
+        )
+    k = key if key is not None else str(electoral_college_tally(frame, ev_by_province, by=by)["key"].iloc[0])
     margins = _key_margins(prov, kc, k)
     nat = with_keys(_national_pres_rows(frame, eid)).assign(geo_code="__NAT__")
     nat_margin = float(_key_margins(nat, kc, k).iloc[0])
@@ -1719,7 +1813,8 @@ def race_summaries(
     incumbency.
 
     The previous holder is the winning party of the same race code in ``prev`` (its most recent
-    election holding that race) if given, else
+    election holding that race *before* the row's election, by ``(year, election_id)``; ``prev``
+    may therefore be the whole history, including the current election) if given, else
     ``incumbents.incumbent_party``.  ``incumbents`` (optional) has ``race_code`` and any of
     ``incumbent_candidate, incumbent_party, is_open_seat``.  ``flip_status`` ∈ {hold, flip,
     undecided, new} (``new``: no previous holder known).  ``incumbent_won`` is null when the
@@ -1741,12 +1836,17 @@ def race_summaries(
     out = out.merge(inc, on="race_code", how="left")
     prev_holder = out["incumbent_party"].astype(object)
     if prev is not None and not prev.empty:
-        pw = margin_table(contest_rows(prev)).sort_values(
-            ["year", "election_id"], ascending=False, kind="mergesort"
+        pw = margin_table(contest_rows(prev))[["election_id", "year", "race_code", "winner_party"]]
+        pw = pw.rename(columns={"election_id": "_pe", "year": "_py", "winner_party": "_prev_w"})
+        cur = out[["election_id", "year", "race_code"]].drop_duplicates()
+        pw = cur.merge(pw, on="race_code", how="inner")
+        # only elections strictly before the current one: (year, election_id) order
+        before = (pw["_py"] < pw["year"]) | ((pw["_py"] == pw["year"]) & (pw["_pe"] < pw["election_id"]))
+        pw = pw[before.to_numpy()].sort_values(["_py", "_pe"], kind="mergesort")
+        pw = pw.drop_duplicates(["election_id", "race_code"], keep="last")
+        out = out.merge(
+            pw[["election_id", "race_code", "_prev_w"]], on=["election_id", "race_code"], how="left"
         )
-        pw = pw[["race_code", "winner_party"]].drop_duplicates("race_code")
-        pw = pw.rename(columns={"winner_party": "_prev_w"})
-        out = out.merge(pw, on="race_code", how="left")
         prev_holder = out["_prev_w"].astype(object).where(out["_prev_w"].notna(), prev_holder)
         out = out.drop(columns="_prev_w")
     out["previous_winner_party"] = prev_holder.where(prev_holder.notna(), None)

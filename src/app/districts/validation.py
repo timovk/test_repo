@@ -11,13 +11,20 @@ Checks (errors unless noted):
 * every district is non-empty and has a positive population;
 * every district is contiguous (graph contiguity over the unit adjacency incl. water links);
 * every district's deviation from its provincial target is within the hard maximum
-  (a deviation beyond the *target* tolerance is a warning).
+  (a deviation beyond the *target* tolerance is a warning); the target is recomputed from the unit
+  table (province population / apportioned seats) and must agree with the plan's own targets;
+* district codes are ``<PV>-<NN>`` and every province's districts are numbered 1 … k.
+
+The result is a :class:`PlanValidation`: a ``list[str]`` of errors (the ``validate_plan(...) ->
+list[str]`` contract of docs/ARCHITECTURE.md — empty means valid, so ``if validate_plan(...):``
+means *invalid*) that also carries ``warnings`` and the ``ok`` / ``errors`` / ``raise_if_invalid``
+helpers.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+import re
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -25,22 +32,37 @@ import pandas as pd
 from app.core.config import get_constitution
 from app.core.constitution import ConstitutionConfig
 from app.core.errors import ValidationError
-from app.districts.plan import GeneratedPlan
+from app.districts.plan import GeneratedPlan, district_code
+
+#: House district code: province code, hyphen, two-digit (or longer) number.
+DISTRICT_CODE_RE = re.compile(r"^[A-Z]{2}-\d{2,}$")
 
 
-@dataclass
-class PlanValidation:
-    """Result of :func:`validate_plan`."""
+class PlanValidation(list[str]):
+    """Result of :func:`validate_plan`: the list of errors (empty = valid) plus ``warnings``.
 
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    It *is* a ``list[str]`` of error messages (docs/ARCHITECTURE.md: ``validate_plan(...) ->
+    list[str]``), so iteration, ``len``, indexing, comparison with a list and truthiness follow the
+    errors — ``if validate_plan(...):`` means the plan is **invalid**; use :attr:`ok` for the
+    positive check.
+    """
+
+    def __init__(self, errors: Iterable[str] = (), warnings: Iterable[str] = ()) -> None:
+        super().__init__(errors)
+        self.warnings: list[str] = list(warnings)
+
+    @property
+    def errors(self) -> list[str]:
+        """The error messages (this list itself)."""
+        return self
 
     @property
     def ok(self) -> bool:
-        return not self.errors
+        """True when the plan passed every check (warnings allowed)."""
+        return len(self) == 0
 
-    def __bool__(self) -> bool:
-        return self.ok
+    def __repr__(self) -> str:
+        return f"PlanValidation(errors={list(self)!r}, warnings={self.warnings!r})"
 
     def raise_if_invalid(self) -> None:
         """Raise :class:`~app.core.errors.ValidationError` listing every error."""
@@ -67,6 +89,24 @@ def validate_plan(
     res = PlanValidation()
     err, warn = res.errors, res.warnings
     n_d = plan.n_districts
+    n_u = len(plan.unit_codes)
+    lengths = {
+        "unit_district": len(plan.unit_district),
+        "unit_province": len(plan.unit_province),
+        "unit_municipality": len(plan.unit_municipality),
+        "unit_population": len(plan.unit_population),
+    }
+    bad_len = sorted(k for k, v in lengths.items() if v != n_u)
+    d_lengths = {
+        "district_names": len(plan.district_names),
+        "district_province": len(plan.district_province),
+        "district_numbers": len(plan.district_numbers),
+        "district_target": len(plan.district_target),
+    }
+    bad_len += sorted(k for k, v in d_lengths.items() if v != n_d)
+    if bad_len:
+        err.append(f"plan arrays have inconsistent lengths: {', '.join(bad_len)}")
+        return res
     # ---- district counts ---------------------------------------------------------------
     if n_d != cons.house_seats:
         err.append(f"plan has {n_d} districts; the constitution requires {cons.house_seats}")
@@ -80,6 +120,22 @@ def validate_plan(
             err.append(f"province {p} has {have} districts, apportioned {want}")
     if len(set(plan.district_codes)) != n_d:
         err.append("duplicate district codes")
+    bad_codes = [
+        c
+        for c, p, n in zip(plan.district_codes, plan.district_province, plan.district_numbers, strict=True)
+        if not DISTRICT_CODE_RE.match(str(c)) or str(c) != district_code(str(p), int(n))
+    ]
+    if bad_codes:
+        err.append(
+            f"{len(bad_codes)} district codes do not match '<PV>-<NN>' of their province and number "
+            f"(e.g. {', '.join(map(str, bad_codes[:5]))})"
+        )
+    numbers: dict[str, list[int]] = {}
+    for p, n in zip(plan.district_province, plan.district_numbers, strict=True):
+        numbers.setdefault(str(p), []).append(int(n))
+    for p, nums in sorted(numbers.items()):
+        if sorted(nums) != list(range(1, len(nums) + 1)):
+            err.append(f"province {p}: districts are not numbered 1..{len(nums)}")
     # ---- unit coverage -----------------------------------------------------------------
     codes = plan.unit_codes.astype(str)
     uniq, counts = np.unique(codes, return_counts=True)
@@ -111,19 +167,38 @@ def validate_plan(
         err.append(f"{len(bad_d)} districts contain units of another province: {', '.join(bad_d[:10])}")
     if not np.array_equal(plan.unit_province.astype(str)[known], prov_of_unit[known].astype(str)):
         err.append("plan unit provinces disagree with the unit table")
+    # ---- populations and targets (recomputed from the unit table when it has populations) --
+    unit_pop = plan.unit_population.astype(np.int64)
     if "population" in table.columns:
         pops = (
             pd.to_numeric(table["population"], errors="coerce")
             .reindex(codes)
             .fillna(0)
+            .clip(lower=0)
             .round()
             .astype(np.int64)
+            .to_numpy()
         )
-        if not np.array_equal(pops.to_numpy()[known], plan.unit_population[known]):
-            warn.append("plan unit populations differ from the unit table")
+        if not np.array_equal(pops[known], unit_pop[known]):
+            warn.append("plan unit populations differ from the unit table; the table's populations are used")
+            unit_pop = np.where(known, pops, unit_pop)
+    pop = np.bincount(ud, weights=unit_pop.astype(float), minlength=n_d).round().astype(np.int64)
+    unit_prov = np.where(known, prov_of_unit, plan.unit_province).astype(str)
+    prov_pop = pd.Series(unit_pop, dtype="float64").groupby(unit_prov).sum().to_dict()
+    target = np.asarray(
+        [prov_pop.get(str(p), 0.0) / max(seats.get(str(p), 0), 1) for p in plan.district_province],
+        dtype=float,
+    )
+    stated = np.asarray(plan.district_target, dtype=float)
+    off = ~(np.abs(stated - target) <= np.maximum(0.5, 1e-9 * np.abs(target)))
+    if off.any():
+        bad_t = [plan.district_codes[i] for i in np.flatnonzero(off)]
+        err.append(
+            f"{len(bad_t)} districts have a target population that is not their province population / "
+            f"seats (e.g. {', '.join(bad_t[:5])})"
+        )
     # ---- district contents ---------------------------------------------------------------
     n_units = np.bincount(ud, minlength=n_d)
-    pop = plan.district_population()
     for i in np.flatnonzero(n_units == 0):
         err.append(f"{plan.district_codes[i]}: district has no units")
     for i in np.flatnonzero((n_units > 0) & (pop <= 0)):
@@ -131,7 +206,7 @@ def validate_plan(
     comps = plan.district_components()
     for i in np.flatnonzero((comps > 1) & (n_units > 0)):
         err.append(f"{plan.district_codes[i]}: district is not contiguous ({int(comps[i])} pieces)")
-    dev = plan.deviation_pct()
+    dev = (pop - target) / np.where(target > 0, target, 1.0) * 100.0
     cfg = plan.config
     for i in range(n_d):
         if abs(dev[i]) > cfg.max_deviation_pct:

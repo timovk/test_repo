@@ -93,6 +93,8 @@ def test_tipping_point_from_frame_and_bias(pres_2028: pd.DataFrame, canonical_ev
     assert b.bias_pp == pytest.approx(20.0)  # the EC favours A by 20 pp relative to the popular vote
     loser = M.tipping_point_from_frame(pres_2028, canonical_ev, key="B")
     assert loser.tipping_margin_pp == pytest.approx(-10.0) and loser.bias_pp == pytest.approx(-20.0)
+    with pytest.raises(ResultsFrameError, match="provinces mismatch"):
+        M.tipping_point_from_frame(pres_2028[pres_2028["geo_code"] != "ZE"], canonical_ev, key="A")
 
 
 def test_ec_pv_divergence_from_tally(pres_2028: pd.DataFrame, canonical_ev) -> None:
@@ -101,3 +103,50 @@ def test_ec_pv_divergence_from_tally(pres_2028: pd.DataFrame, canonical_ev) -> N
     assert div["diverged"] and div["ev_leader"] == "A" and div["pv_leader"] == "B"
     assert div["pv_margin_pp"] == pytest.approx(10.0) and div["ev_majority"]
     assert "A leads the electoral vote with 99 EV while B leads the popular vote" in div["description"]
+
+
+def test_tipping_point_agrees_with_the_elections_engine_on_random_canonical_maps(
+    make_pres, canonical_ev
+) -> None:
+    """Cross-check against :func:`app.elections.electoral_college.tipping_point` (same ordering,
+    tie rule, majority and margin arithmetic) for every ticket on random canonical maps —
+    including small vote counts that produce exactly tied margins."""
+    from app.core.rng import make_rng
+    from app.elections import electoral_college as EC
+    from app.elections.tabulation import tabulate_totals
+
+    rng = make_rng(2032, "analytics-test", "tipping-cross-check")
+    checked = ties = 0
+    for trial in range(120):
+        parties = ["A", "B", "C", "D", "E"][: int(rng.integers(2, 6))]
+        high = 12 if trial % 3 == 0 else 5_000_000  # small counts → exact margin ties
+        provinces = {
+            pv: {
+                p: int(v) for p, v in zip(parties, rng.integers(0, high, size=len(parties)) + 1, strict=True)
+            }
+            for pv in canonical_ev
+        }
+        frame = make_pres(1, 2028, provinces)
+        tabs = {
+            pv: tabulate_totals(f"PRES-{pv}", [f"t-{p}" for p in parties], list(votes.values()))
+            for pv, votes in provinces.items()
+        }
+        majority = None if trial % 4 else int(rng.integers(1, sum(canonical_ev.values()) + 1))
+        for p in parties:
+            key = f"t-{p}"
+            engine = EC.tipping_point(tabs, canonical_ev, key, majority=majority)
+            ours = M.tipping_point_from_frame(frame, canonical_ev, key=key, by="line", majority=majority)
+            assert (ours.tipping_province, ours.tipping_margin_pp) == engine, (trial, key)
+            margins = EC.province_margins(tabs, key)
+            assert M.tipping_point(margins, canonical_ev, majority).province == engine[0]
+            ties += len(set(margins.values())) < len(margins)
+            checked += 1
+    assert checked > 300 and ties > 25
+
+
+def test_tipping_point_zero_vote_province_sorts_last(canonical_ev) -> None:
+    """Documented difference from the elections engine: a province without valid votes has an
+    undefined (NaN) margin and sorts last (the engine treats it as a 0 pp margin)."""
+    margins = {p: -5.0 for p in canonical_ev} | {"ZH": 10.0, "NH": 8.0, "UT": 6.0, "NB": 2.0, "GR": math.nan}
+    tp = M.tipping_point(margins, canonical_ev)
+    assert tp.order[-1] == "GR" and tp.province == "NB"

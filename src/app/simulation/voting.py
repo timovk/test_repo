@@ -499,10 +499,16 @@ def prepare_race(
     if len(set(keys)) != len(keys):
         raise ElectionError(f"race {race.key} has duplicate line keys")
     if state_units is None:
+        if expected_state.vote_share.shape[0] != model.frame.n_units:
+            raise ElectionError(
+                f"race {race.key}: expected state covers {expected_state.vote_share.shape[0]} units; "
+                "pass state_units for a partial state"
+            )
         rows = units
     else:
         lookup = np.full(model.frame.n_units, -1, dtype=np.int64)
-        lookup[np.asarray(state_units, dtype=np.int64)] = np.arange(len(state_units))
+        su = as_unit_index(state_units, model.frame.n_units, what="state_units")
+        lookup[su] = np.arange(len(su))
         rows = lookup[units]
         if (rows < 0).any():
             raise ElectionError(f"race {race.key}: expected state does not cover all race units")
@@ -741,12 +747,24 @@ def draw_shocks(model: StructuralModel, seed: int, ctx: ElectionContext | None =
     return ShockDraw(utility=utility, turnout=turnout, party_turnout=party_t, record=record)
 
 
+#: Stream scope of the presidential tickets' performance shocks (one national campaign).
+PRESIDENTIAL_LINE_SCOPE = "PRES"
+
+
 def race_line_shocks(model: StructuralModel, race: RaceSpec, seed: int) -> np.ndarray:
     """The race × line performance shocks (L,) of draw ``seed`` — exactly those
-    :func:`simulate_election` adds to the line utilities (keyed streams per race and line)."""
+    :func:`simulate_election` adds to the line utilities.
+
+    Streams are keyed per race and line, except that a presidential ticket runs one national
+    campaign: every ``PRESIDENT`` / ``PRESIDENT_PROVINCE`` contest shares the ticket's shock
+    (regional variation comes from the province / municipal / spatial shocks), so the province
+    contests do not diverge through independent per-province candidate noise.
+    """
     lsd = model.config.candidates.race_line_sd
+    rt = RaceType(race.race_type)
+    scope = PRESIDENTIAL_LINE_SCOPE if rt in (RaceType.PRESIDENT, RaceType.PRESIDENT_PROVINCE) else race.key
     return np.array(
-        [make_rng(seed, "race", race.key, "line", ln.key).standard_normal() * lsd for ln in race.lines],
+        [make_rng(seed, "race", scope, "line", ln.key).standard_normal() * lsd for ln in race.lines],
         dtype=float,
     )
 

@@ -61,6 +61,15 @@ local_search:
   weight_deviation: 1.0     # per (deviation %)²
   weight_cut_km: 0.2        # per km of district boundary
 
+# Recombination ("merge-split") of the best restarts: re-draw every pair of adjacent districts and
+# the districts sharing an over-split municipality (≤ max_region_districts districts) with the
+# bisection above; keep a re-drawn region when the local-search objective improves.
+merge_split:
+  enabled: true
+  max_passes: 2             # passes over all pairs / over-split municipalities (stop when one is idle)
+  max_region_districts: 4   # largest region re-drawn around an over-split municipality
+  restarts: 3               # best restarts that are recombined; the best result wins
+
 # Worker processes (0 = auto, 1 = serial).  Results are identical for every value; not hashed.
 workers: 1
 

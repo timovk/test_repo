@@ -190,3 +190,68 @@ def test_unknown_level_raises(house_prev: pd.DataFrame) -> None:
     bad["level"] = "planet"
     with pytest.raises(ResultsFrameError):
         contest_rows(bad)
+
+
+def test_validate_results_frame_checks_winner_flags_and_shares(house_prev: pd.DataFrame) -> None:
+    two = house_prev.copy()
+    two.loc[two["geo_code"] == "NB-01", "winner"] = True
+    assert "more than one winner flagged in some contest-geos" in validate_results_frame(two)
+    wrong = house_prev.copy()
+    wrong["winner"] = wrong["line_key"].isin(["b1"])  # 40 votes vs 60
+    assert "winner flagged on a line without the most votes" in validate_results_frame(wrong)
+    shares = house_prev.copy()
+    shares.loc[0, "share"] = shares.loc[0, "share"] + 0.01
+    assert "share differs from votes / valid_votes" in validate_results_frame(shares)
+    lot = house_prev.copy()
+    lot["winner"] = lot["line_key"].isin(["a1", "b2", "a3"])  # a3 wins the UT-01 30/30 tie … not the top
+    assert "winner flagged on a line without the most votes" in validate_results_frame(lot)
+    tie = lot.copy()
+    tie.loc[tie["line_key"] == "c3", "votes"] = 30
+    tie.loc[tie["geo_code"] == "UT-01", "valid_votes"] = 90
+    tie["share"] = tie["votes"] / tie["valid_votes"]
+    assert validate_results_frame(tie) == []  # a line flagged for an exact tie (lot) is fine
+
+
+def test_ranked_lines_matches_a_reference_sort(make_rows) -> None:
+    from app.analytics.results import GEO_KEY, ranked_lines
+    from app.core.rng import make_rng
+
+    rng = make_rng(4, "analytics-test", "ranked-lines")
+    rows: list[dict] = []
+    for i in range(300):
+        n = int(rng.integers(1, 5))
+        votes = rng.integers(0, 4, size=n)  # many ties and zeros
+        keys = [f"l{int(k)}" for k in rng.permutation(9)[:n]]
+        flag = keys[int(rng.integers(0, n))] if rng.random() < 0.3 else None
+        rows += make_rows(
+            int(rng.integers(1, 3)),
+            2028,
+            f"R-{i % 37}",
+            "HOUSE",
+            str(rng.choice(["district", "municipality"])),
+            f"G{i % 11}",
+            [(k, "P", int(v)) for k, v in zip(keys, votes, strict=True)],
+            winner=flag,
+        )
+    df = pd.DataFrame(rows)
+    df["winner"] = df["winner"].eq(True) if "winner" in df else False
+    df = df.drop_duplicates([*GEO_KEY, "line_key"]).reset_index(drop=True)
+    ref = df.assign(_w=df["winner"]).sort_values(
+        [*GEO_KEY, "votes", "_w", "line_key"],
+        ascending=[True, True, True, True, False, False, True],
+        kind="mergesort",
+    )
+    ref["_rank"] = ref.groupby(list(GEO_KEY), sort=False).cumcount()
+    ref["_n"] = ref.groupby(list(GEO_KEY), sort=False)["votes"].transform("size")
+    got = ranked_lines(df)
+    pd.testing.assert_frame_equal(got, ref, check_dtype=False)
+
+
+def test_build_results_frame_rejects_non_integral_counts(make_rows) -> None:
+    rows = make_rows(1, 2028, "HOUSE-NB-01", "HOUSE", "district", "NB-01", [("a", "A", 30), ("b", "B", 70)])
+    ok = build_results_frame([r | {"votes": float(r["votes"]), "valid_votes": "100"} for r in rows])
+    assert ok["votes"].dtype == np.int64 and ok["votes"].tolist() == [30, 70]
+    with pytest.raises(ResultsFrameError, match="votes"):
+        build_results_frame([r | {"votes": r["votes"] + 0.5} for r in rows])
+    with pytest.raises(ResultsFrameError, match="eligible"):
+        build_results_frame([r | {"eligible": None} for r in rows])

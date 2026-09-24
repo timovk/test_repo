@@ -41,24 +41,31 @@ first = (base + per_log10 · log10(B / size_ref) + per_urbanity · u + province_
 ```
 
 The province effect is a fixed FICTIONAL value in minutes plus a seeded random term,
-`N(0, province_random_sd_minutes)`. With the defaults the Wadden islands report at about
-21:25–21:35. A typical municipality of about 20 k ballots reports first at about 22:00–22:20,
-and the big cities at about 22:30–23:15.
+`N(0, province_random_sd_minutes)`. With the defaults the smallest municipalities (the Wadden
+islands, Rozendaal) report from about 21:25–21:40, a municipality of about 8 k ballots at about
+22:00–22:15, one of about 20 k ballots at about 22:15–22:45, and the big cities send their first
+batch at about 22:30–00:20.
 
 **Counting duration.** The time from the first batch to the last is
 `base · (B/ref)^elasticity · (1 + urbanity_factor · u) · exp(N(0, jitter_sd)) · province factor`.
-It is zero for single-batch municipalities. `latest_end_minutes` is a soft cap: a scheduled
-end past the cap is pulled back to somewhere in the last `end_spread_minutes` before it. On
-the real 2025 geography with the defaults the night ends at about 04:30, and the big cities
-finish between 02:30 and 04:30.
+It is zero for single-batch municipalities. `latest_end_minutes` (525 → 05:45) is a soft cap:
+a scheduled end past the cap is pulled back to somewhere in the last `end_spread_minutes` (55)
+before it. On the real 2025 geography with the defaults the big cities count through the night
+and finish between about 03:30 and 05:45, and the last results arrive at about 05:25–05:45. The
+share of ballots counted is about 1 % at 22:00, 20–25 % at 23:00, half at midnight, 70 % at
+01:00, 80 % at 02:00, 90 % at 03:00 and 98 % at 05:00 (averages over seeds). These are
+FICTIONAL defaults chosen to resemble a Dutch count; the realdata test
+`test_real_geography_reporting_curve` guards them. Retuning the timing does not change the
+number of events, so a night costs the same to compute.
 
 **Batches.** The number of batches comes from the size tier (`batches_by_size`): a small
 municipality has 1–2 and a city with more than 300 k ballots has 30–60. Batch sizes are
 Dirichlet-distributed (`batch_size_concentration`). Units are reported one wijk at a time
 (neighbourhood clusters, taken from the CBS code `BU gggg ww bb` or passed as `unit_wijk`). The
 order of the wijken is shuffled with a seed, and a batch cut within `wijk_snap_tolerance` of a
-wijk boundary snaps to that boundary, so most batches contain whole wijken. On the real
-geography the defaults produce about 2,400 events.
+wijk boundary snaps to that boundary, so most batches contain whole wijken. Cuts less than one
+ballot apart are merged, so no unit ever gets an empty piece. On the real geography the
+defaults produce about 2,400 events.
 
 **Partial precincts.** A unit with at least `partial_precinct.min_ballots` ballots that
 crosses a batch cut is split across batches. Pieces smaller than `min_piece_fraction` are
@@ -73,7 +80,8 @@ the last batch of every unit has cumulative **exactly 1.0**, and a database roun
 (`to_event_rows` / `to_unit_rows` → `Timeline.from_records`) reproduces the timeline
 bit for bit. The CSR arrays (`unit_ptr`, `units`, `increments`, `cumulative`) and a
 checkpoint every `checkpoint_every` events give fast random access through
-`fraction_after(seq)`.
+`fraction_after(seq)`. `from_records` does not store poll-closing offsets; pass
+`muni_close_offset_s` (from `polls_close_times`) to restore them.
 
 **Determinism.** Each municipality draws from its own stream,
 `make_rng(seed, "timeline", "muni", code)`, and each province from
@@ -110,7 +118,10 @@ The rules are checked in this order. The first one that applies decides the stat
 
 1. A manual override is active → keep it (§7).
 2. 100 % reported → `FINAL` or `RECOUNT`. This always wins, even over a manual call.
-3. The prior state is `PROJECTED` or `CALLED` → sticky (§6).
+3. The prior state is `PROJECTED` or `CALLED` → sticky (§6). Before any result (only possible
+   after a poll-close call or a cleared manual call) the call is kept only when
+   `call_at_poll_close` is on and its line still has ≥ `retraction_threshold`; otherwise the
+   race is retracted to `POLLS_CLOSED` (`basis = retraction`).
 4. No results yet → `POLLS_CLOSED`. With `call_at_poll_close: true`, a call can be made from
    the expectation alone (`basis = poll_close`).
 5. Mathematically certain → `CALLED` (`basis = mathematical`).
@@ -130,7 +141,13 @@ tallies. `RECOUNT` does not count.
 `RaceProgress`: the counted votes and counted ballots per unit, the reported fraction `f`,
 the pre-election **expected** shares `e` and expected ballots `x`, eligible voters, and the
 cluster of each unit (its municipality). It never sees final results for unreported ballots,
-and the test suite checks this.
+and the test suite checks this — for the caller alone and end to end: swapping the final votes
+of every unreported unit changes nothing the engine publishes. Corrupt expectations (NaN,
+negative or all-zero shares, NaN expected ballots) fall back to flat priors for those units, and
+a non-finite draw is won by nobody, so bad input can only lower win probabilities — it can never
+produce a confident call. `NightEngine` also rejects races whose arrays have inconsistent
+shapes, duplicate line keys, negative counts or more ballots than eligible voters in a unit (the
+mathematical-certainty bound relies on ballots ≤ eligible).
 
 1. **Swing (log-linear).** For the reporting clusters *m*, let `C_m` be the counted valid votes
    and `Ê_m` the expected composition of exactly those ballots. `δ` solves
@@ -167,9 +184,10 @@ and the test suite checks this.
    that could change the status now is within 3 Monte-Carlo SE. Go to `n_draws_max` (16,000)
    only to *confirm* that a threshold ≥ projected is met. Thresholds that cannot apply —
    below the reporting minimums, or when no results are in — never trigger more draws.
-7. **Mathematical certainty.** The counted lead is larger than
+7. **Mathematical certainty.** The counted lead is *strictly* larger than
    `Σ_{units with f<1} max(eligible − counted ballots, 0)`, which is every ballot that could
-   still exist. Win probability is then exactly 1 for the leader.
+   still exist (a lead equal to it could still end in a tie). Win probability is then exactly 1
+   for the leader.
 8. **Comeback.** For the counted runner-up the engine reports: the deficit; the net margin it
    would need on the estimated outstanding valid vote; the 99.5th percentile of its simulated
    net gain ("plausible max"); whether a comeback is plausible; and whether it is
@@ -179,7 +197,9 @@ and the test suite checks this.
 within ±10 pts, final results drawn from the expectation plus a race-level swing of SD 0.06
 plus municipality and unit noise) produced ≥ 50 projections/calls, all correct. Over 4 seeds
 it was 388 calls with 0 wrong. The rule is ≥ 99 %. Full synthetic nights and a night on the
-real 2025 geography (182 races) made no wrong call.
+real 2025 geography (182 races) made no wrong call. On the real geography with the real
+structural model (`demo-2028`, 183 races, 12 simulated elections with the old and the new
+timing defaults) the engine made about 4,100 projections and calls, none wrong.
 
 ## 5. Evidence snapshots
 
@@ -202,8 +222,16 @@ every state change. It contains:
 * `thresholds`
 
 For `FINAL`/`RECOUNT` it has `final` (winner, runner-up, margin, tie) and `recount`
-(required, reason, fallback margin) instead. The evidence is built lazily on first access,
-so evaluations that are never persisted stay cheap.
+(required, reason, fallback margin) instead. A manual record's evidence has `basis: manual`,
+`reason`, the model's status/key/win probabilities and seq, and the counted votes and margin; a
+record produced by clearing an override carries `manual_cleared: true` and `manual_reason`. The
+evidence is built lazily on first access, so evaluations that are never persisted stay cheap.
+
+`CallRecord` (one per change of a race's published state, → `race_call`) carries `race_key`,
+`seq`, `sim_time_s`, `timestamp` (tz-aware simulated local time → `called_at`), `status`,
+`key`, `win_probability` (of `key`, or of the counted leader when there is no key),
+`reporting_pct`, `margin_pct` (counted leader), `evidence`, `is_manual`, `override_reason`,
+`retracted`, `previous_status` and `previous_key`.
 
 ## 6. Stickiness and retraction
 
@@ -215,17 +243,35 @@ drops below 0.90, the race becomes `TOO_CLOSE_TO_CALL` with `basis = "retraction
 test suite forces this with an adversarial reporting order: every early precinct favours A far
 beyond expectation, and every late one favours B.
 
-The national `PRES` state is derived rather than called. It becomes `CALLED` when a ticket's
+The national `PRES` state is derived rather than called. The national popular-vote race that
+the simulation produces next to the province races (`RaceType.PRESIDENT`, key `PRES`) is
+therefore not treated as a race when `PRESIDENT_PROVINCE` races are present: it is listed in
+`NightEngine.derived_races`, it is not in `race_keys` or the snapshot's `races`, and every
+`PRES` call record comes from the Electoral College (before this, it was called as a plurality
+race and its records — possibly naming the popular-vote winner who loses the Electoral College —
+were published under the same `PRES` key). `counted_votes("PRES")` returns the national popular
+vote. Another race may not use the key `PRES`, and `race_meta` values must be `RaceMeta`. It becomes `CALLED` when a ticket's
 decided EV reaches `constitution.presidential_majority`. It becomes `FINAL` when all province
 races are locked and the winner's EV from `FINAL` provinces reaches the majority. It is
 retracted (`TOO_CLOSE`, `retracted`) if a province retraction drops the winner below the
 majority. It is `TOO_CLOSE` with `contingent_election_likely` when no ticket can reach the
-majority even if it won every undecided province it is on the ballot in.
+majority even if it won every undecided province it is on the ballot in. Like a race, it never
+goes back from `TOO_CLOSE` to `TOO_EARLY`: it stays `TOO_CLOSE` until a ticket's decided EV
+reaches the majority again.
 
 ## 7. Manual overrides (contract for services)
 
 A producer can override a race at any `seq`: `NightEngine.apply_manual_call(race, status, key, reason)`.
 `clear_manual_call(race)` removes the override.
+
+* `status` must be one of `MANUAL_STATUSES` (`POLLS_CLOSED`, `TOO_EARLY_TO_CALL`,
+  `TOO_CLOSE_TO_CALL`, `LEAN`, `PROJECTED_WINNER`, `CALLED`). `FINAL` and `RECOUNT` are
+  reached only by the count at 100 % — a manual `FINAL` used to lock a race before its votes
+  were counted, with no way to clear it. `LEAN`/`PROJECTED`/`CALLED` need a line `key`; the
+  other statuses carry no key (a given key is dropped). Invalid overrides raise
+  `ElectionNightError`, also when they are passed to the constructor.
+* An override on a race that is already `FINAL`/`RECOUNT`, or a clear without an active
+  override, changes nothing: it returns `None` and is not added to `manual_calls`.
 
 * The override is published with `CallRecord.is_manual = True` and `override_reason`. Services
   store it in `race_call.is_manual` / `override_reason`.
@@ -237,10 +283,14 @@ A producer can override a race at any `seq`: `NightEngine.apply_manual_call(race
   prior, so a manual call it still believes in stays called, and one it does not believe in is
   retracted.
 * **Replay.** Overrides are part of the deterministic content. Every override is a
-  `ManualCall(race_key, seq, status, key, reason)` and is listed in `engine.manual_calls`.
-  Services persist these, for example from the `race_call` rows with `is_manual`, and pass them
-  as `NightEngine(..., manual_calls=...)` when they rebuild a night. The engine re-applies each
-  one right after its `seq` is applied.
+  `ManualCall(race_key, seq, status, key, reason, sim_time_s)` and is listed in
+  `engine.manual_calls`. `sim_time_s` is the simulated time it was made at (the playback clock
+  may be between two events); its records are stamped with it, so a replay reproduces them
+  exactly (it does not take part in `ManualCall` equality). Services persist the overrides —
+  `manual_calls_from_history(rows)` rebuilds the list from stored call records or `race_call`
+  rows mapped back to `CallRecord.to_dict()` keys (manual rows become overrides, rows with
+  `evidence.manual_cleared` become clears) — and pass them as `NightEngine(..., manual_calls=...)`
+  when they rebuild a night. The engine re-applies each one right after its `seq` is applied.
 * `superseded` in `race_call` is for services: the latest row per race is the current state.
 
 ## 8. Recount status
@@ -268,20 +318,23 @@ recount (`app.elections.recount`) and record the outcome.
     (`majority_reached_at_seq`, and a `PRES` `CallRecord`);
   * the contingent-election flag, with the first `seq` it was set.
 
-  The popular vote adds up the counted and projected votes of the province races.
+  The popular vote adds up the counted and projected votes of the province races (a line's
+  projection, taken from the race's last evaluation, is never shown below what is counted now).
 * **House.** Per party: called, leading, total, incumbent seats, and net change against
-  `incumbent_party` for called seats and for called + leading. The engine records the first
-  `seq` at which a party's called seats reach `house_majority`.
-* **Senate.** Holdovers + called (decided) and + leading (projected). Control is reached when
-  holdover + called ≥ `senate_majority`.
+  `incumbent_party` for called seats and for called + leading. `control` is the party whose
+  called seats currently reach `house_majority` and `control_at_seq` the seq at which it
+  reached it; a retraction that drops the party below the majority clears both.
+* **Senate.** Holdovers + called (decided) and + leading (projected). Control is held while
+  holdover + called ≥ `senate_majority` (recomputed the same way).
 * **Governors.** One status, leader, called key and party per race.
 
 Constitutional numbers always come from `get_constitution()`.
 
 ## 10. Evaluation schedule and performance
 
-After each event, only the races whose units are in that event are recounted. Counted votes
-and leaders are updated on every event. A touched race is **re-evaluated** in these cases:
+After each event, only the races whose units are in that event are recounted. Counted votes,
+leaders, reporting percentages and counted margins are updated on every event (snapshots always
+show them live). A touched race is **re-evaluated** in these cases:
 
 * its first results arrive;
 * it reaches 100 %;
@@ -296,8 +349,13 @@ Measured on the shared 4-CPU development box:
 
 | Night | Events | Races | Full night | Median event | 95th percentile event |
 |---|---|---|---|---|---|
-| Real 2025 geography (14,729 units, 342 municipalities) | 2,427 | 182 | 7.4 s | 2 ms | 9 ms |
+| Real 2025 geography (14,729 units, 342 municipalities), test races | 2,430 | 182 | 6.6–8.2 s | 2 ms | 10 ms |
+| Real 2025 geography, real structural model (`demo-2028`, 5–7 lines per race) | 2,453 | 182 (+ derived `PRES`) | 13–16 s | 4 ms | 16 ms |
 | Stress test (14.7 k units) | 12.9 k | 182 | ≈ 17 s | – | – |
+
+(The machine was shared and loaded; the real-model night evaluates more often — about 5,600
+evaluations against 4,400 — and needs more Monte-Carlo draws. A rewind restores a checkpoint and
+replays at most 250 events: under a second.)
 
 ## 11. Determinism and playback
 
@@ -307,7 +365,11 @@ The content at a given `seq` is a pure function of:
 * the event sequence.
 
 Stepping one event at a time, jumping with `advance_to_seq`, `advance_to_time`, or rewinding
-(which resets and replays) all give identical snapshots and histories. The tests check this.
+all give identical snapshots and histories. The tests check this. A rewind restores the nearest
+earlier state checkpoint (the engine keeps one every `NightEngine.checkpoint_every` = 250 events
+while playing forward, a few MB each) and replays from there: on the real geography a rewind
+takes under a second instead of replaying the whole night. A manual override drops the
+checkpoints at or after its `seq`, which no longer contain it.
 
 `PlaybackClock` maps wall-clock time to simulated time:
 
@@ -319,12 +381,17 @@ target_sim_time(now) = anchor_sim + (now − anchor_wall) × speed × base_rate
 1, 2, 5, 10 and 25. The clock has four states: `ready → running ⇄ paused → finished`.
 
 * `set_speed` re-anchors, so simulated time does not jump.
-* `step()` moves to the next event time and pauses.
+* `step()` moves to the next event time and pauses (events sharing that time appear together).
 * `seek` and `finish` move to a given time or to the end.
+* `step` and `seek` need `now` while the clock is running (they raise otherwise): without it
+  the clock fell back to its anchor, so the display could jump backwards (step) or forwards
+  (seek).
+* `now` can be any monotonic seconds, but a clock that is persisted and restored in another
+  process must use POSIX time (`time.time()`).
 * `tick(now)` finishes the clock when it reaches the end.
 * `to_dict`/`from_dict` store the state; `night_session` has `status`, `speed`, `sim_time_s`
   and `current_seq`.
 
 `target_seq(now)` is passed to `NightEngine.advance_to_seq`. Speed changes *when* content
-appears, never *what* appears: at 1× the real night plays in about 7.5 minutes, and at 25×
-in about 18 seconds.
+appears, never *what* appears: at 1× the real night (21:00 → about 05:40) plays in about
+8.7 minutes, and at 25× in about 21 seconds.

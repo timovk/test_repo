@@ -9,6 +9,7 @@ on the centroids, the kernel and the length scale, so it is cached per process.
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections import OrderedDict
 
 import numpy as np
@@ -19,6 +20,7 @@ log = get_logger(__name__)
 
 _CACHE: OrderedDict[tuple[str, str, float], np.ndarray] = OrderedDict()
 _CACHE_SIZE = 16
+_LOCK = threading.Lock()  # services may build models from several threads
 
 
 def kernel_matrix(xy: np.ndarray, length_km: float, kernel: str = "matern32") -> np.ndarray:
@@ -40,10 +42,11 @@ def gp_cholesky(xy: np.ndarray, length_km: float, kernel: str = "matern32") -> n
     """Lower Cholesky factor of the kernel matrix (cached; jitter added until it is positive definite)."""
     xy = np.ascontiguousarray(np.asarray(xy, dtype=float))
     key = (hashlib.blake2b(xy.tobytes(), digest_size=12).hexdigest(), kernel, float(length_km))
-    hit = _CACHE.get(key)
-    if hit is not None:
-        _CACHE.move_to_end(key)
-        return hit
+    with _LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None:
+            _CACHE.move_to_end(key)
+            return hit
     n = len(xy)
     if n == 0:
         chol = np.zeros((0, 0))
@@ -61,9 +64,10 @@ def gp_cholesky(xy: np.ndarray, length_km: float, kernel: str = "matern32") -> n
         if jitter > 1e-6:
             log.debug("GP Cholesky needed jitter %.1e (n=%d, kernel=%s)", jitter, n, kernel)
     chol.setflags(write=False)
-    _CACHE[key] = chol
-    if len(_CACHE) > _CACHE_SIZE:
-        _CACHE.popitem(last=False)
+    with _LOCK:
+        _CACHE[key] = chol
+        if len(_CACHE) > _CACHE_SIZE:
+            _CACHE.popitem(last=False)
     return chol
 
 
@@ -74,4 +78,5 @@ def draw_field(chol: np.ndarray, rng: np.random.Generator, k: int) -> np.ndarray
 
 
 def clear_cache() -> None:
-    _CACHE.clear()
+    with _LOCK:
+        _CACHE.clear()

@@ -24,7 +24,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import config_path, parse_config
 from app.core.constitution import DataCategory
@@ -65,6 +65,14 @@ class BaselineMapping(_Model):
     parties: dict[str, dict[str, float]]
     #: Votes of real parties missing from the mapping: dropped (default) or an error.
     unmapped: Literal["drop", "error"] = "drop"
+
+    @field_validator("parties")
+    @classmethod
+    def _weights(cls, v: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+        bad = [f"{real} → {mp}: {w}" for real, ws in v.items() for mp, w in ws.items() if not w >= 0]
+        if bad:
+            raise ValueError(f"mapping weights must be non-negative numbers: {bad}")
+        return v
 
 
 @dataclass
@@ -134,7 +142,22 @@ def import_historical_results(
         columns={cols.municipality: "municipality_code", cols.party: "party", cols.votes: "votes"}
     )
     df["municipality_code"] = df["municipality_code"].str.strip()
-    df["votes"] = pd.to_numeric(df["votes"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    df["party"] = df["party"].str.strip()
+    incomplete = df["municipality_code"].isna() | (df["municipality_code"] == "") | df["party"].isna()
+    if incomplete.any():
+        log.warning(
+            "historical import %s: %d row(s) without municipality or party skipped", cp, incomplete.sum()
+        )
+        df = df[~incomplete].copy()
+    votes = pd.to_numeric(df["votes"], errors="coerce")
+    bad_votes = votes.isna() | (votes < 0)
+    if bad_votes.any():
+        log.warning(
+            "historical import %s: %d row(s) with missing, non-numeric or negative votes counted as 0",
+            cp,
+            bad_votes.sum(),
+        )
+    df["votes"] = votes.where(~bad_votes, 0.0).astype(float)
     unmapped = sorted(set(df["party"]) - set(mapping.parties))
     if unmapped and mapping.unmapped == "error":
         raise ConfigError(f"{cp}: parties without mapping: {unmapped}")

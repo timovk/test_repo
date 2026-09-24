@@ -41,7 +41,7 @@ class GeneratedPlan:
     unit_province: np.ndarray  #: (U,) object — province code of each unit
     unit_municipality: np.ndarray  #: (U,) object — CBS municipality code of each unit
     unit_population: np.ndarray  #: (U,) int64
-    unit_district: np.ndarray  #: (U,) int32 — index into the district arrays
+    unit_district: np.ndarray  #: (U,) int64 — index into the district arrays
     unit_overridden: np.ndarray  #: (U,) bool — assignment set by a manual override
     # --- districts (D) ---------------------------------------------------------------------
     district_codes: list[str]

@@ -97,3 +97,24 @@ def test_content_is_independent_of_playback_speed(synthetic, lite_election) -> N
             eng.advance_to_seq(s)
         snaps.append(json.dumps(eng.snapshot("full"), sort_keys=True))
     assert snaps[0] == snaps[1]
+
+
+def test_running_step_and_seek_need_now_and_never_go_back() -> None:
+    c = _clock()
+    c.start(0.0)
+    assert c.target_seq(40.0) == 3  # sim 2400
+    with pytest.raises(ElectionNightError):
+        c.step()  # would fall back to the anchor (sim 0) and rewind the display
+    with pytest.raises(ElectionNightError):
+        c.seek(100.0)  # would keep a stale anchor and jump ahead by (now − anchor) × rate
+    assert c.state == PlaybackState.RUNNING
+    before = c.target_seq(40.0)
+    assert c.step(40.0) == before + 1 and c.state == PlaybackState.PAUSED
+    assert c.target_sim_time(99.0) == 3000.0
+    c.resume(100.0)
+    c.seek(1800.0, now=101.0)
+    assert c.target_sim_time(101.0) == 1800.0 and c.target_sim_time(102.0) == 1860.0
+    # paused / ready clocks do not need ``now``
+    p = _clock()
+    p.seek(2400.0)
+    assert p.state == PlaybackState.PAUSED and p.step() == 4

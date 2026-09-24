@@ -14,8 +14,10 @@ Supported methods (see docs/DISTRICTING.md):
 * ``hamilton`` — largest remainders (Hare quota), honouring minimum seats
 
 Every divisor method starts from the minimum seats and hands out the remaining seats one at a time
-to the province with the highest priority value.  Ties are broken deterministically by population
-(descending) and then province code (ascending).
+to the province with the highest priority value.  Priorities (and Hamilton's remainders) are
+*compared* exactly in rational arithmetic — floating-point rounding never decides a seat — and exact
+ties are broken deterministically by population (descending) and then province code (ascending).
+The float priorities in :class:`PrioritySeat` are for reporting only.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import heapq
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import Any
 
 import pandas as pd
@@ -61,6 +64,28 @@ DIVISORS: dict[str, Callable[[int], float]] = {
 }
 
 METHODS: tuple[str, ...] = ("huntington_hill", "webster", "jefferson", "adams", "hamilton")
+
+
+def _exact_priority(method: str, population: int, n: int) -> tuple[int, Fraction]:
+    """Exact sort key of the priority ``population / d(n)`` (smaller key = higher priority).
+
+    ``(0, 0)`` stands for an infinite priority (``d(n) = 0``); otherwise ``(1, −q)`` where ``q`` is a
+    rational number that is monotone in the priority (Huntington-Hill compares squared priorities,
+    ``P² / (n(n+1))``, so no square root is ever taken).
+    """
+    p = int(population)
+    if p <= 0:
+        return (1, Fraction(0))
+    if method == "huntington_hill":
+        den = n * (n + 1)
+        return (0, Fraction(0)) if den == 0 else (1, -Fraction(p * p, den))
+    if method == "webster":
+        return (1, -Fraction(2 * p, 2 * n + 1))
+    if method == "jefferson":
+        return (1, -Fraction(p, n + 1))
+    if method == "adams":
+        return (0, Fraction(0)) if n == 0 else (1, -Fraction(p, n))
+    raise ApportionmentError(f"{method!r} is not a divisor method")
 
 
 def canonical_method(method: str) -> str:
@@ -175,7 +200,11 @@ def apportion(
     pops: dict[str, int] = {}
     for c in codes:
         v = populations[c]
-        if v is None or int(v) != v or int(v) < 0:
+        try:
+            ok = v is not None and math.isfinite(v) and int(v) == v and v >= 0
+        except (TypeError, ValueError, OverflowError):
+            ok = False
+        if not ok:
             raise ApportionmentError(f"Population of {c} must be a non-negative integer, got {v!r}")
         pops[c] = int(v)
     total_pop = sum(pops.values())
@@ -197,7 +226,7 @@ def apportion(
     if meth == "hamilton":
         alloc, order, first_out = _hamilton(pops, codes, seats, min_seats, n_first_out)
     else:
-        alloc, order, first_out = _divisor(pops, codes, seats, min_seats, DIVISORS[meth], n_first_out)
+        alloc, order, first_out = _divisor(pops, codes, seats, min_seats, meth, n_first_out)
 
     quotas = {c: pops[c] * seats / total_pop for c in codes}
     pps = {c: (pops[c] / alloc[c]) if alloc[c] else float("inf") for c in codes}
@@ -229,34 +258,39 @@ def _divisor(
     codes: list[str],
     seats: int,
     min_seats: int,
-    divisor: Callable[[int], float],
+    method: str,
     n_first_out: int,
 ) -> tuple[dict[str, int], list[PrioritySeat], list[PrioritySeat]]:
+    divisor: Callable[[int], float] = DIVISORS[method]
     alloc = {c: min_seats for c in codes}
 
     def priority(c: str) -> float:
+        """Reported (float) priority of the next seat of ``c``."""
         p = pops[c]
         if p <= 0:
             return 0.0
         d = divisor(alloc[c])
         return math.inf if d <= 0 else p / d
 
-    heap: list[tuple[float, int, str]] = []
-    for c in codes:
-        heapq.heappush(heap, (-priority(c), -pops[c], c))
+    def key(c: str) -> tuple[tuple[int, Fraction], int, str]:
+        # exact priority, then population (descending), then code: never decided by float rounding
+        return (_exact_priority(method, pops[c], alloc[c]), -pops[c], c)
+
+    heap = [key(c) for c in codes]
+    heapq.heapify(heap)
     order: list[PrioritySeat] = []
     first_out: list[PrioritySeat] = []
     awarded = min_seats * len(codes)
     while awarded < seats + n_first_out:
-        neg_pr, _, c = heapq.heappop(heap)
+        _, _, c = heapq.heappop(heap)
         awarded += 1
-        seat = PrioritySeat(rank=awarded, province=c, province_seat=alloc[c] + 1, priority=-neg_pr)
+        seat = PrioritySeat(rank=awarded, province=c, province_seat=alloc[c] + 1, priority=priority(c))
         alloc[c] += 1
         if awarded <= seats:
             order.append(seat)
         else:
             first_out.append(seat)
-        heapq.heappush(heap, (-priority(c), -pops[c], c))
+        heapq.heappush(heap, key(c))
     # undo the hypothetical "first out" seats
     for s in first_out:
         alloc[s.province] -= 1
@@ -270,7 +304,8 @@ def _hamilton(
     """Largest remainders (Hare quota) with a guaranteed minimum.
 
     Provinces whose Hamilton allocation falls below the minimum are fixed at the minimum and the
-    remaining seats are re-apportioned among the other provinces until nobody is below it.
+    remaining seats are re-apportioned among the other provinces until nobody is below it.  Quotas
+    and remainders are exact fractions (ties: population descending, then code).
     """
     fixed: set[str] = set()
     while True:
@@ -278,9 +313,9 @@ def _hamilton(
         seats_free = seats - min_seats * len(fixed)
         pop_free = sum(pops[c] for c in free)
         if pop_free > 0:
-            quotas = {c: pops[c] * seats_free / pop_free for c in free}
+            quotas = {c: Fraction(pops[c] * seats_free, pop_free) for c in free}
         else:
-            quotas = {c: seats_free / len(free) for c in free}
+            quotas = {c: Fraction(seats_free, len(free)) for c in free}
         base = {c: math.floor(quotas[c]) for c in free}
         rem = {c: quotas[c] - base[c] for c in free}
         leftovers = seats_free - sum(base.values())
@@ -294,11 +329,11 @@ def _hamilton(
         fixed.update(below)
     first_rank = seats - leftovers
     order = [
-        PrioritySeat(rank=first_rank + i + 1, province=c, province_seat=alloc[c], priority=rem[c])
+        PrioritySeat(rank=first_rank + i + 1, province=c, province_seat=alloc[c], priority=float(rem[c]))
         for i, c in enumerate(ranked[:leftovers])
     ]
     first_out = [
-        PrioritySeat(rank=seats + i + 1, province=c, province_seat=alloc[c] + 1, priority=rem[c])
+        PrioritySeat(rank=seats + i + 1, province=c, province_seat=alloc[c] + 1, priority=float(rem[c]))
         for i, c in enumerate(ranked[leftovers : leftovers + n_first_out])
     ]
     return alloc, order, first_out
