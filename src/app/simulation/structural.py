@@ -24,6 +24,7 @@ This module is a pure engine (NumPy in, arrays/dataclasses out); it never touche
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -65,6 +66,31 @@ def expit(x: np.ndarray) -> np.ndarray:
 def logit(p: float | np.ndarray) -> float | np.ndarray:
     p = np.clip(p, 1e-12, 1 - 1e-12)
     return np.log(p / (1.0 - p))
+
+
+def as_unit_index(units: np.ndarray | Sequence[int], n_units: int, *, what: str = "units") -> np.ndarray:
+    """Validated int64 unit indices.
+
+    A boolean mask of length ``n_units`` is converted to the indices of its ``True`` entries (a
+    plain ``astype(int)`` would silently turn it into indices 0/1); indices must lie in
+    ``[0, n_units)``.
+    """
+    arr = np.asarray(units)
+    if arr.dtype == bool:
+        if arr.shape != (n_units,):
+            raise ValueError(f"{what}: boolean mask has shape {arr.shape}, expected ({n_units},)")
+        return np.flatnonzero(arr).astype(np.int64)
+    if arr.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    integral = np.issubdtype(arr.dtype, np.integer) or (
+        np.issubdtype(arr.dtype, np.floating) and bool(np.all(arr == np.round(arr)))
+    )
+    if arr.ndim != 1 or not integral:
+        raise ValueError(f"{what}: expected a 1-D array of integer unit indices")
+    out = arr.astype(np.int64)
+    if out.min() < 0 or out.max() >= n_units:
+        raise ValueError(f"{what}: unit index out of range [0, {n_units})")
+    return out
 
 
 def weighted_standardize(x: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -327,7 +353,7 @@ class StructuralModel:
     def _units(self, units: np.ndarray | Sequence[int] | None) -> np.ndarray:
         if units is None:
             return np.arange(self.frame.n_units)
-        return np.asarray(units, dtype=np.int64)
+        return as_unit_index(units, self.frame.n_units)
 
     # ------------------------------------------------------------------ party state
     def party_state(
@@ -341,9 +367,11 @@ class StructuralModel:
     ) -> PartyState:
         """Preference shares, turnout and vote shares for ``units`` (all parties on the ballot).
 
-        ``environment`` adds the scenario's deterministic election environment (national,
-        provincial and expected event shifts); ``utility_shift`` (n, P) and ``turnout_shift``
-        (n,) add further (e.g. random) components for the same units.
+        ``units`` are unit indices (or a boolean mask over all units).  ``environment`` adds the
+        scenario's deterministic election environment (national, provincial and expected event
+        shifts); ``utility_shift`` (n, P) and ``turnout_shift`` (n,) add further (e.g. random)
+        components for the same units; ``party_turnout_shift`` shifts the turnout logit of each
+        party's supporters, either uniformly (P,) or per unit (n, P).
         """
         idx = self._units(units)
         if units is None:
@@ -369,7 +397,10 @@ class StructuralModel:
     def _state(self, V: np.ndarray, tau: np.ndarray, tp: np.ndarray) -> PartyState:
         s = softmax_rows(V)
         tc = self.config.turnout
-        q = np.clip(expit(tau[:, None] + tp[None, :]), tc.min_probability, tc.max_probability)
+        tp = np.asarray(tp, dtype=float)
+        q = np.clip(
+            expit(tau[:, None] + (tp if tp.ndim == 2 else tp[None, :])), tc.min_probability, tc.max_probability
+        )
         w = s * q
         T = w.sum(axis=1)
         return PartyState(preference=s, turnout=T, vote_share=w / T[:, None])
@@ -782,19 +813,53 @@ class StructuralModel:
         if "pct_age_65_plus" in names:
             bl = np.exp(tc.blank_age_effect * self.demo_z[:, names.index("pct_age_65_plus")])
             self.blank_multiplier = bl / ((bl * w).sum() / w.sum())
-        payload = json.dumps(
+        self.fingerprint = config_hash(self._fingerprint_payload())
+
+    def _fingerprint_payload(self) -> str:
+        """Everything the model depends on: scenario, model config, frame identity, regions."""
+        f = self.frame
+        geo = hashlib.blake2b(digest_size=16)
+        geo.update("\x1f".join(f.unit_codes).encode("utf-8"))
+        geo.update(np.ascontiguousarray(f.unit_eligible, dtype=np.int64).tobytes())
+        geo.update(np.ascontiguousarray(f.unit_muni, dtype=np.int64).tobytes())
+        reg = hashlib.blake2b(digest_size=16)
+        reg.update("\x1f".join(self.regions.names).encode("utf-8"))
+        reg.update(np.packbits(np.ascontiguousarray(self.regions.membership, dtype=bool)).tobytes())
+        return json.dumps(
             {
                 "scenario": self.scenario.model_dump(mode="json"),
-                "model": cfg.model_dump(mode="json"),
+                "model": self.config.model_dump(mode="json"),
                 "U": f.n_units,
+                "frame": {"year": f.year, "units": geo.hexdigest()},
+                "regions": reg.hexdigest(),
             },
             sort_keys=True,
             default=str,
         )
-        self.fingerprint = config_hash(payload)
 
 
 # --------------------------------------------------------------------------- assembly helpers
+def calibration_value_problems(doc: ScenarioDocument) -> list[str]:
+    """Out-of-range calibration targets (shared by the model build and scenario validation).
+
+    National targets must lie strictly between 0 and 1 (a zero target would need an infinitely
+    negative intercept); local (province / municipality) targets between 0 and 1.
+    """
+    out: list[str] = []
+    for code, v in doc.calibration.national.items():
+        if not (np.isfinite(v) and 0.0 < v < 1.0):
+            out.append(f"calibration.national.{code}: target {v!r} must lie strictly between 0 and 1")
+    for level, block in (
+        ("provinces", doc.calibration.provinces),
+        ("municipalities", doc.calibration.municipalities),
+    ):
+        for geo, tgt in block.items():
+            for code, v in tgt.items():
+                if not (np.isfinite(v) and 0.0 <= v <= 1.0):
+                    out.append(f"calibration.{level}.{geo}.{code}: target {v!r} must lie in [0, 1]")
+    return out
+
+
 def _complete_national(listed: Mapping[str, float], base: np.ndarray, pidx: Mapping[str, int]) -> np.ndarray:
     """National target vector: listed shares (normalised if they cover every party or exceed 1);
     unlisted parties share the remainder in proportion to their ``base_share``."""
@@ -898,6 +963,12 @@ def _assemble(
         (problems if strict else warnings).append(msg)
 
     # --- references ------------------------------------------------------------------------
+    if P == 0:
+        raise ScenarioError("scenario does not fit the model:\n  - the scenario defines no parties")
+    problems.extend(calibration_value_problems(doc))
+    pp = doc.environment.president_party
+    if pp is not None and pp not in pidx:
+        problems.append(f"environment.president_party: unknown party {pp}")
     for pcode, shifts in doc.environment.provinces.items():
         if pcode not in f.province_codes:
             problems.append(f"environment.provinces: unknown province {pcode}")
@@ -907,7 +978,7 @@ def _assemble(
             problems.append(f"calibration.provinces: unknown province {pcode}")
         problems.extend(f"calibration.provinces.{pcode}: unknown party {c}" for c in tgt if c not in pidx)
     for mcode, tgt in doc.calibration.municipalities.items():
-        if mcode not in f._muni_lookup:
+        if f.muni_index_or_none(mcode) is None:
             missing_muni("calibration.municipalities", mcode)
         problems.extend(
             f"calibration.municipalities.{mcode}: unknown party {c}" for c in tgt if c not in pidx
@@ -1032,6 +1103,8 @@ def _lean_field(
     """Persistent lean: municipal (M, P) spatial + iid part and unit-level (U, P) iid part."""
     lc = cfg.lean
     M, U, P = f.n_munis, f.n_units, len(codes)
+    if P == 0:
+        return np.zeros((M, 0)), np.zeros((U, 0))
     rho = lc.ideological_share
     norm = float(np.sqrt((ideology**2).sum(axis=1).mean())) or 1.0
     ideo = ideology / norm  # average squared norm 1 → ideological part has ≈ unit variance
@@ -1054,8 +1127,6 @@ def _lean_field(
     lean_unit = (
         np.column_stack([make_rng(pgs, "lean", "unit", c).standard_normal(U) for c in codes]) * lc.unit_sd
     )
-    if P == 0:
-        return np.zeros((M, 0)), np.zeros((U, 0))
     return lean_muni, lean_unit
 
 

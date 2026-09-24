@@ -155,6 +155,8 @@ class RaceCandidates:
     incumbent_running: bool = False
     contested_parties: list[str] = field(default_factory=list)
     expected_shares: dict[str, float] = field(default_factory=dict)
+    #: Party of the sitting office holder (also when they do not run: the open seat's party).
+    incumbent_party: str | None = None
 
 
 @dataclass(frozen=True)
@@ -266,7 +268,8 @@ def _make_candidate(
     gender = "F" if rng.random() < cc.female_share else "M"
     home = _home_municipality(model, rng, units)
     f = model.frame
-    prov = f.province_codes[int(f.muni_province[f._muni_lookup[home]])] if home else None
+    home_idx = f.muni_index(home) if home else None
+    prov = f.province_codes[int(f.muni_province[home_idx])] if home_idx is not None else None
     first, last = fictional_name(rng, gender, province=prov, heritage_prob=_heritage_prob(model, home))
     base = slugify(f"{first} {last}")
     key = f"{base}-{_key_suffix(seed, race_key, party or 'IND')}"
@@ -279,7 +282,7 @@ def _make_candidate(
     age_range = cc.age_range.get(race_type.value, (30, 68))
     quality = float(np.clip(rng.normal(quality_mean, quality_sd), -3.0, 3.0))
     profession = PROFESSIONS[int(rng.integers(len(PROFESSIONS)))]
-    muni_name = f.muni_names[f._muni_lookup[home]] if home else "the district"
+    muni_name = f.muni_names[home_idx] if home_idx is not None else "the district"
     if party is not None:
         pname = model.scenario.party(party).name
         bio = f"Fictional {pname} candidate for {office_label}; {profession} from {muni_name}."
@@ -334,7 +337,11 @@ def generate_race_candidates(
       generation entirely;
     * otherwise parties contest per their :class:`ContestRule` (expected share threshold,
       provinces, regions, ``always``), at most ``rules.max_candidates`` lines, at least two;
-    * the ``incumbent`` runs again with probability ``rules.incumbent_runs_again_prob``;
+      ``always`` parties and a re-running incumbent are guaranteed a line (they may exceed the
+      maximum only when they alone outnumber it);
+    * the ``incumbent`` runs again with probability ``rules.incumbent_runs_again_prob`` — under
+      their party's label, so an incumbent whose party is not in the scenario (dissolved, merged)
+      does not run; an independent incumbent occupies the independent slot;
     * with probability ``rules.independents_prob`` an independent joins the ballot;
     * new candidates get quality ``N(0, rules.candidate_quality_sd)`` and a home municipality
       drawn by eligible voters within the jurisdiction.
@@ -365,6 +372,7 @@ def generate_race_candidates(
             incumbent_running=inc_key in {c.key for c in cands},
             contested_parties=sorted({c.party for c in cands if c.party}),
             expected_shares=expected,
+            incumbent_party=incumbent.party if incumbent is not None else None,
         )
 
     # --- which parties contest --------------------------------------------------------------
@@ -379,13 +387,22 @@ def generate_race_candidates(
     always = {c for c in contesting if rules.contest_rules.get(c, rules.default_rule).always}
     rng_inc = make_rng(seed, "candidates", race_key, "incumbent")
     inc_runs = incumbent is not None and bool(rng_inc.random() < rules.incumbent_runs_again_prob)
+    if inc_runs and incumbent is not None and incumbent.party is not None and incumbent.party not in expected:
+        log.warning(
+            "%s: incumbent %s's party %s is not in the scenario; the seat is open",
+            race_key,
+            incumbent.key,
+            incumbent.party,
+        )
+        inc_runs = False
     rng_ind = make_rng(seed, "candidates", race_key, "independent")
     add_independent = bool(rng_ind.random() < rules.independents_prob)
-    slots = rules.max_candidates - (1 if add_independent else 0)
+    independent_incumbent = inc_runs and incumbent is not None and incumbent.party is None
+    slots = rules.max_candidates - (1 if (add_independent or independent_incumbent) else 0)
     must = set(always)
     if inc_runs and incumbent is not None and incumbent.party is not None:
         must.add(incumbent.party)
-        if incumbent.party not in contesting and incumbent.party in expected:
+        if incumbent.party not in contesting:
             contesting.append(incumbent.party)
     chosen = [c for c in contesting if c in must]
     for c in contesting:
@@ -393,8 +410,10 @@ def generate_race_candidates(
             break
         if c not in chosen:
             chosen.append(c)
-    for c in order:  # at least two party lines
-        if len(chosen) >= 2:
+    # at least two lines on the ballot (an independent counts as one)
+    min_party_lines = 1 if (add_independent or independent_incumbent) else 2
+    for c in order:
+        if len(chosen) >= min_party_lines:
             break
         if c not in chosen:
             chosen.append(c)
@@ -456,6 +475,7 @@ def generate_race_candidates(
         incumbent_running=inc_runs,
         contested_parties=[c for c in chosen],
         expected_shares=expected,
+        incumbent_party=incumbent.party if incumbent is not None else None,
     )
 
 

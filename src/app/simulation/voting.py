@@ -42,6 +42,7 @@ from app.simulation.structural import (
     PartyState,
     StructuralModel,
     affinity_distance,
+    as_unit_index,
     routing_matrix,
     softmax_rows,
 )
@@ -50,7 +51,7 @@ log = get_logger(__name__)
 
 _TINY = 1e-300
 _PLURALITY_SYSTEMS = {ElectoralSystem.FPTP, ElectoralSystem.WINNER_TAKE_ALL}
-_GEO_LEVELS = ("national", "province", "municipality")
+_GEO_LEVELS = ("national", "province", "district", "municipality")
 
 
 # --------------------------------------------------------------------------- context
@@ -72,10 +73,16 @@ class ElectionContext:
 
     * ``campaign_effects`` — keys are either a race key (``"HOUSE-NB-07"``: effects apply to that
       race only, values keyed by party code or line key) or a geography ``(level, code)`` /
-      ``"level:code"`` with level ``national`` | ``province`` | ``municipality`` (party-level
-      effects for every race in that area).  Values are logit shifts.
+      ``"level:code"`` with level ``national`` | ``province`` | ``district`` | ``municipality``
+      (party-level effects for every race in that area; ``district`` needs ``unit_district``).
+      Values are logit shifts.  A race-level entry keyed by a line key that equals its party code
+      (party-list lines) is applied once.
     * ``turnout_effects`` — ``(level, code)`` / ``"level:code"`` → logit shift of turnout.
+    * ``party_turnout_effects`` — ``(level, code)`` / ``"level:code"`` → {party: logit shift of the
+      turnout of that party's supporters} (campaign mobilisation, docs/CAMPAIGNS.md).
     * ``national_shifts`` — extra national party shifts (e.g. poll-informed), scaled by elasticity.
+    * ``unit_district`` — optional unit → House district code (e.g. ``"NB-07"``) mapping that
+      resolves ``district`` geography keys.
     """
 
     year: int
@@ -91,6 +98,8 @@ class ElectionContext:
     vp_home_province_bonus: float | None = None
     #: Include the scenario's deterministic environment (national/province/event shifts).
     include_environment: bool = True
+    party_turnout_effects: Mapping[str | GeoKey, Mapping[str, float]] = field(default_factory=dict)
+    unit_district: Sequence[str] | np.ndarray | None = None
 
     @classmethod
     def from_scenario(
@@ -104,26 +113,30 @@ class ElectionContext:
     ) -> ElectionContext:
         """Context for the scenario's election (candidate lookup from ``doc.candidates``).
 
-        ``president_party`` defaults to the party of the candidate whose ``incumbent_office`` is
-        ``PRES`` (the sitting president assumed by the scenario); services chaining elections
-        through the history pass the actual office holder's party instead.
+        ``president_party`` resolution: the explicit argument (services chaining elections
+        through the history pass the actual office holder's party), else
+        ``environment.president_party``, else the party of the candidate whose
+        ``incumbent_office`` is ``PRES`` (the sitting president assumed by the scenario).
+        Any other :class:`ElectionContext` field (including ``year`` / ``election_type``) may be
+        overridden through ``kwargs``.
         """
         cands = {c.key: c for c in doc.candidates}
         cands.update({c.key: c for c in extra_candidates})
         if president_party is None:
+            president_party = doc.environment.president_party
+        if president_party is None:
             president_party = next((c.party for c in doc.candidates if c.incumbent_office == "PRES"), None)
-        return cls(
-            year=doc.scenario.year,
-            election_type=doc.scenario.election_type,
-            president_party=president_party,
-            incumbents=dict(incumbents or {}),
-            candidates=cands,
-            **{
-                "home_province_bonus": doc.president.home_province_bonus,
-                "vp_home_province_bonus": doc.president.vp_home_province_bonus,
-                **kwargs,
-            },
-        )
+        fields: dict[str, Any] = {
+            "year": doc.scenario.year,
+            "election_type": doc.scenario.election_type,
+            "president_party": president_party,
+            "incumbents": dict(incumbents or {}),
+            "candidates": cands,
+            "home_province_bonus": doc.president.home_province_bonus,
+            "vp_home_province_bonus": doc.president.vp_home_province_bonus,
+        }
+        fields.update(kwargs)
+        return cls(**fields)
 
 
 def _geo_key(key: str | GeoKey) -> GeoKey | None:
@@ -141,7 +154,9 @@ def _geo_key(key: str | GeoKey) -> GeoKey | None:
     return level, code
 
 
-def _geo_mask(model: StructuralModel, level: str, code: str) -> np.ndarray | None:
+def _geo_mask(
+    model: StructuralModel, level: str, code: str, ctx: ElectionContext | None = None
+) -> np.ndarray | None:
     f = model.frame
     if level == "national":
         return None
@@ -149,10 +164,33 @@ def _geo_mask(model: StructuralModel, level: str, code: str) -> np.ndarray | Non
         if code not in f.province_codes:
             raise ElectionError(f"unknown province {code!r}")
         return f.unit_province == f.province_index(code)
+    if level == "district":
+        ud = None if ctx is None else ctx.unit_district
+        if ud is None:
+            raise ElectionError(
+                f"district effect {code!r} needs ElectionContext.unit_district (unit → district code)"
+            )
+        codes = np.asarray(ud, dtype=object)
+        if codes.shape != (f.n_units,):
+            raise ElectionError(f"unit_district has {len(codes)} entries, expected {f.n_units}")
+        mask = codes == code
+        if not mask.any():
+            raise ElectionError(f"unknown district {code!r}")
+        return mask
     m = f.muni_index_or_none(code)
     if m is None:
         raise ElectionError(f"unknown municipality {code!r}")
     return f.unit_muni == m
+
+
+def _numeric(value: Any, what: str) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ElectionError(f"{what}: {value!r} is not a number") from exc
+    if not np.isfinite(v):
+        raise ElectionError(f"{what}: {value!r} is not finite")
+    return v
 
 
 def context_shifts(model: StructuralModel, ctx: ElectionContext) -> tuple[np.ndarray, np.ndarray]:
@@ -163,14 +201,15 @@ def context_shifts(model: StructuralModel, ctx: ElectionContext) -> tuple[np.nda
     shift = np.zeros((U, P))
     tshift = np.zeros(U)
     for code, v in ctx.national_shifts.items():
-        shift[:, model.party_idx([code])[0]] += model.elasticity * v
+        shift[:, model.party_idx([code])[0]] += model.elasticity * _numeric(v, f"national shift {code}")
     for key, effects in ctx.campaign_effects.items():
         gk = _geo_key(key)
         if gk is None:
             continue
-        mask = _geo_mask(model, *gk)
+        mask = _geo_mask(model, *gk, ctx)
         for code, v in effects.items():
             j = model.party_idx([code])[0]
+            v = _numeric(v, f"campaign effect {key}/{code}")
             if mask is None:
                 shift[:, j] += v
             else:
@@ -179,12 +218,34 @@ def context_shifts(model: StructuralModel, ctx: ElectionContext) -> tuple[np.nda
         gk = _geo_key(key)
         if gk is None:
             raise ElectionError(f"turnout effect key {key!r} must be a geography")
-        mask = _geo_mask(model, *gk)
+        mask = _geo_mask(model, *gk, ctx)
+        v = _numeric(v, f"turnout effect {key}")
         if mask is None:
             tshift += v
         else:
             tshift[mask] += v
     return shift, tshift
+
+
+def context_party_turnout(model: StructuralModel, ctx: ElectionContext) -> np.ndarray | None:
+    """Per-unit shift (U, P) of each party's supporters' turnout logit from
+    ``ctx.party_turnout_effects`` (``None`` when there are none)."""
+    if not ctx.party_turnout_effects:
+        return None
+    out = np.zeros((model.frame.n_units, model.n_parties))
+    for key, effects in ctx.party_turnout_effects.items():
+        gk = _geo_key(key)
+        if gk is None:
+            raise ElectionError(f"party turnout effect key {key!r} must be a geography")
+        mask = _geo_mask(model, *gk, ctx)
+        for code, v in effects.items():
+            j = model.party_idx([code])[0]
+            v = _numeric(v, f"party turnout effect {key}/{code}")
+            if mask is None:
+                out[:, j] += v
+            else:
+                out[mask, j] += v
+    return out
 
 
 # --------------------------------------------------------------------------- race plans
@@ -280,8 +341,17 @@ def _race_effects(
         vp_bonus = 0.0
     unit_muni = f.unit_muni[units]
     unit_prov = f.unit_province[units]
-    incumbent_running = any(ln.incumbent and not ln.withdrawn for ln in race.lines)
     inc_info = ctx.incumbents.get(race.key)
+
+    def is_incumbent(line: BallotLine) -> bool:
+        return line.incumbent or (
+            inc_info is not None
+            and inc_info.running
+            and inc_info.candidate_key is not None
+            and inc_info.candidate_key == line.candidate_key
+        )
+
+    incumbent_running = any(is_incumbent(ln) and not ln.withdrawn for ln in race.lines)
     incumbent_party = race.incumbent_party or (inc_info.party if inc_info else None)
     midterm = (
         ctx.election_type == "midterm"
@@ -294,12 +364,7 @@ def _race_effects(
         col = delta[:, j]
         independent = line_party[j] < 0
         col += (cc.independent_quality_utility if independent else q_util) * line.quality
-        if line.incumbent or (
-            inc_info is not None
-            and inc_info.running
-            and inc_info.candidate_key is not None
-            and inc_info.candidate_key == line.candidate_key
-        ):
+        if is_incumbent(line):
             col += inc_bonus
         elif (
             not incumbent_running
@@ -316,8 +381,8 @@ def _race_effects(
         if cand is not None:
             home_m = home_m or cand.home_municipality
             home_p = home_p or cand.home_province
-        if home_m is not None and home_m in f._muni_lookup:
-            mi = f._muni_lookup[home_m]
+        mi = f.muni_index_or_none(home_m)
+        if mi is not None:
             col += home_m_bonus * (unit_muni == mi)
             if home_p is None:
                 home_p = f.province_codes[int(f.muni_province[mi])]
@@ -329,16 +394,18 @@ def _race_effects(
             col += q_util * cc.running_mate_quality_share * mate_q
             mate_p = line.running_mate_home_province or (mate.home_province if mate else None)
             mate_m = mate.home_municipality if mate else None
-            if mate_m is not None and mate_m in f._muni_lookup:
-                mi = f._muni_lookup[mate_m]
+            mi = f.muni_index_or_none(mate_m)
+            if mi is not None:
                 col += cc.running_mate_home_municipality_bonus * (unit_muni == mi)
                 if mate_p is None:
                     mate_p = f.province_codes[int(f.muni_province[mi])]
             if mate_p is not None and mate_p in f.province_codes and vp_bonus:
                 col += vp_bonus * (unit_prov == f.province_index(mate_p))
-        for k in (line.key, line.party_code):
+        # line-specific and party-wide race effects; a party-list line whose key *is* its party
+        # code receives the entry once
+        for k in dict.fromkeys((line.key, line.party_code)):
             if k is not None and k in race_campaign:
-                col += race_campaign[k]
+                col += _numeric(race_campaign[k], f"campaign effect {race.key}/{k}")
     return delta
 
 
@@ -366,6 +433,7 @@ def _strategic_matrix(
     sv = float(model.scenario.environment.strategic_voting) * sc.race_type_weights.get(
         RaceType(race.race_type).value, 0.0
     )
+    sv = min(max(sv, 0.0), 1.0)  # a defection fraction; weights > 1 must not create negative mass
     active = np.array([not ln.withdrawn for ln in race.lines])
     n_viable = sc.viable_lines
     if (
@@ -400,6 +468,18 @@ def _strategic_matrix(
     return G, fdef
 
 
+def race_units(model: StructuralModel, race: RaceSpec) -> np.ndarray:
+    """The race's unit indices, validated: in range, no duplicates (a unit counted twice would
+    cast its ballots twice).  A boolean mask over all units is accepted and converted."""
+    try:
+        units = as_unit_index(race.unit_index, model.frame.n_units, what=f"race {race.key}")
+    except ValueError as exc:
+        raise ElectionError(str(exc)) from exc
+    if units.size > 1 and not bool(np.all(units[1:] > units[:-1])) and np.unique(units).size != units.size:
+        raise ElectionError(f"race {race.key}: duplicate unit indices")
+    return units
+
+
 def prepare_race(
     model: StructuralModel,
     race: RaceSpec,
@@ -412,7 +492,7 @@ def prepare_race(
 
     ``expected_state`` covers either all units (``state_units=None``) or exactly ``state_units``.
     """
-    units = np.asarray(race.unit_index, dtype=np.int64)
+    units = race_units(model, race)
     if len(race.lines) == 0:
         raise ElectionError(f"race {race.key} has no ballot lines")
     keys = [ln.key for ln in race.lines]
@@ -496,10 +576,16 @@ def _expected_state(
     model: StructuralModel, ctx: ElectionContext, units: np.ndarray | None = None
 ) -> PartyState:
     shift, tshift = context_shifts(model, ctx)
+    ptshift = context_party_turnout(model, ctx)
     if units is not None:
         shift, tshift = shift[units], tshift[units]
+        ptshift = None if ptshift is None else ptshift[units]
     return model.party_state(
-        units, environment=ctx.include_environment, utility_shift=shift, turnout_shift=tshift
+        units,
+        environment=ctx.include_environment,
+        utility_shift=shift,
+        turnout_shift=tshift,
+        party_turnout_shift=ptshift,
     )
 
 
@@ -512,7 +598,7 @@ def expected_party_state(
     structural model + scenario environment + context shifts.  This is the expectation every
     :class:`RacePlan` is prepared from."""
     ctx = context if context is not None else ElectionContext.from_scenario(model.scenario)
-    idx = None if units is None else np.asarray(units, dtype=np.int64)
+    idx = None if units is None else as_unit_index(units, model.frame.n_units)
     return _expected_state(model, ctx, idx)
 
 
@@ -522,7 +608,7 @@ def expected_race_shares(
     """Deterministic (no-shock) expected line shares (n, L) of ``race`` — the model's pre-election
     expectation used by the race-calling and forecasting engines."""
     ctx = context if context is not None else ElectionContext.from_scenario(model.scenario)
-    units = np.asarray(race.unit_index, dtype=np.int64)
+    units = race_units(model, race)
     st = _expected_state(model, ctx, units)
     return prepare_race(model, race, ctx, st, state_units=units).expected_shares
 
@@ -533,7 +619,7 @@ def race_expectation(
     """Full deterministic plan of a race (expected unit shares, turnout, jurisdiction shares,
     strategic defections) — see :class:`RacePlan`."""
     ctx = context if context is not None else ElectionContext.from_scenario(model.scenario)
-    units = np.asarray(race.unit_index, dtype=np.int64)
+    units = race_units(model, race)
     st = _expected_state(model, ctx, units)
     return prepare_race(model, race, ctx, st, state_units=units)
 
@@ -655,13 +741,65 @@ def draw_shocks(model: StructuralModel, seed: int, ctx: ElectionContext | None =
     return ShockDraw(utility=utility, turnout=turnout, party_turnout=party_t, record=record)
 
 
+def race_line_shocks(model: StructuralModel, race: RaceSpec, seed: int) -> np.ndarray:
+    """The race × line performance shocks (L,) of draw ``seed`` — exactly those
+    :func:`simulate_election` adds to the line utilities (keyed streams per race and line)."""
+    lsd = model.config.candidates.race_line_sd
+    return np.array(
+        [make_rng(seed, "race", race.key, "line", ln.key).standard_normal() * lsd for ln in race.lines],
+        dtype=float,
+    )
+
+
+def realised_party_state(
+    model: StructuralModel, shocks: ShockDraw, context: ElectionContext | None = None
+) -> PartyState:
+    """Party state of every unit in one draw: the no-shock expectation under ``context`` plus the
+    draw's utility, turnout and differential-mobilisation shocks (what :func:`simulate_election`
+    turns into ballots and votes)."""
+    ctx = context if context is not None else ElectionContext.from_scenario(model.scenario)
+    shift, tshift = context_shifts(model, ctx)
+    ptshift = context_party_turnout(model, ctx)
+    return _shocked_state(model, ctx, shocks, shift, tshift, ptshift)
+
+
+def _shocked_state(
+    model: StructuralModel,
+    ctx: ElectionContext,
+    shocks: ShockDraw,
+    shift: np.ndarray,
+    tshift: np.ndarray,
+    ptshift: np.ndarray | None,
+) -> PartyState:
+    party_t = shocks.party_turnout if ptshift is None else ptshift + shocks.party_turnout[None, :]
+    return model.party_state(
+        None,
+        environment=ctx.include_environment,
+        utility_shift=shift + shocks.utility,
+        turnout_shift=tshift + shocks.turnout,
+        party_turnout_shift=party_t,
+    )
+
+
 # --------------------------------------------------------------------------- simulation
-def _stitch_parent(parent: RaceSpec, children: list[RaceVotes]) -> RaceVotes:
-    """National presidential race = union of its province contests (line keys aligned)."""
+def _stitch_parent(parent: RaceSpec, parent_units: np.ndarray, children: list[RaceVotes]) -> RaceVotes:
+    """National presidential race = union of its province contests (line keys aligned).
+
+    The children must cover exactly the parent's units: a parent assembled from a subset of the
+    provinces would silently drop votes.
+    """
     keys = parent.line_keys
     col = {k: i for i, k in enumerate(keys)}
+    if not children:
+        raise ElectionError(f"{parent.key}: no {RaceType.PRESIDENT_PROVINCE.value} contests to assemble from")
     units = np.concatenate([c.unit_index for c in children])
     order = np.argsort(units, kind="stable")
+    if not np.array_equal(units[order], np.sort(parent_units)):
+        raise ElectionError(
+            f"{parent.key}: the province contests cover {len(np.unique(units))} units but the national "
+            f"race has {len(parent_units)} — pass every PRESIDENT_PROVINCE contest (or none, to "
+            "simulate the national race directly)"
+        )
     n = len(units)
     votes = np.zeros((n, len(keys)), dtype=np.int64)
     exp = np.zeros((n, len(keys)))
@@ -710,17 +848,16 @@ def simulate_election(
         raise ElectionError("duplicate race keys")
     with Timer(log, f"simulate election ({len(races)} races)"):
         shift, tshift = context_shifts(model, ctx)
+        ptshift = context_party_turnout(model, ctx)
         expected = model.party_state(
-            None, environment=ctx.include_environment, utility_shift=shift, turnout_shift=tshift
-        )
-        shocks = draw_shocks(model, seed, ctx)
-        realised = model.party_state(
             None,
             environment=ctx.include_environment,
-            utility_shift=shift + shocks.utility,
-            turnout_shift=tshift + shocks.turnout,
-            party_turnout_shift=shocks.party_turnout,
+            utility_shift=shift,
+            turnout_shift=tshift,
+            party_turnout_shift=ptshift,
         )
+        shocks = draw_shocks(model, seed, ctx)
+        realised = _shocked_state(model, ctx, shocks, shift, tshift, ptshift)
         eligible = f.unit_eligible.astype(np.int64)
         p_turn = np.clip(realised.turnout, 0.0, 1.0)
         ballots = make_rng(seed, "ballots").binomial(eligible, p_turn).astype(np.int64)
@@ -732,19 +869,13 @@ def simulate_election(
         child_types = {RaceType.PRESIDENT_PROVINCE}
         has_children = any(RaceType(r.race_type) in child_types for r in races)
         parents: list[RaceSpec] = []
-        lsd = model.config.candidates.race_line_sd
         for race in races:
             if RaceType(race.race_type) == RaceType.PRESIDENT and has_children:
                 parents.append(race)
                 continue
             plan = prepare_race(model, race, ctx, expected)
             units = plan.units
-            shocks_l = np.array(
-                [
-                    make_rng(seed, "race", race.key, "line", ln.key).standard_normal() * lsd
-                    for ln in race.lines
-                ]
-            )
+            shocks_l = race_line_shocks(model, race, seed)
             line_shock_rec[race.key] = {ln.key: _r(v) for ln, v in zip(race.lines, shocks_l, strict=True)}
             if plan.defect.any():
                 strategic_rec[race.key] = {
@@ -779,7 +910,8 @@ def simulate_election(
                 for r in races
                 if RaceType(r.race_type) == RaceType.PRESIDENT_PROVINCE and r.key in draw.races
             ]
-            draw.races[parent.key] = _stitch_parent(parent, children)
+            draw.races[parent.key] = _stitch_parent(parent, race_units(model, parent), children)
+        draw.races = {r.key: draw.races[r.key] for r in races}  # input order
         total_b, total_e = int(ballots.sum()), int(eligible.sum())
         shocks.record["turnout"]["realised"] = _r(total_b / total_e) if total_e else 0.0
         shocks.record["turnout"]["expected"] = _r(

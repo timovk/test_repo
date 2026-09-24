@@ -164,6 +164,8 @@ def races_from_candidates(slots: Sequence[RaceSlot], fielded: Mapping[str, RaceC
     for s in slots:
         rc = fielded[s.key]
         inc = next((ln for ln in rc.lines if ln.incumbent), None)
+        # an open seat keeps the party of its previous holder (open-seat party bonus)
+        holder_party = inc.party_code if inc is not None else rc.incumbent_party
         district = s.key.split("-", 1)[1] if s.race_type == RaceType.HOUSE else None
         muni = s.key.split("-", 1)[1] if s.race_type == RaceType.MAYOR else None
         races.append(
@@ -176,7 +178,7 @@ def races_from_candidates(slots: Sequence[RaceSlot], fielded: Mapping[str, RaceC
                 province_code=s.province_code,
                 district_code=district,
                 municipality_code=muni,
-                incumbent_party=inc.party_code if inc else None,
+                incumbent_party=holder_party,
                 is_open_seat=inc is None,
             )
         )
