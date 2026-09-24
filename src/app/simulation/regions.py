@@ -171,7 +171,7 @@ def resolve_municipality(
         ref = MunicipalityRef(name=ref)
     code = ref.name.strip()
     if re.fullmatch(r"GM\d{4}", code):
-        return frame._muni_lookup.get(code)
+        return frame.muni_index_or_none(code)
     index = _index if _index is not None else _name_index(frame)
     all_aliases = {
         **BUILTIN_ALIASES,
@@ -209,7 +209,7 @@ def resolve_regions(
                 continue
             col |= frame.muni_province == frame.province_index(pcode)
         for code in spec.codes:
-            i = frame._muni_lookup.get(code)
+            i = frame.muni_index_or_none(code)
             if i is None:
                 unresolved.setdefault(rid, []).append(code)
             else:

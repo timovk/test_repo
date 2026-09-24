@@ -38,7 +38,9 @@ class Party(Base):
     ideology_social: Mapped[float] = mapped_column(Float, default=0.0)  # −1 progressive … +1 conservative
     ideology_europe: Mapped[float] = mapped_column(Float, default=0.0)  # −1 eurosceptic … +1 pro-EU
     base_support: Mapped[float] = mapped_column(Float, default=0.0)  # baseline national share (0–1)
-    turnout_propensity: Mapped[float] = mapped_column(Float, default=0.0)  # logit shift of supporters' turnout
+    turnout_propensity: Mapped[float] = mapped_column(
+        Float, default=0.0
+    )  # logit shift of supporters' turnout
     founded_year: Mapped[int | None] = mapped_column(Integer)
     dissolved_year: Mapped[int | None] = mapped_column(Integer)
     successor_party_id: Mapped[int | None] = mapped_column(ForeignKey("party.id"))
@@ -46,7 +48,9 @@ class Party(Base):
     is_fictional: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
-    modifiers: Mapped[list[PartyModifier]] = relationship(back_populates="party", cascade="all, delete-orphan")
+    modifiers: Mapped[list[PartyModifier]] = relationship(
+        back_populates="party", cascade="all, delete-orphan"
+    )
 
 
 class PartyModifier(Base):

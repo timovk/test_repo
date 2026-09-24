@@ -92,6 +92,17 @@ class GeographyFrame:
     def muni_index(self, code: str) -> int:
         return self._muni_lookup[code]
 
+    def muni_index_or_none(self, code: str | None) -> int | None:
+        """Index of a CBS municipality code, or None when the code is unknown in this vintage."""
+        if code is None:
+            return None
+        return self._muni_lookup.get(code)
+
+    def unit_index_or_none(self, code: str | None) -> int | None:
+        if code is None:
+            return None
+        return self._unit_lookup.get(code)
+
     def unit_index(self, code: str) -> int:
         return self._unit_lookup[code]
 
@@ -186,7 +197,9 @@ def _group_sum(index: np.ndarray, values: np.ndarray, n: int) -> np.ndarray:
             np.add.at(out, index, values)
             return out
         return np.bincount(index, weights=values, minlength=n)
-    out = np.zeros((n, *values.shape[1:]), dtype=values.dtype if np.issubdtype(values.dtype, np.integer) else float)
+    out = np.zeros(
+        (n, *values.shape[1:]), dtype=values.dtype if np.issubdtype(values.dtype, np.integer) else float
+    )
     np.add.at(out, index, values)
     return out
 
@@ -197,18 +210,28 @@ def group_sum(index: np.ndarray, values: np.ndarray, n: int) -> np.ndarray:
 
 
 def standardize(x: np.ndarray, weights: np.ndarray | Sequence[float]) -> np.ndarray:
-    """Weighted z-scores per column; constant columns become 0."""
+    """Weighted z-scores per column; constant columns become 0.
+
+    Missing values (NaN) are ignored when computing the moments and map to 0 (the mean) in
+    the output, so an unavailable indicator never shifts a unit's political utility.
+    """
     x = np.asarray(x, dtype=float)
     if x.size == 0:
         return x.copy()
     w = np.asarray(weights, dtype=float)
     if w.sum() <= 0:
         w = np.ones_like(w)
-    w = w / w.sum()
-    mean = (x * w[:, None]).sum(axis=0)
-    var = (((x - mean) ** 2) * w[:, None]).sum(axis=0)
+    valid = np.isfinite(x)
+    wv = np.where(valid, w[:, None], 0.0)
+    tot = wv.sum(axis=0)
+    tot[tot <= 0] = 1.0
+    xf = np.where(valid, x, 0.0)
+    mean = (xf * wv).sum(axis=0) / tot
+    var = (((xf - mean) ** 2) * wv).sum(axis=0) / tot
     sd = np.sqrt(var)
-    sd[sd < 1e-12] = 1.0
-    z = (x - mean) / sd
-    z[:, np.sqrt(var) < 1e-12] = 0.0
+    const = sd < 1e-12
+    sd[const] = 1.0
+    z = (xf - mean) / sd
+    z[:, const] = 0.0
+    z[~valid] = 0.0
     return z

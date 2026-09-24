@@ -235,7 +235,7 @@ def _heritage_prob(model: StructuralModel, muni_code: str | None) -> float:
     f = model.frame
     if muni_code is None or "pct_origin_non_europe" not in f.demo_names:
         return 0.05
-    m = f._muni_lookup.get(muni_code)
+    m = f.muni_index_or_none(muni_code)
     if m is None:
         return 0.05
     units = f.units_in_muni(m)

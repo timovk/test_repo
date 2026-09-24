@@ -25,7 +25,7 @@ def _home_province(frame: GeographyFrame | None, muni_code: str | None, explicit
         return explicit
     if frame is None or muni_code is None:
         return None
-    m = frame._muni_lookup.get(muni_code)
+    m = frame.muni_index_or_none(muni_code)
     return frame.province_codes[int(frame.muni_province[m])] if m is not None else None
 
 

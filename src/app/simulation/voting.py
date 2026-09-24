@@ -149,7 +149,7 @@ def _geo_mask(model: StructuralModel, level: str, code: str) -> np.ndarray | Non
         if code not in f.province_codes:
             raise ElectionError(f"unknown province {code!r}")
         return f.unit_province == f.province_index(code)
-    m = f._muni_lookup.get(code)
+    m = f.muni_index_or_none(code)
     if m is None:
         raise ElectionError(f"unknown municipality {code!r}")
     return f.unit_muni == m

@@ -69,7 +69,9 @@ class Race(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     election_id: Mapped[int] = mapped_column(ForeignKey("election.id"), index=True)
     race_type: Mapped[str] = mapped_column(String(24), index=True)  # RaceType
-    code: Mapped[str] = mapped_column(String(24))  # PRES, PRES-NB, HOUSE-NB-07, SEN-NB-1, GOV-NB, MAYOR-GM0855
+    code: Mapped[str] = mapped_column(
+        String(24)
+    )  # PRES, PRES-NB, HOUSE-NB-07, SEN-NB-1, GOV-NB, MAYOR-GM0855
     name: Mapped[str] = mapped_column(String(160))
     parent_race_id: Mapped[int | None] = mapped_column(ForeignKey("race.id"), index=True)
     office_id: Mapped[int | None] = mapped_column(ForeignKey("office.id"))

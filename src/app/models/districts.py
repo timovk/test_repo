@@ -28,7 +28,9 @@ class Apportionment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     vintage_id: Mapped[int] = mapped_column(ForeignKey("geo_vintage.id"), index=True)
-    method: Mapped[str] = mapped_column(String(32))  # huntington_hill | hamilton | webster | jefferson | adams
+    method: Mapped[str] = mapped_column(
+        String(32)
+    )  # huntington_hill | hamilton | webster | jefferson | adams
     population_basis: Mapped[str] = mapped_column(String(32), default="population")
     total_seats: Mapped[int] = mapped_column(Integer)
     min_seats_per_province: Mapped[int] = mapped_column(Integer, default=1)
@@ -70,7 +72,9 @@ class DistrictPlan(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
-    chamber: Mapped[str] = mapped_column(String(32), default="house")  # house | provincial_legislature | municipal_ward
+    chamber: Mapped[str] = mapped_column(
+        String(32), default="house"
+    )  # house | provincial_legislature | municipal_ward
     vintage_id: Mapped[int] = mapped_column(ForeignKey("geo_vintage.id"), index=True)
     apportionment_id: Mapped[int | None] = mapped_column(ForeignKey("apportionment.id"))
     year: Mapped[int | None] = mapped_column(Integer)  # first election year the plan applies to

@@ -85,7 +85,9 @@ def synthetic_geography(
     for p, (pcode, pcbs, pname) in enumerate(PROVINCES):
         gx, gy = p % 4, p // 4
         x0, y0 = 50_000 + gx * (span + 5_000), 350_000 + (2 - gy) * (span + 5_000)
-        prov_rows.append({"code": pcode, "cbs_code": pcbs, "name": pname, "geometry": box(x0, y0, x0 + span, y0 + span)})
+        prov_rows.append(
+            {"code": pcode, "cbs_code": pcbs, "name": pname, "geometry": box(x0, y0, x0 + span, y0 + span)}
+        )
         target_pop = real_pop_m[p] * 1_000_000 * population_scale
         weights = rng.lognormal(0.0, 0.8, size=(cells, cells))
         # dense city in the first municipality block (top-left 3x3 units)
@@ -107,7 +109,12 @@ def synthetic_geography(
         for i in range(cells):
             for j in range(cells):
                 mcode = muni_of_cell[(i, j)]
-                geom = box(x0 + j * cell_m, y0 + span - (i + 1) * cell_m, x0 + (j + 1) * cell_m, y0 + span - i * cell_m)
+                geom = box(
+                    x0 + j * cell_m,
+                    y0 + span - (i + 1) * cell_m,
+                    x0 + (j + 1) * cell_m,
+                    y0 + span - i * cell_m,
+                )
                 pop = round(float(weights[i, j]))
                 area = geom.area / 1e6
                 density = pop / area
@@ -139,7 +146,10 @@ def synthetic_geography(
                 )
     units = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:28992")
     munis = (
-        units.dissolve(by="municipality_code", aggfunc={"population": "sum", "province_code": "first", "land_area_km2": "sum"})
+        units.dissolve(
+            by="municipality_code",
+            aggfunc={"population": "sum", "province_code": "first", "land_area_km2": "sum"},
+        )
         .reset_index()
         .rename(columns={"municipality_code": "code"})
     )
@@ -147,7 +157,9 @@ def synthetic_geography(
     provinces = gpd.GeoDataFrame(prov_rows, geometry="geometry", crs="EPSG:28992")
     adjacency = _grid_adjacency(units)
     frame = frame_from_tables(units, munis, provinces, year=0)
-    return SyntheticGeography(frame=frame, units=units, municipalities=munis, provinces=provinces, unit_adjacency=adjacency)
+    return SyntheticGeography(
+        frame=frame, units=units, municipalities=munis, provinces=provinces, unit_adjacency=adjacency
+    )
 
 
 def _synthetic_demo(rng: np.random.Generator, density: float) -> dict[str, float]:
@@ -177,7 +189,9 @@ def _grid_adjacency(units: gpd.GeoDataFrame) -> pd.DataFrame:
     left, right = tree.query(geoms, predicate="touches")
     mask = left < right
     left, right = left[mask], right[mask]
-    lengths = np.array([geoms[a].boundary.intersection(geoms[b].boundary).length for a, b in zip(left, right, strict=True)])
+    lengths = np.array(
+        [geoms[a].boundary.intersection(geoms[b].boundary).length for a, b in zip(left, right, strict=True)]
+    )
     keep = lengths > 1.0  # rook adjacency (shared edge, not just a corner)
     codes = units["code"].to_numpy()
     return pd.DataFrame(

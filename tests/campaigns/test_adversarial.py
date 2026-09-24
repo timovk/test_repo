@@ -34,15 +34,22 @@ def _random_targets(seed: int, n: int, level: str = "district") -> list[Target]:
 
 # --------------------------------------------------------------------------- scenario overrides
 def test_scenario_cannot_lift_the_effect_bounds(campaign_config: CampaignConfig) -> None:
+    # The scenario schema itself rejects out-of-range bounds ...
+    from pydantic import ValidationError as PydanticValidationError
+
+    for bad in ({"effect_cap": 2.0}, {"effect_cap": -0.01}, {"effect_uncertainty": -1.0}):
+        with pytest.raises(PydanticValidationError):
+            CampaignSpec(**bad)
+    # ... and the engine re-validates even if an unvalidated spec slips through.
     with pytest.raises(ConfigError):
-        config_from_spec(CampaignSpec(effect_cap=2.0), campaign_config)
+        config_from_spec(CampaignSpec.model_construct(effect_cap=2.0), campaign_config)
     with pytest.raises(ConfigError):
-        config_from_spec(CampaignSpec(effect_cap=-0.01), campaign_config)
+        config_from_spec(CampaignSpec.model_construct(effect_cap=-0.01), campaign_config)
     with pytest.raises(ConfigError):
-        config_from_spec(CampaignSpec(effect_uncertainty=-1.0), campaign_config)
+        config_from_spec(CampaignSpec.model_construct(effect_uncertainty=-1.0), campaign_config)
     with pytest.raises(ConfigError):
         run_campaigns(
-            CampaignSpec(effect_cap=1.0, budgets={"PA": 1e6}),
+            CampaignSpec.model_construct(effect_cap=1.0, budgets={"PA": 1e6}),
             {"PA": _random_targets(1, 5)},
             1,
             campaign_config,

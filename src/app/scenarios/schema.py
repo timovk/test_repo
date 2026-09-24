@@ -203,6 +203,9 @@ class EnvironmentSpec(_Model):
     strategic_voting: float = Field(0.35, ge=0, le=1)
     #: How strongly local elasticity scales national swings (0 = uniform swing).
     elasticity_strength: float = Field(0.5, ge=0, le=2)
+    #: Party of the sitting President (drives the midterm penalty).  Services override this with the
+    #: actual office holder when elections are chained; None = derive from scenario candidates.
+    president_party: str | None = None
 
 
 class CalibrationSpec(_Model):
@@ -224,12 +227,18 @@ class CalibrationSpec(_Model):
 
 # --------------------------------------------------------------------------- polling / campaign
 class PollsterSpec(_Model):
-    name: str
-    rating: float = Field(1.0, gt=0, description="aggregation weight multiplier (subjective, editable)")
+    name: str = Field(..., max_length=120)
+    rating: float = Field(
+        1.0, ge=0, le=5, description="aggregation weight multiplier (subjective, editable; 0 = excluded)"
+    )
     rating_label: str | None = None
     method: str = "online"
     house_effects: dict[str, float] = Field(default_factory=dict)  # party → percentage points
     typical_sample: int = 1500
+    activity: float | None = Field(None, ge=0, description="relative polling frequency")
+    poll_types: list[str] | None = None
+    population: str | None = Field(None, pattern="^(LV|RV|A)$")
+    undecided_offset_pp: float = 0.0
 
 
 class PollingSpec(_Model):
@@ -241,6 +250,7 @@ class PollingSpec(_Model):
     senate_polls: int = 24
     governor_polls: int = 24
     generic_ballot_polls: int = 20
+    favorability_polls: int = 0
     true_polling_error_sd: float = 0.02  # correlated industry-wide error (share points)
     pollsters: list[PollsterSpec] = Field(default_factory=list)
 
@@ -253,8 +263,8 @@ class CampaignSpec(_Model):
     #: Party → strategy: balanced | battleground | base | expansion
     strategies: dict[str, str] = Field(default_factory=dict)
     #: Max absolute logit effect any single target can obtain from spending (diminishing returns).
-    effect_cap: float = 0.06
-    effect_uncertainty: float = 0.5  # relative SD of the realised effect
+    effect_cap: float = Field(0.06, gt=0, le=0.25)
+    effect_uncertainty: float = Field(0.5, ge=0, le=3)  # relative SD of the realised effect
 
 
 class ElectoralCollegeSpec(_Model):

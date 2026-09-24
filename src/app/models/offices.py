@@ -17,7 +17,9 @@ class Office(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     office_type: Mapped[str] = mapped_column(String(24), index=True)  # OfficeType
-    code: Mapped[str] = mapped_column(String(24), unique=True)  # PRES, VP, HOUSE-NB-07, SEN-NB-1, GOV-NB, MAYOR-GM0855
+    code: Mapped[str] = mapped_column(
+        String(24), unique=True
+    )  # PRES, VP, HOUSE-NB-07, SEN-NB-1, GOV-NB, MAYOR-GM0855
     name: Mapped[str] = mapped_column(String(160))
     province_id: Mapped[int | None] = mapped_column(ForeignKey("province.id"), index=True)
     district_code: Mapped[str | None] = mapped_column(String(8))
@@ -26,7 +28,9 @@ class Office(Base):
     term_years: Mapped[int] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
-    holders: Mapped[list[OfficeHolder]] = relationship(back_populates="office", order_by="OfficeHolder.term_start")
+    holders: Mapped[list[OfficeHolder]] = relationship(
+        back_populates="office", order_by="OfficeHolder.term_start"
+    )
 
 
 class OfficeHolder(Base):
@@ -39,8 +43,12 @@ class OfficeHolder(Base):
     term_start: Mapped[date] = mapped_column(Date)
     term_end: Mapped[date | None] = mapped_column(Date)  # scheduled end
     ended_on: Mapped[date | None] = mapped_column(Date)  # actual end (None = serving)
-    start_reason: Mapped[str] = mapped_column(String(24), default="elected")  # elected | appointed | succeeded | founding
-    end_reason: Mapped[str | None] = mapped_column(String(24))  # term_expired | defeated | retired | resigned | died
+    start_reason: Mapped[str] = mapped_column(
+        String(24), default="elected"
+    )  # elected | appointed | succeeded | founding
+    end_reason: Mapped[str | None] = mapped_column(
+        String(24)
+    )  # term_expired | defeated | retired | resigned | died
     election_race_id: Mapped[int | None] = mapped_column(ForeignKey("race.id"))
 
     office: Mapped[Office] = relationship(back_populates="holders")

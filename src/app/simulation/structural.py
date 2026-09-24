@@ -568,7 +568,7 @@ class StructuralModel:
                 w,
             )
         for mcode, tgt in doc.calibration.municipalities.items():
-            m = f._muni_lookup.get(mcode)
+            m = f.muni_index_or_none(mcode)
             if m is None:
                 continue  # reported by _assemble
             muni_t[m] = np.nan
@@ -955,7 +955,7 @@ def _assemble(
             else:
                 reg[regions.index(k), j] = v
         for k, v in p.municipalities.items():
-            m = f._muni_lookup.get(k)
+            m = f.muni_index_or_none(k)
             if m is None:
                 missing_muni(f"party {p.code}", k)
             else:
@@ -1075,7 +1075,7 @@ def _load_imported(
     out: dict[int, np.ndarray] = {}
     col = {c: i for i, c in enumerate(imp.parties)}
     for mcode, row in zip(imp.municipality_codes, imp.shares, strict=True):
-        m = frame._muni_lookup.get(mcode)
+        m = frame.muni_index_or_none(mcode)
         if m is None:
             continue
         vec = np.zeros(len(party_codes))

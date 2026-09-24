@@ -120,7 +120,9 @@ class RecountAdjustment(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     recount_id: Mapped[int] = mapped_column(ForeignKey("recount.id"), index=True)
     geo_unit_id: Mapped[int] = mapped_column(ForeignKey("geo_unit.id"))
-    ballot_candidate_id: Mapped[int] = mapped_column(ForeignKey("ballot_candidate.id"))
+    #: NULL when the adjustment concerns the invalid-ballot pile (see ``pile``).
+    ballot_candidate_id: Mapped[int | None] = mapped_column(ForeignKey("ballot_candidate.id"))
+    pile: Mapped[str] = mapped_column(String(8), default="line")  # line | invalid | blank
     votes_before: Mapped[int] = mapped_column(Integer)
     votes_after: Mapped[int] = mapped_column(Integer)
     delta: Mapped[int] = mapped_column(Integer)

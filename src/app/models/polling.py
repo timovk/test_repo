@@ -45,6 +45,8 @@ class Poll(Base):
     #: national_president | province_president | house_district | senate | governor | generic_house | favorability
     poll_type: Mapped[str] = mapped_column(String(24), index=True)
     province_id: Mapped[int | None] = mapped_column(ForeignKey("province.id"))
+    #: Sub-province geography code of the poll: House district ('NB-07'), Senate seat ('NB-1'),
+    #: or a province code when that province has no ``province`` row.  NULL for national polls.
     district_code: Mapped[str | None] = mapped_column(String(8))
     start_date: Mapped[date] = mapped_column(Date)
     end_date: Mapped[date] = mapped_column(Date, index=True)

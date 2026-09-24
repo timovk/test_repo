@@ -126,6 +126,10 @@ class TabulatedRace:
     margin_votes: int  # winner − runner-up
     margin_pct: float  # in percentage points of valid votes
     shares: np.ndarray  # (L,) float
+    #: How the winner was determined: 'popular_vote' | 'lot' (exact tie drawn by seeded lot) | None.
+    decided_by: str | None = "popular_vote"
+    #: Line indices involved in an exact first-place tie (empty when no tie).
+    tied_lines: tuple[int, ...] = ()
 
     @property
     def turnout_pct(self) -> float:

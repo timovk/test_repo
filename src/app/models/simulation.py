@@ -70,8 +70,12 @@ class CampaignAllocation(Base):
     campaign_id: Mapped[int] = mapped_column(ForeignKey("campaign.id"), index=True)
     target_level: Mapped[str] = mapped_column(String(12))  # national | province | district | municipality
     target_code: Mapped[str] = mapped_column(String(12))  # 'NL' | 'NB' | 'NB-07' | 'GM0855'
-    action: Mapped[str] = mapped_column(String(20))  # rally | advertising | field | visit | debate_prep | fundraising | gotv
+    action: Mapped[str] = mapped_column(
+        String(20)
+    )  # rally | advertising | field | visit | debate_prep | fundraising | gotv
     amount: Mapped[float] = mapped_column(Float)
+    units: Mapped[int | None] = mapped_column(Integer)  # rallies / visits count
+    proceeds: Mapped[float | None] = mapped_column(Float)  # fundraising proceeds
     week: Mapped[int | None] = mapped_column(Integer)
     expected_effect: Mapped[float | None] = mapped_column(Float)  # logit points, before uncertainty
     realized_effect: Mapped[float | None] = mapped_column(Float)  # logit points, after seeded draw
@@ -86,7 +90,9 @@ class SimulationRun(Base):
     __tablename__ = "simulation_run"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str] = mapped_column(String(24), index=True)  # election | forecast | night | districts | campaign | recount
+    kind: Mapped[str] = mapped_column(
+        String(24), index=True
+    )  # election | forecast | night | districts | campaign | recount
     election_id: Mapped[int | None] = mapped_column(ForeignKey("election.id"), index=True)
     scenario_id: Mapped[int | None] = mapped_column(ForeignKey("scenario.id"))
     seed: Mapped[int] = mapped_column(BigInteger)
