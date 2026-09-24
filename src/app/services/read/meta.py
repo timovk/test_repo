@@ -193,6 +193,14 @@ def meta(session: Session) -> dict[str, Any]:
     return {
         "app": {"name": APP_NAME, "version": app.__version__},
         "notice": FICTIONAL_NOTICE,
+        "provenance": {
+            "constitution": FICTIONAL,
+            "active.vintage": REAL,
+            "active.apportionment": FICTIONAL,
+            "active.plan": FICTIONAL,
+            "elections": SIMULATED,
+            "parties": FICTIONAL,
+        },
         "constitution": constitution_payload(),
         "active": active_system(session),
         "elections": [r.brief() for r in all_election_refs(session)],

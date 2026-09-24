@@ -135,6 +135,8 @@ class _LRU:
 
 
 _cache = _LRU(512)
+#: Separate, smaller store for large objects (results frames).
+_big_cache = _LRU(32)
 
 
 def db_token(session: Session) -> tuple[int, str]:
@@ -143,25 +145,28 @@ def db_token(session: Session) -> tuple[int, str]:
     return id(bind), str(getattr(bind, "url", ""))
 
 
-def cached(session: Session, name: str, key: tuple, build: Callable[[], T]) -> T:
+def cached(session: Session, name: str, key: tuple, build: Callable[[], T], *, big: bool = False) -> T:
     """Memoise ``build()`` under ``(database, name, *key)``.
 
     Callers put everything the payload depends on into ``key`` — for election payloads the
     election id, its status and finalisation time (see :meth:`ElectionRef.cache_key`).  Cached
-    payloads are shared between requests and must never be mutated.
+    payloads are shared between requests and must never be mutated.  ``big`` keeps the value in a
+    smaller store (results frames).
     """
+    store = _big_cache if big else _cache
     k = (db_token(session), name, *key)
-    hit, value = _cache.get(k)
+    hit, value = store.get(k)
     if hit:
         return value
     value = build()
-    _cache.put(k, value)
+    store.put(k, value)
     return value
 
 
 def clear_read_cache() -> None:
     """Forget every cached read payload (after writes, and in tests)."""
     _cache.clear()
+    _big_cache.clear()
 
 
 # =========================================================================== elections

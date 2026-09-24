@@ -637,6 +637,20 @@ class Finalizer:
     def store_calls(self, records: Sequence[CallRecord]) -> None:
         inputs, s = self.inputs, self.session
         meta = timeline_meta(s, inputs.election_id)
+        # calls a live night already stored keep the (wall-clock) time they were published
+        recorded: dict[tuple[int, int, str, int | None], list[Any]] = {}
+        for rid, seq, st, bid, rec_at in s.execute(
+            select(
+                RaceCall.race_id,
+                RaceCall.seq,
+                RaceCall.status,
+                RaceCall.ballot_candidate_id,
+                RaceCall.recorded_at,
+            )
+            .where(RaceCall.election_id == inputs.election_id)
+            .order_by(RaceCall.seq, RaceCall.id)
+        ).all():
+            recorded.setdefault((int(rid), int(seq), str(st), bid), []).append(rec_at)
         s.execute(delete(RaceCall).where(RaceCall.election_id == inputs.election_id))
         ordered = sorted(enumerate(records), key=lambda t: (t[1].seq, t[0]))
         last_index: dict[str, int] = {}
@@ -657,16 +671,19 @@ class Finalizer:
                     state[rec.race_key] = (rec.key, when)
             else:
                 state.pop(rec.race_key, None)
+            race_id = inputs.race_ids[rec.race_key]
+            bid = inputs.line_ids[rec.race_key].get(rec.key) if rec.key else None
+            earlier = recorded.get((race_id, int(rec.seq), status.value, bid))
             rows.append(
                 {
-                    "race_id": inputs.race_ids[rec.race_key],
+                    "race_id": race_id,
                     "election_id": inputs.election_id,
                     "status": status.value,
-                    "ballot_candidate_id": inputs.line_ids[rec.race_key].get(rec.key) if rec.key else None,
+                    "ballot_candidate_id": bid,
                     "seq": int(rec.seq),
                     "sim_time_s": float(rec.sim_time_s),
                     "called_at": when,
-                    "recorded_at": utcnow(),
+                    "recorded_at": (earlier.pop(0) if earlier else None) or utcnow(),
                     "reporting_pct": float(rec.reporting_pct),
                     "leader_margin_pct": None if rec.margin_pct is None else float(rec.margin_pct),
                     "win_probability": None if rec.win_probability is None else float(rec.win_probability),

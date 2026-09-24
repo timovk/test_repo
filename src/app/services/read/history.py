@@ -39,12 +39,12 @@ from app.services.read._base import (
 )
 from app.services.read._races import FAMILIES, party_key
 from app.services.read.elections import (
-    _family,
-    _frame,
-    _geo_party_table,
-    _lineage,
-    _previous_with,
+    family_code,
+    geo_party_table,
+    lineage_between,
     president,
+    previous_with,
+    stored_frame,
 )
 from app.services.results import results_frame
 
@@ -63,7 +63,7 @@ def _state_key(session: Session) -> tuple:
     return tuple(r.cache_key() for r in reported_refs(session))
 
 
-def _party(p: Any) -> str:
+def party_label(p: Any) -> str:
     return party_key(
         None if p is None or p == INDEPENDENT_KEY or (isinstance(p, float) and pd.isna(p)) else str(p)
     )
@@ -100,7 +100,7 @@ INT_COLUMNS: frozenset[str] = frozenset(
 )
 
 
-def _val(x: Any, nd: int = 4, *, as_int: bool = False) -> Any:
+def json_value(x: Any, nd: int = 4, *, as_int: bool = False) -> Any:
     """JSON-ready scalar: NaN / NA → None, NumPy → Python, floats rounded to ``nd``."""
     if x is None:
         return None
@@ -121,9 +121,9 @@ def _val(x: Any, nd: int = 4, *, as_int: bool = False) -> Any:
     return x.item() if hasattr(x, "item") else x
 
 
-def _records(df: pd.DataFrame, nd: int = 4) -> list[dict[str, Any]]:
+def records_of(df: pd.DataFrame, nd: int = 4) -> list[dict[str, Any]]:
     return [
-        {k: _val(v, nd, as_int=k in INT_COLUMNS) for k, v in row.items()}
+        {k: json_value(v, nd, as_int=k in INT_COLUMNS) for k, v in row.items()}
         for row in df.to_dict(orient="records")
     ]
 
@@ -177,13 +177,13 @@ def summary(session: Session) -> dict[str, Any]:
 
 # =========================================================================== compare
 def _default_pair(session: Session, types: tuple[RaceType, ...]) -> tuple[ElectionRef, ElectionRef]:
-    reps = [r for r in reported_refs(session) if _has_types(session, r, types)]
+    reps = [r for r in reported_refs(session) if has_types(session, r, types)]
     if len(reps) < 2:
         raise NotFoundError("fewer than two reported elections hold these races")
     return reps[-2], reps[-1]
 
 
-def _has_types(session: Session, ref: ElectionRef, types: tuple[RaceType, ...]) -> bool:
+def has_types(session: Session, ref: ElectionRef, types: tuple[RaceType, ...]) -> bool:
     return (
         session.scalar(
             select(Race.id)
@@ -205,7 +205,7 @@ def compare(
     reported elections (``a`` earlier, ``b`` later; default: the last two holding the family):
     national swing, per-geo winners, flip status, turnout change and party swings, and the flip
     summary per party (:func:`app.analytics.history.compare_elections`)."""
-    family = _family(race)
+    family = family_code(race)
     if level not in LEVELS:
         raise ValidationError(f"level must be one of {list(LEVELS)}")
     types = _types(family)
@@ -213,7 +213,7 @@ def compare(
         ra, rb = _default_pair(session, types)
     elif a is None or b is None:
         rb = resolve_election(session, b if b is not None else a)  # type: ignore[arg-type]
-        prev = _previous_with(session, rb, types)
+        prev = previous_with(session, rb, types)
         if prev is None:
             raise NotFoundError(f"no reported election with {family} races before election {rb.id}")
         ra = prev
@@ -221,19 +221,21 @@ def compare(
         ra, rb = resolve_election(session, a), resolve_election(session, b)
     require_reported(ra)
     require_reported(rb)
+    if ra.id == rb.id:
+        raise ValidationError(f"compare needs two different elections (a = b = {ra.id})")
     if ra.election_date > rb.election_date:
         ra, rb = rb, ra
 
     def build() -> dict[str, Any]:
-        p = _frame(session, ra, (level,), types)
-        c = _frame(session, rb, (level,), types)
+        p = stored_frame(session, ra, (level,), types)
+        c = stored_frame(session, rb, (level,), types)
         if p.empty or c.empty:
             raise NotFoundError(f"no {family} results at level {level} in one of the elections")
-        lineage = _lineage(session, ra, rb)
+        lineage = lineage_between(session, ra, rb)
         try:
             table = compare_elections(p, c, level, race_type=types[0], lineage=lineage, by="family")
-            pn = _frame(session, ra, ("national",), types)
-            cn = _frame(session, rb, ("national",), types)
+            pn = stored_frame(session, ra, ("national",), types)
+            cn = stored_frame(session, rb, ("national",), types)
             nat = national_swing(pn, cn, race_type=types[0])
             prev_l = (
                 remap_lineage(p, lineage, level=level)
@@ -243,15 +245,15 @@ def compare(
             fl = flip_summary(flips(prev_l, c, level=level, by="family"))
         except ResultsFrameError as exc:
             raise ValidationError(f"cannot compare these elections: {exc}") from exc
-        pa = _geo_party_table(pn).get("NL", {})
-        pb = _geo_party_table(cn).get("NL", {})
+        pa = geo_party_table(pn).get("NL", {})
+        pb = geo_party_table(cn).get("NL", {})
         va, vb = pa.get("votes", {}), pb.get("votes", {})
         ta, tb = sum(va.values()) or 1, sum(vb.values()) or 1
         national = [
             {
-                "party": _party(party),
-                "share_a": rnd(va.get(_party(party), 0) / ta, 6),
-                "share_b": rnd(vb.get(_party(party), 0) / tb, 6),
+                "party": party_label(party),
+                "share_a": rnd(va.get(party_label(party), 0) / ta, 6),
+                "share_b": rnd(vb.get(party_label(party), 0) / tb, 6),
                 "swing_pp": rnd(val, 4),
             }
             for party, val in nat.items()
@@ -262,11 +264,11 @@ def compare(
                 str(r.geo_code),
                 {
                     "geo_code": str(r.geo_code),
-                    "geo_name": _val(r.geo_name),
-                    "province_code": _val(r.province_code),
-                    "winner_a": _val(r.winner_prev),
-                    "winner_b": _val(r.winner_curr),
-                    "flip_status": _val(r.flip_status),
+                    "geo_name": json_value(r.geo_name),
+                    "province_code": json_value(r.province_code),
+                    "winner_a": json_value(r.winner_prev),
+                    "winner_b": json_value(r.winner_curr),
+                    "flip_status": json_value(r.flip_status),
                     "turnout_a": rnd(r.turnout_prev, 6),
                     "turnout_b": rnd(r.turnout_curr, 6),
                     "turnout_change_pp": rnd(r.turnout_change_pp, 4),
@@ -275,10 +277,10 @@ def compare(
                     "status": {},
                 },
             )
-            party = _party(r.party)
+            party = party_label(r.party)
             g["swing"][party] = rnd(r.swing_pp, 4)
             g["share_b"][party] = rnd(r.share_curr, 6)
-            g["status"][party] = _val(r.status)
+            g["status"][party] = json_value(r.status)
         counts: dict[str, int] = {}
         for g in rows.values():
             k = g["flip_status"] or "undecided"
@@ -293,7 +295,7 @@ def compare(
             "national": national,
             "flip_counts": counts,
             "flips_summary": [
-                {"party": _party(x["party"]), **{k: _val(v) for k, v in x.items() if k != "party"}}
+                {"party": party_label(x["party"]), **{k: json_value(v) for k, v in x.items() if k != "party"}}
                 for x in fl.to_dict(orient="records")
             ],
             "rows": sorted(rows.values(), key=lambda g: g["geo_code"]),
@@ -325,7 +327,11 @@ def _records_frame(session: Session, race_types: list[RaceType] | None) -> pd.Da
         return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
     return cached(
-        session, "records-frame", (_state_key(session), tuple(sorted(t.value for t in wanted))), build
+        session,
+        "records-frame",
+        (_state_key(session), tuple(sorted(t.value for t in wanted))),
+        build,
+        big=True,
     )
 
 
@@ -351,10 +357,10 @@ def records(session: Session, kind: str, n: int = 10, race_type: str | None = No
         return {"data_category": SIMULATED, "kind": kind, "count": 0, "races": []}
     fn = closest_races if kind == "closest" else largest_landslides
     df = fn(frame, n=n, race_types=[t.value for t in types] if types else None)
-    rows = _records(df)
+    rows = records_of(df)
     for r in rows:
-        r["winner_party"] = _party(r.get("winner_party")) if r.get("winner_candidate") else None
-        r["runner_up_party"] = _party(r.get("runner_up_party")) if r.get("runner_up_candidate") else None
+        r["winner_party"] = party_label(r.get("winner_party")) if r.get("winner_candidate") else None
+        r["runner_up_party"] = party_label(r.get("runner_up_party")) if r.get("runner_up_candidate") else None
     return {"data_category": SIMULATED, "kind": kind, "count": len(rows), "races": rows}
 
 
@@ -363,7 +369,7 @@ def divergence(session: Session) -> dict[str, Any]:
     vs Electoral College leader (descriptive)."""
     long = []
     for ref in reported_refs(session):
-        if not _has_types(session, ref, (RaceType.PRESIDENT,)):
+        if not has_types(session, ref, (RaceType.PRESIDENT,)):
             continue
         page = president(session, ref)
         for t in page["tickets"]:
@@ -379,12 +385,12 @@ def divergence(session: Session) -> dict[str, Any]:
     if not long:
         return {"data_category": SIMULATED, "count": 0, "elections": []}
     df = ec_pv_divergence(pd.DataFrame(long))
-    return {"data_category": SIMULATED, "count": len(df), "elections": _records(df, 6)}
+    return {"data_category": SIMULATED, "count": len(df), "elections": records_of(df, 6)}
 
 
 # =========================================================================== series
 def _series_refs(session: Session, types: tuple[RaceType, ...]) -> list[ElectionRef]:
-    return [r for r in reported_refs(session) if _has_types(session, r, types)]
+    return [r for r in reported_refs(session) if has_types(session, r, types)]
 
 
 def geo_series(session: Session, level: str, code: str, race: str | None = None) -> dict[str, Any]:
@@ -392,7 +398,7 @@ def geo_series(session: Session, level: str, code: str, race: str | None = None)
     the family: party shares, winner, margin and turnout at the geo, plus the national share and
     lean (pp).  Municipal series are lineage-aware (older vintages remapped onto the current
     municipality codes)."""
-    family = _family(race)
+    family = family_code(race)
     types = _types(family)
     code = code.upper()
     refs = _series_refs(session, types)
@@ -401,16 +407,16 @@ def geo_series(session: Session, level: str, code: str, race: str | None = None)
         points = []
         current_vintage = refs[-1].vintage_id if refs else None
         for ref in refs:
-            frame = _frame(session, ref, (level,), types)
+            frame = stored_frame(session, ref, (level,), types)
             if level == "municipality" and current_vintage is not None and ref.vintage_id != current_vintage:
                 cur = next(r for r in refs if r.vintage_id == current_vintage)
-                lineage = _lineage(session, ref, cur)
+                lineage = lineage_between(session, ref, cur)
                 if lineage is not None and not lineage.empty:
                     frame = remap_lineage(frame, lineage, level="municipality")
-            g = _geo_party_table(frame).get(code)
+            g = geo_party_table(frame).get(code)
             if g is None:
                 continue
-            nat = _geo_party_table(_frame(session, ref, ("national",), types)).get("NL", {})
+            nat = geo_party_table(stored_frame(session, ref, ("national",), types)).get("NL", {})
             nv = nat.get("votes", {})
             nt = sum(nv.values()) or 1
             tot = sum(g["votes"].values()) or 1
@@ -458,14 +464,14 @@ def district_series(session: Session, code: str) -> dict[str, Any]:
     refs = _series_refs(session, (RaceType.HOUSE,))
 
     def build() -> dict[str, Any]:
-        frames = [_frame(session, r, ("district",), (RaceType.HOUSE,)) for r in refs]
+        frames = [stored_frame(session, r, ("district",), (RaceType.HOUSE,)) for r in refs]
         frames = [f for f in frames if not f.empty]
         if not frames:
             raise NotFoundError(f"no reported House results for district {code}")
         df = district_history(pd.concat(frames, ignore_index=True), code)
         if df.empty:
             raise NotFoundError(f"no reported House results for district {code}")
-        rows = _records(df)
+        rows = records_of(df)
         plans = {
             int(i): p
             for i, p in session.execute(
@@ -473,7 +479,7 @@ def district_series(session: Session, code: str) -> dict[str, Any]:
             )
         }
         for r in rows:
-            r["winner_party"] = _party(r.get("winner_party")) if r.get("winner_candidate") else None
+            r["winner_party"] = party_label(r.get("winner_party")) if r.get("winner_candidate") else None
             r["district_plan_id"] = plans.get(int(r["election_id"]))
         return {
             "data_category": SIMULATED,

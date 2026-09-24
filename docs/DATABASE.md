@@ -166,7 +166,17 @@ audit data that would reveal the truth is never stored.
 
 A SIMULATED election can be simulated again: its results, timeline, calls and night state are
 replaced. LIVE and FINAL elections cannot be re-simulated. Elections are finalized in
-chronological order.
+chronological order (`services.elections.require_certifiable`): an election cannot be created for
+a date on or before an election that is already FINAL, and the night of an election that could
+no longer be certified does not start.
+
+**Recounts and the election-night record.** Finalization applies automatic recounts to the
+stored rows (`recount_adjustment` keeps every correction with `votes_before` / `delta`). The
+night of a reported election is always shown as it happened: when it has to be rebuilt (race
+details, municipality rows), the night service reverses the recount adjustments to recover the
+count as it stood on election night, so the replay reproduces the stored `race_call` rows
+exactly; statuses, winners, electoral votes and seat counts are then overlaid with the certified
+outcome.
 
 ---
 
@@ -200,6 +210,7 @@ Randomness comes from `app.core.rng.make_rng(seed, *keys)`. Every stochastic ste
 | `election-setup` | `create_election` | president's party, Senate holdovers, race counts, campaigns, polls, warnings |
 | `election` | `simulate_election` | row counts, turnout, model fingerprint, timeline metadata (reference close, time zone, seed, config fingerprint, poll-closing offsets) |
 | `election-final` | `finalize_election` | recounts, EV, President, contingent summary, office holders, calls |
+| `night` | the election-night service, when a night ends (live, instant or replayed for a reported election) | `source`, events, calls and the final summary `state` of the night with the certified outcome overlaid (recounted races resolved, all EV and seats allocated); served by `GET /api/night/{id}/state` for reported elections without rebuilding the night |
 
 The election seed (`election.seed`) drives the vote draw, the timeline, tie lots, recounts and the
 contingent election. Campaigns and polls use child seeds derived from it (`derive_seed(seed,
@@ -257,6 +268,12 @@ Measured timings (4 shared CPUs, SQLite):
 | `simulate_election` | 9.2 s | 10.5 s | 8.5 s |
 | `finalize_election` | 8.3 s | 5.4 s | 7.2 s |
 
+`finalize_election` spends most of that time reloading the unit results
+(`runtime.load_final_race_votes`, ≈ 2.5 s for 2028 since SQL rows are converted with
+`runtime.int_rows`; ≈ 10 s before). The election-night service passes the results it already
+holds (`finalize_election(..., inputs=, votes=)`), so certifying the 2028 election at the end of
+its night takes ≈ 0.5 s.
+
 `setup_system` takes 25–50 s. Most of that is House districting with worker processes; a
 re-run reuses the plan. `validate_system` over the three elections takes 10 s. The synthetic
 sandbox (`services.sandbox.build_sandbox`) takes ≈ 12 s.
@@ -267,7 +284,8 @@ sandbox (`services.sandbox.build_sandbox`) takes ≈ 12 s.
 |---|---|
 | `services.bootstrap` | `init_db`, `prepare_geography`, `load_geography`, `ensure_apportionment`, `ensure_district_plan`, `ensure_offices`, `setup_system`, `setup_synthetic_system` |
 | `services.runtime` | `get_frame`, `plan_mapping`, `get_model`, `election_inputs → ElectionInputs`, `race_expectations`, `load_final_race_votes`, `load_timeline`, `timeline_meta` |
-| `services.elections` | `create_election`, `simulate_election`, `finalize_election`, `instant_finalize`, `election_summary`, `list_elections` |
+| `services.elections` | `create_election`, `simulate_election`, `finalize_election` (optional pre-loaded `inputs` / `votes`), `instant_finalize`, `election_summary`, `list_elections` |
+| `services.night` | `NightManager` (optional background driver), `run_instant_night`, `call_log`, `night_sessions`, `RUN_NIGHT` |
 | `services.results` | `results_frame` (standard results frame; hidden elections excluded) |
 | `services.validation` | `validate_system`, `validate_election`, `reconcile_election` → `ValidationReport` |
 | `services.sandbox` | `build_sandbox` — the synthetic world used by tests |

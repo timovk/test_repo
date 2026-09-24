@@ -78,7 +78,9 @@ def _aggregate(
             t["realized_effect"] += float(a.get("realized_effect") or 0.0)
             t["turnout_effect"] += float(a.get("turnout_effect") or 0.0)
         t["actions"][a["action"]] = round(t["actions"].get(a["action"], 0.0) + amount, 3)
-        ac = by_action.setdefault(a["action"], {"action": a["action"], "amount": 0.0, "allocations": 0, "units": 0})
+        ac = by_action.setdefault(
+            a["action"], {"action": a["action"], "amount": 0.0, "allocations": 0, "units": 0}
+        )
         ac["amount"] += amount
         ac["allocations"] += 1
         ac["units"] += int(a.get("units") or 0)

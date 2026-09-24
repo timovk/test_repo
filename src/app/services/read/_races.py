@@ -148,6 +148,7 @@ class RaceBook:
             snap = dict(snapshot) if snapshot is not None else live_snapshot(session, ref.id)
             book.snapshot = snap
             book.live = live_races(snap)
+            _add_live_president(book.live, snap)
         book.previous_party = _previous_parties(session, races, book.pcode)
         return book
 
@@ -318,6 +319,27 @@ class RaceBook:
             "party": self.pcode.get(race.incumbent_party_id) if race.incumbent_party_id else None,
             "running": running,
         }
+
+
+def _add_live_president(live: dict[str, dict[str, Any]], snap: Mapping[str, Any]) -> None:
+    """The national ``PRES`` race is derived by the night engine (not in ``snapshot.races``):
+    rebuild its compact live state from ``snapshot.president`` / ``snapshot.popular_vote``."""
+    p = snap.get("president")
+    if "PRES" in live or not p:
+        return
+    pv = snap.get("popular_vote") or {}
+    votes = {str(t["key"]): int(t.get("votes") or 0) for t in p.get("tickets") or []}
+    lead, _run, margin, _mv = leader_of(votes)
+    live["PRES"] = {
+        "key": "PRES",
+        "status": p.get("status"),
+        "votes": votes,
+        "leader": lead,
+        "called_key": p.get("winner"),
+        "reporting_pct": pv.get("reporting_pct"),
+        "margin_pct": margin,
+        "win_probability": None,
+    }
 
 
 def compact_line(ln: Mapping[str, Any]) -> dict[str, Any]:

@@ -32,6 +32,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+from itertools import chain
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -971,6 +972,30 @@ def race_expectations(
 
 
 # =========================================================================== final results
+def int_rows(rows: Sequence[Sequence[Any]], width: int) -> np.ndarray:
+    """``(len(rows), width)`` int64 matrix of SQL result rows.
+
+    Converting SQLAlchemy ``Row`` objects with ``np.asarray`` probes every row for the array
+    protocols (≈ 10 µs per row); flattening them through their iterators is ~40× faster."""
+    if not rows:
+        return np.zeros((0, width), dtype=np.int64)
+    flat = np.fromiter(chain.from_iterable(rows), dtype=np.int64, count=len(rows) * width)
+    return flat.reshape(-1, width)
+
+
+def map_ids(ids: np.ndarray, mapping: Mapping[int, int]) -> np.ndarray:
+    """Vectorised ``[mapping[i] for i in ids]`` (each distinct id is looked up once)."""
+    ids = np.asarray(ids, dtype=np.int64)
+    if ids.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    uniq, inverse = np.unique(ids, return_inverse=True)
+    try:
+        values = np.fromiter((mapping[int(u)] for u in uniq), dtype=np.int64, count=len(uniq))
+    except KeyError as exc:
+        raise ElectionError(f"stored rows reference unknown id {exc.args[0]}") from None
+    return values[inverse.reshape(-1)]
+
+
 def load_final_race_votes(
     session: Session,
     election_id: int,
@@ -1027,12 +1052,18 @@ def load_final_race_votes(
         )
     if not turn_rows:
         raise ElectionError(f"election {election_id} has no stored results (simulate it first)")
-    v = np.asarray(vote_rows, dtype=np.int64).reshape(-1, 4)
-    t = np.asarray(turn_rows, dtype=np.int64).reshape(-1, 6)
-    v_race = np.array([race_pos[rid_to_code[int(r)]] for r in v[:, 0]], dtype=np.int64)
-    lp = np.array([line_pos[int(b)] for b in v[:, 1]], dtype=np.int64).reshape(-1, 2)
+    v = int_rows(vote_rows, 4)
+    t = int_rows(turn_rows, 6)
+    race_of_id = {rid: race_pos[code] for rid, code in rid_to_code.items()}
+    v_race = map_ids(v[:, 0], race_of_id)
+    lp = np.column_stack(
+        [
+            map_ids(v[:, 1], {b: pos[0] for b, pos in line_pos.items()}),
+            map_ids(v[:, 1], {b: pos[1] for b, pos in line_pos.items()}),
+        ]
+    )
     v_unit = unit_index_of_ids(frame, v[:, 2])
-    t_race = np.array([race_pos[rid_to_code[int(r)]] for r in t[:, 0]], dtype=np.int64)
+    t_race = map_ids(t[:, 0], race_of_id)
     t_unit = unit_index_of_ids(frame, t[:, 1])
     if (v_unit < 0).any() or (t_unit < 0).any():
         raise ElectionError(f"election {election_id}: stored results reference units outside the frame")

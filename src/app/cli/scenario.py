@@ -1,9 +1,15 @@
 """``scenario list | show | export | import | duplicate | validate`` — FICTIONAL scenario
-documents in ``config/scenarios`` (parties, candidates, tickets, environment, seeds)."""
+documents (parties, candidates, tickets, environment, seeds).
+
+Built-in scenarios are ``config/scenarios/*.yaml``; ``import`` and ``duplicate`` write user
+scenarios to ``config/scenarios/user/<slug>.yaml`` — the directory of the API's scenario editor —
+so scenarios made in the UI and in the CLI are the same documents (a user scenario shadows a
+built-in one with the same slug)."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -16,17 +22,37 @@ from app.cli._common import (
     table,
 )
 from app.core.errors import ScenarioError
+from app.scenarios.schema import ScenarioDocument
 
 scenario_app = typer.Typer(no_args_is_help=True)
+
+
+def load_any(scenario: str | Path) -> ScenarioDocument:
+    """A user scenario, a built-in scenario (by slug) or a YAML file."""
+    from app.core.errors import NotFoundError
+    from app.services.read.scenarios import load_document
+
+    try:
+        return load_document(scenario)[1]
+    except NotFoundError as exc:
+        raise ScenarioError(str(exc)) from None
+
+
+def _user_infos() -> list[Any]:
+    from app.scenarios.loader import list_scenarios
+    from app.services.read.scenarios import default_user_dir
+
+    d = default_user_dir()
+    return list_scenarios(d) if d.exists() else []
 
 
 @scenario_app.command("list")
 @friendly
 def list_cmd(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -> None:
-    """List the scenario files (invalid ones with their error)."""
+    """List the built-in and user scenario files (invalid ones with their error)."""
     from app.scenarios.loader import list_scenarios
 
-    items = list_scenarios()
+    items = [("builtin", i) for i in list_scenarios()] + [("user", i) for i in _user_infos()]
     if as_json:
         print_json(
             [
@@ -36,22 +62,31 @@ def list_cmd(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) 
                     "year": i.year,
                     "election_type": i.election_type,
                     "seed": i.seed,
+                    "source": source,
                     "path": str(i.path),
                     "valid": i.valid,
                     "error": i.error,
                 }
-                for i in items
+                for source, i in items
             ]
         )
         return
     rows = [
-        (i.slug, i.year, i.election_type, i.seed, i.name, "yes" if i.valid else f"[red]no[/] {i.error}")
-        for i in items
+        (
+            i.slug,
+            i.year,
+            i.election_type,
+            i.seed,
+            i.name,
+            source,
+            "yes" if i.valid else f"[red]no[/] {i.error}",
+        )
+        for source, i in items
     ]
     console.print(
         table(
             f"{data_badge('FICTIONAL')} scenarios",
-            ["slug", "year", "type", ("seed", "right"), "name", "valid"],
+            ["slug", "year", "type", ("seed", "right"), "name", "source", "valid"],
             rows,
         )
     )
@@ -64,9 +99,9 @@ def show(
     as_yaml: bool = typer.Option(False, "--yaml", help="Print the full merged document as YAML."),
 ) -> None:
     """Show a scenario: parties, tickets and the political environment."""
-    from app.scenarios.loader import dump_scenario, load_scenario
+    from app.scenarios.loader import dump_scenario
 
-    doc = load_scenario(scenario)
+    doc = load_any(scenario)
     if as_yaml:
         console.print(dump_scenario(doc), markup=False, highlight=False)
         return
@@ -89,7 +124,7 @@ def show(
             names.get(t.vice_president, t.vice_president),
             "incumbent" if t.incumbent else ("withdrawn" if t.withdrawn else ""),
         )
-        for t in doc.presidential.tickets
+        for t in doc.president.tickets
     ]
     if tickets:
         console.print(table("presidential tickets", ["party", "President", "Vice-President", ""], tickets))
@@ -109,9 +144,9 @@ def export(
     out: Path | None = typer.Option(None, "--out", "-o", help="Output file (default: stdout)."),
 ) -> None:
     """Export the fully merged scenario document as YAML."""
-    from app.scenarios.loader import dump_scenario, load_scenario, save_scenario
+    from app.scenarios.loader import dump_scenario, save_scenario
 
-    doc = load_scenario(scenario)
+    doc = load_any(scenario)
     if out is None:
         typer.echo(dump_scenario(doc), nl=False)
         return
@@ -119,20 +154,10 @@ def export(
     console.print(f"scenario {doc.scenario.slug} written to {path}")
 
 
-def _target(slug: str) -> Path:
-    from app.scenarios.loader import scenarios_dir
-
-    return scenarios_dir() / f"{slug.replace('-', '_')}.yaml"
-
-
 def _slug_taken(slug: str) -> bool:
-    from app.scenarios.loader import scenario_path
+    from app.services.read.scenarios import slug_exists
 
-    try:
-        scenario_path(slug)
-    except ScenarioError:
-        return False
-    return True
+    return slug_exists(slug)
 
 
 @scenario_app.command("import")
@@ -142,15 +167,16 @@ def import_cmd(
     slug: str | None = typer.Option(None, "--slug", help="Store under this slug (default: the document's)."),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing scenario with that slug."),
 ) -> None:
-    """Validate a scenario file and add it to config/scenarios."""
-    from app.scenarios.loader import duplicate_scenario, load_scenario_text, save_scenario
+    """Validate a scenario file and add it as a user scenario (config/scenarios/user)."""
+    from app.scenarios.loader import duplicate_scenario, load_scenario_text
+    from app.services.read.scenarios import write_user_file
 
     doc = load_scenario_text(path.read_text(encoding="utf-8"), base_dir=path.parent)
     if slug and slug != doc.scenario.slug:
         doc = duplicate_scenario(doc, slug, doc.scenario.seed, name=doc.scenario.name)
     if _slug_taken(doc.scenario.slug) and not force:
         raise ScenarioError(f"a scenario {doc.scenario.slug!r} already exists (use --force or --slug)")
-    target = save_scenario(doc, _target(doc.scenario.slug))
+    target = write_user_file(doc)
     console.print(f"imported scenario {doc.scenario.slug} → {target}")
 
 
@@ -163,13 +189,15 @@ def duplicate(
     name: str | None = typer.Option(None, "--name", help="Name of the copy."),
     force: bool = typer.Option(False, "--force", help="Overwrite an existing scenario with that slug."),
 ) -> None:
-    """Copy a scenario under a new slug and seed (the political geography seed is kept)."""
-    from app.scenarios.loader import duplicate_scenario, load_scenario, save_scenario
+    """Copy a scenario under a new slug and seed (the political geography seed is kept) as a user
+    scenario (config/scenarios/user, editable in the UI)."""
+    from app.scenarios.loader import duplicate_scenario
+    from app.services.read.scenarios import write_user_file
 
-    doc = duplicate_scenario(load_scenario(scenario), new_slug, seed, name=name)
+    doc = duplicate_scenario(load_any(scenario), new_slug, seed, name=name)
     if _slug_taken(new_slug) and not force:
         raise ScenarioError(f"a scenario {new_slug!r} already exists (use --force)")
-    target = save_scenario(doc, _target(new_slug))
+    target = write_user_file(doc)
     console.print(f"scenario {new_slug} (seed {doc.scenario.seed}) → {target}")
 
 
@@ -181,9 +209,9 @@ def validate(
 ) -> None:
     """Validate a scenario: schema, then its references against the REAL geography (when built)."""
     from app.geography.store import is_prepared, load_frame
-    from app.scenarios.loader import load_scenario, validate_scenario
+    from app.scenarios.loader import validate_scenario
 
-    doc = load_scenario(scenario)
+    doc = load_any(scenario)
     checked_geography = is_prepared()
     problems = validate_scenario(doc, load_frame()) if checked_geography else []
     if as_json:

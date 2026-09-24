@@ -10,15 +10,19 @@ interface::
     NightManager.control(election_id, action, speed=None, now=None) -> dict
     NightManager.race_detail(election_id, race_code) -> dict
     NightManager.municipality_rows(election_id, race_code="PRES") -> list[dict]
+    NightManager.municipality_rows_many(election_id, race_codes) -> dict[str, list[dict]]
     NightManager.municipality_detail(election_id, code) -> dict
     NightManager.override_call(election_id, race_code, status, line_key, reason) -> dict
     NightManager.is_live(election_id) -> bool
 
 A night manager runs every call in its own transaction, so it must use **the same database** as
-the request: :func:`manager_for` returns the process-wide manager for the configured database
-and a dedicated manager (``session_factory`` bound to the URL) for any other database (tests,
-tools).  The module is imported on first use, so this package works before the night service
-exists; when it is missing :func:`manager_for` raises :class:`ServiceUnavailableError`.
+the request: :func:`manager_for` returns one manager per database URL (``session_factory``
+bound to the URL).  The API's managers run the night service's background driver
+(``background=True``): due reporting events are applied by a daemon thread while a night runs,
+and read requests spend at most :data:`READ_BUDGET_S` on engine work, so the live state answers
+quickly at every playback speed.  The module is imported on first use, so this package works
+before the night service exists; when it is missing :func:`manager_for` raises
+:class:`ServiceUnavailableError`.
 """
 
 from __future__ import annotations
@@ -41,6 +45,8 @@ log = get_logger(__name__)
 NIGHT_MODULE = "app.services.night"
 #: Seconds between import retries while the night service is unavailable.
 _RETRY_S = 30.0
+#: Engine work (seconds) one API read request may do; the background driver does the rest.
+READ_BUDGET_S = 0.03
 
 _lock = threading.Lock()
 _module: Any = None
@@ -74,12 +80,18 @@ def _load() -> Any:
 
 
 def reset_night_bridge() -> None:
-    """Forget the cached import and the URL-bound managers (tests, simulated restarts)."""
+    """Forget the cached import and the URL-bound managers, stopping their background drivers
+    (tests, simulated restarts)."""
     global _module, _last_attempt
     with _lock:
         _module = None
         _last_attempt = -1e9
+        managers = list(_bound.values())
         _bound.clear()
+    for m in managers:
+        close = getattr(m, "close", None)
+        if callable(close):
+            close()
 
 
 def night_available() -> bool:
@@ -104,19 +116,31 @@ def _scope_for(url: str) -> Callable[[], AbstractContextManager[Session]]:
 
 
 def manager_for_url(url: str | None) -> Any:
-    """The night manager of the database at ``url`` (``None`` / the configured URL → the
-    process-wide ``get_night_manager()``); raises :class:`ServiceUnavailableError`."""
+    """The night manager of the database at ``url`` (``None``: the configured database), with
+    the background driver running; raises :class:`ServiceUnavailableError`."""
     mod = _load()
     if mod is None:
         raise ServiceUnavailableError("the election-night service is not available")
-    if not url or url == get_settings().db_url:
-        return mod.get_night_manager()
+    key = url or get_settings().db_url
     with _lock:
-        m = _bound.get(url)
+        m = _bound.get(key)
         if m is None:
-            m = mod.NightManager(session_factory=_scope_for(url))
-            _bound[url] = m
+            m = mod.NightManager(
+                session_factory=_scope_for(key), background=True, read_budget_s=READ_BUDGET_S
+            )
+            _bound[key] = m
         return m
+
+
+def close_manager_for_url(url: str | None) -> None:
+    """Stop and forget the night manager of the database at ``url`` (application shutdown); the
+    nights stay in the database and are rebuilt by the next manager."""
+    key = url or get_settings().db_url
+    with _lock:
+        m = _bound.pop(key, None)
+    close = getattr(m, "close", None)
+    if callable(close):
+        close()
 
 
 def manager_for(session: Session) -> Any:
@@ -149,6 +173,14 @@ def live_municipality_rows(
     session: Session, election_id: int, race_code: str = "PRES"
 ) -> list[dict[str, Any]]:
     return list(manager_for(session).municipality_rows(int(election_id), str(race_code)))
+
+
+def live_municipality_rows_many(
+    session: Session, election_id: int, race_codes: list[str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Live map rows of several races at the same night position (one call)."""
+    rows = manager_for(session).municipality_rows_many(int(election_id), [str(c) for c in race_codes])
+    return {str(k): list(v) for k, v in rows.items()}
 
 
 def live_municipality_detail(session: Session, election_id: int, code: str) -> dict[str, Any]:

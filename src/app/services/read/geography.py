@@ -524,7 +524,8 @@ _geo_lock = threading.Lock()
 
 
 def _web_dir(year: int) -> Path:
-    return get_settings().processed_geo_dir(year) / "web"
+    """``data/processed/geo_<year>/web`` (year 0 — the synthetic test country — gets ``geo_0``)."""
+    return get_settings().processed_dir / f"geo_{int(year)}" / "web"
 
 
 def _fingerprint_ok(path: Path, fingerprint: str) -> bool:

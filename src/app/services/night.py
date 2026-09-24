@@ -36,15 +36,28 @@ Two entry points:
   uses it for history elections).
 
 History elections (FINAL / CERTIFIED) are immutable: their night can be displayed (finished), but
-not reset, replayed or overridden.  Everything returned is SIMULATED data about FICTIONAL races.
+not reset, replayed or overridden.  When a night ends, its final summary state — with the
+certified outcome overlaid (:func:`_apply_certified`: races that ended the night in RECOUNT are
+resolved, the Electoral College and seat counters are the certified ones) — is stored as a
+``simulation_run`` of kind :data:`RUN_NIGHT` and served for the reported election without
+rebuilding the engine.  A reported election's night that has to be rebuilt is replayed on the
+count as it stood on election night (:func:`_night_count` reverses the recount adjustments), so
+the replay reproduces the stored race calls exactly.
+
+**Serving.**  An API server uses ``NightManager(background=True, read_budget_s=…)``: a daemon
+driver thread applies due events while a night runs (and certifies it at the end), and reads do
+only a bounded amount of engine work.  A night may only start when its election can still be
+certified (elections are finalized in chronological order).  Everything returned is SIMULATED
+data about FICTIONAL races.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
-from collections import OrderedDict
-from collections.abc import Callable, Iterator, Sequence
+from collections import Counter, OrderedDict, defaultdict
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -54,8 +67,9 @@ import numpy as np
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
+import app as app_pkg
 from app.core.config import get_constitution
-from app.core.constitution import DECIDED_STATUSES, ElectionStatus, RaceStatus
+from app.core.constitution import DECIDED_STATUSES, ElectionStatus, RaceStatus, RaceType
 from app.core.errors import ElectionError, ElectionNightError, NotFoundError
 from app.core.logging import Timer, get_logger, log_ctx
 from app.elections.recount import RecountConfig, load_recount_config, needs_recount
@@ -65,9 +79,13 @@ from app.models import (
     BallotCandidate,
     Election,
     ElectionResult,
+    ElectoralVoteAllocation,
     NightSession,
     Race,
     RaceCall,
+    Recount,
+    RecountAdjustment,
+    SimulationRun,
     utcnow,
 )
 from app.reporting.calling import RecountCheck, RecountInput, allocate_counted
@@ -80,8 +98,9 @@ from app.reporting.live import (
     NightEngine,
     manual_calls_from_history,
 )
-from app.services._common import REPORTED_STATUSES, bulk_insert, dumps, loads
-from app.services.elections import finalize_election
+from app.services._common import REPORTED_STATUSES, bulk_insert, dumps, latest_run, loads
+from app.services._store import stitch_parent
+from app.services.elections import finalize_election, reported_on_or_after
 from app.services.runtime import (
     ElectionInputs,
     election_inputs,
@@ -90,6 +109,7 @@ from app.services.runtime import (
     load_timeline,
     local_time,
     timeline_meta,
+    unit_index_of_ids,
 )
 
 log = get_logger(__name__)
@@ -97,9 +117,12 @@ log = get_logger(__name__)
 __all__ = [
     "ACTIONS",
     "CLEAR_STATUSES",
+    "RUN_NIGHT",
     "NightManager",
+    "call_log",
     "get_night_manager",
     "make_recount_check",
+    "night_sessions",
     "reset_night_manager",
     "run_instant_night",
 ]
@@ -115,6 +138,16 @@ _SQL_CHUNK = 400
 #: Substring of ``race_call.evidence_json`` marking a record produced by clearing an override
 #: (``dumps`` writes sorted keys without spaces).
 _CLEARED_MARK = '%"manual_cleared":true%'
+#: ``simulation_run.kind`` of a finished night: its final summary state (certified results
+#: overlaid), served for reported elections without rebuilding the engine.
+RUN_NIGHT = "night"
+#: Default engine-work budget (seconds) of one background-driver slice and of one read request
+#: of a background manager (see :class:`NightManager`).
+DEFAULT_SLICE_S = 0.04
+#: Longest idle wait of the background driver between two checks (seconds).
+_DRIVER_IDLE_S = 0.5
+#: Completed stored final states kept in memory (JSON text, parsed per request).
+_FINAL_STATES_CACHED = 8
 
 SessionFactory = Callable[[], AbstractContextManager[Session]]
 
@@ -152,12 +185,18 @@ class _Night:
     persisted: int = 0
     #: Race code → (decided line key, simulated local time of that call) for ``race.called_at``.
     called: dict[str, tuple[str | None, datetime | None]] = field(default_factory=dict)
-    #: (election status, night-session status, current seq) as last written or read.
+    #: :func:`_marker` of the stored night as last written or read.
     marker: tuple[Any, ...] = ()
     has_session: bool = False
     #: (race code, seq) → cached municipality rows; race code → previous-election results.
     muni_rows: dict[str, tuple[int, list[dict[str, Any]]]] = field(default_factory=dict)
     previous: dict[str, dict[int, dict[str, Any]]] = field(default_factory=dict)
+    #: Certified outcome of a reported election (:func:`_load_certified`), overlaid on its
+    #: final snapshot; None while the election is not reported.
+    certified: dict[str, Any] | None = None
+    #: Automatic-recount rule of the night (None: ``config/recount.yaml``); the certification
+    #: at the end of the night applies the same rule.
+    recount_config: RecountConfig | None = None
 
 
 def _now_default() -> float:
@@ -169,10 +208,30 @@ def _session_row(session: Session, election_id: int) -> NightSession | None:
 
 
 def _marker(election: Election, ns: NightSession | None) -> tuple[Any, ...]:
+    """What identifies the stored state of a night: a change (another process advanced it, the
+    election was re-simulated, finalized or reset) makes the in-memory night stale."""
     return (
         election.status,
+        int(election.seed),
+        None if election.simulated_at is None else election.simulated_at.isoformat(),
         None if ns is None else ns.status,
         None if ns is None else int(ns.current_seq),
+    )
+
+
+def _version(night: _Night) -> tuple[Any, ...]:
+    """What a request may change in a night held in memory (compared before and after)."""
+    engine, clock = night.engine, night.clock
+    return (
+        engine.seq,
+        engine.sim_time_s,
+        len(engine.manual_calls),
+        clock.state,
+        clock.speed,
+        clock.anchor_sim,
+        clock.anchor_wall,
+        night.final,
+        night.persisted,
     )
 
 
@@ -232,6 +291,273 @@ def _restore_clock(night: _Night, ns: NightSession, now: float) -> None:
     clock.anchor_wall = float(now)
 
 
+# =========================================================================== reported elections
+def _night_count(
+    session: Session, election_id: int, inputs: ElectionInputs, votes: Mapping[str, RaceVotes]
+) -> dict[str, RaceVotes]:
+    """The count as it stood when the election night ended: the stored (certified) unit results
+    with every automatic-recount adjustment (``recount_adjustment``) reversed.
+
+    A reported election's rows hold the recounted result; replaying its night on those would call
+    some races differently from the night that actually happened (the stored calls).  The
+    national ``PRES`` race is re-stitched from its province contests."""
+    rows = session.execute(
+        select(
+            Recount.race_id,
+            RecountAdjustment.geo_unit_id,
+            RecountAdjustment.ballot_candidate_id,
+            RecountAdjustment.pile,
+            RecountAdjustment.delta,
+        )
+        .join(Recount, Recount.id == RecountAdjustment.recount_id)
+        .join(Race, Race.id == Recount.race_id)
+        .where(Race.election_id == int(election_id))
+    ).all()
+    out = dict(votes)
+    if not rows:
+        return out
+    code_of = {rid: code for code, rid in inputs.race_ids.items()}
+    grouped: dict[str, list[tuple[int, int | None, str, int]]] = defaultdict(list)
+    for rid, uid, bid, pile, delta in rows:
+        code = code_of.get(int(rid))
+        if code is None or code not in out:
+            raise ElectionError(f"election {election_id}: recount of an unknown race {rid}")
+        grouped[code].append((int(uid), None if bid is None else int(bid), str(pile), int(delta)))
+    frame = inputs.frame
+    children_changed = False
+    for code, adjustments in grouped.items():
+        rv = out[code]
+        col = {inputs.line_ids[code][k]: j for j, k in enumerate(rv.line_keys)}
+        units = unit_index_of_ids(frame, np.array([a[0] for a in adjustments], dtype=np.int64))
+        rows_ = np.searchsorted(rv.unit_index, units)
+        if (units < 0).any() or not np.array_equal(
+            rv.unit_index[np.minimum(rows_, len(rv.unit_index) - 1)], units
+        ):
+            raise ElectionError(f"{code}: recount adjustments outside the race's jurisdiction")
+        v = np.array(rv.votes, dtype=np.int64, copy=True)
+        cast = np.array(rv.ballots_cast, dtype=np.int64, copy=True)
+        blank = np.array(rv.blank, dtype=np.int64, copy=True)
+        invalid = np.array(rv.invalid, dtype=np.int64, copy=True)
+        for (_, bid, pile, delta), r in zip(adjustments, rows_.tolist(), strict=True):
+            if pile == "line":
+                if bid not in col:
+                    raise ElectionError(f"{code}: recount adjustment of an unknown ballot line {bid}")
+                v[r, col[bid]] -= delta
+            elif pile == "invalid":
+                invalid[r] -= delta
+            elif pile == "blank":
+                blank[r] -= delta
+            else:
+                raise ElectionError(f"{code}: unknown recount pile {pile!r}")
+            # every adjustment moves ballots between piles or adds uncounted ones: the ballots
+            # cast change by the net change of all piles
+            cast[r] -= delta
+        night_rv = dataclasses.replace(rv, votes=v, ballots_cast=cast, blank=blank, invalid=invalid)
+        try:
+            night_rv.check()
+        except AssertionError as exc:
+            raise ElectionError(
+                f"{code}: reversing the recount adjustments gives an inconsistent count"
+            ) from exc
+        out[code] = night_rv
+        children_changed |= RaceType(inputs.races[code].race_type) == RaceType.PRESIDENT_PROVINCE
+    if children_changed and "PRES" in out:
+        stored = out["PRES"]
+        children = [out[c] for c in inputs.races_of(RaceType.PRESIDENT_PROVINCE)]
+        parent = stitch_parent(inputs.races["PRES"], children)
+        if not np.array_equal(parent.unit_index, stored.unit_index):
+            raise ElectionError("PRES: the province contests do not cover the national race")
+        out["PRES"] = dataclasses.replace(
+            parent,
+            expected_shares=stored.expected_shares,
+            expected_turnout=stored.expected_turnout,
+        )
+    return out
+
+
+def _load_certified(session: Session, night: _Night) -> dict[str, Any]:
+    """The certified outcome of a reported election, from the stored race rows: per race its
+    status, winning line and how it was decided; the electoral votes of every ticket; the races
+    that were recounted."""
+    inputs = night.inputs
+    eid = night.election_id
+    key_of = {bid: key for ids in inputs.line_ids.values() for key, bid in ids.items()}
+    code_of = {rid: code for code, rid in inputs.race_ids.items()}
+    races: dict[str, dict[str, Any]] = {}
+    for rid, status, bid, decided_by in session.execute(
+        select(Race.id, Race.status, Race.winner_ballot_candidate_id, Race.decided_by).where(
+            Race.election_id == eid
+        )
+    ).all():
+        code = code_of.get(int(rid))
+        if code is None:
+            continue
+        races[code] = {
+            "status": status,
+            "winner": None if bid is None else key_of.get(int(bid)),
+            "decided_by": decided_by,
+        }
+    ev: dict[str, int] = {}
+    pres_id = inputs.race_ids.get(PRESIDENT_KEY)
+    if pres_id is not None:
+        for bid, n in session.execute(
+            select(
+                ElectoralVoteAllocation.ballot_candidate_id, func.sum(ElectoralVoteAllocation.electoral_votes)
+            )
+            .where(ElectoralVoteAllocation.race_id == pres_id)
+            .group_by(ElectoralVoteAllocation.ballot_candidate_id)
+        ).all():
+            key = key_of.get(int(bid))
+            if key is not None:
+                ev[key] = ev.get(key, 0) + int(n or 0)
+    recounted = sorted(
+        code_of[int(rid)]
+        for (rid,) in session.execute(
+            select(Recount.race_id).where(Recount.race_id.in_(list(code_of))).distinct()
+        ).all()
+        if int(rid) in code_of
+    )
+    election = get_election(session, eid)
+    return {
+        "races": races,
+        "electoral_votes": ev,
+        "recounts": recounted,
+        "finalized_at": None if election.finalized_at is None else election.finalized_at.isoformat(),
+    }
+
+
+def _party_of(night: _Night, race_code: str, key: str | None) -> str | None:
+    if key is None:
+        return None
+    meta = night.inputs.race_meta.get(race_code)
+    party = meta.line_parties.get(key) if meta is not None else None
+    return party or _IND
+
+
+def _party_colors(night: _Night) -> dict[str, str]:
+    colors: dict[str, str] = {}
+    for meta in night.inputs.race_meta.values():
+        for key, party in meta.line_parties.items():
+            color = meta.line_colors.get(key)
+            if party and color and party not in colors:
+                colors[party] = color
+    return colors
+
+
+def _certify_race(row: dict[str, Any], cert: Mapping[str, Any] | None) -> None:
+    """Certified status / winner of one snapshot row (compact race, province, governor)."""
+    if not cert:
+        return
+    if row.get("status") != cert["status"] or row.get("called_key") != cert["winner"]:
+        row["night_status"] = row.get("status")
+    row["status"] = cert["status"]
+    row["called_key"] = cert["winner"]
+    row["decided_by"] = cert["decided_by"]
+
+
+def _certify_seats(
+    night: _Night,
+    snap: dict[str, Any],
+    block: dict[str, Any],
+    race_type: RaceType,
+    races: Mapping[str, Mapping[str, Any]],
+    colors: Mapping[str, str],
+) -> None:
+    """Seat counters of a chamber from the certified winners (Senate holdovers kept)."""
+    codes = [r["key"] for r in snap.get("races") or [] if r.get("type") == race_type.value]
+    won = Counter(
+        _party_of(night, code, races[code]["winner"])
+        for code in codes
+        if code in races and races[code]["winner"] is not None
+    )
+    senate = race_type == RaceType.SENATE
+    rows = {row["party"]: row for row in block.get("by_party") or []}
+    for party in won:
+        if party not in rows:
+            rows[party] = (
+                {"party": party, "color": colors.get(party), "holdover": 0}
+                if senate
+                else {"party": party, "color": colors.get(party), "incumbent_seats": 0}
+            )
+    for party, row in rows.items():
+        n = int(won.get(party, 0))
+        row["called"] = n
+        row["leading"] = 0
+        if senate:
+            row["total_decided"] = row["total_projected"] = int(row.get("holdover", 0)) + n
+        else:
+            row["total"] = n
+            row["net_change_called"] = row["net_change_projected"] = n - int(row.get("incumbent_seats", 0))
+    key = "total_decided" if senate else "total"
+    block["by_party"] = sorted(rows.values(), key=lambda d: (-d[key], -d["called"], d["party"]))
+    called = int(sum(won.values()))
+    block["called"] = called
+    block["leading"] = 0
+    block["uncalled"] = int(block.get("up" if senate else "races", len(codes))) - called
+    majority = int(block["majority"])
+    control = next((r["party"] for r in block["by_party"] if r[key] >= majority), None)
+    if control != block.get("control"):
+        block["control"] = control
+        block["control_at_seq"] = None if control is None else int(snap["seq"])
+
+
+def _apply_certified(night: _Night, snap: dict[str, Any]) -> dict[str, Any]:
+    """Overlay the certified outcome on the finished night's snapshot (in place).
+
+    At the end of a night, races within the recount margin are still ``RECOUNT`` (their votes
+    are not allocated to anyone); the certification resolves them.  Statuses, winners, the
+    Electoral College tally and the seat counters become the certified ones, and ``certified``
+    describes the overlay.  Vote counts stay those of election night (before recount
+    corrections); the results pages carry the certified counts."""
+    cert = night.certified
+    if not cert:
+        return snap
+    races = cert["races"]
+    colors = _party_colors(night)
+    for row in snap.get("races") or []:
+        _certify_race(row, races.get(row.get("key")))
+    for row in snap.get("provinces") or []:
+        _certify_race(row, races.get(row.get("race_key")))
+    for row in snap.get("governors") or []:
+        _certify_race(row, races.get(row.get("key")))
+        if row.get("called_key") is not None:
+            row["party"] = _party_of(night, row["key"], row["called_key"])
+    pres = snap.get("president")
+    pres_cert = races.get(PRESIDENT_KEY)
+    if pres and pres_cert:
+        ev = cert["electoral_votes"]
+        for t in pres.get("tickets") or []:
+            n = int(ev.get(t["key"], 0))
+            t["ev_decided"] = n
+            t["ev_leading"] = 0
+            t["ev_max_possible"] = n
+        pres["tickets"] = sorted(pres.get("tickets") or [], key=lambda d: (-d["ev_decided"], -d["votes"]))
+        decided = int(sum(ev.values()))
+        pres["ev_decided_total"] = decided
+        pres["ev_uncalled"] = int(pres.get("ev_total", decided)) - decided
+        pres["status"] = pres_cert["status"]
+        pres["winner"] = pres_cert["winner"]
+        pres["decided_by"] = pres_cert["decided_by"]
+        needed = int(pres.get("ev_needed") or get_constitution().presidential_majority)
+        if pres.get("majority_reached_at_seq") is None and ev and max(ev.values()) >= needed:
+            pres["majority_reached_at_seq"] = int(snap["seq"])
+        pres["contingent_likely"] = False
+    if snap.get("house"):
+        _certify_seats(night, snap, snap["house"], RaceType.HOUSE, races, colors)
+    if snap.get("senate"):
+        _certify_seats(night, snap, snap["senate"], RaceType.SENATE, races, colors)
+    snap["certified"] = {
+        "final": True,
+        "finalized_at": cert["finalized_at"],
+        "recounts": list(cert["recounts"]),
+        "note": (
+            "Certified result: race statuses, winners, electoral votes and seat counts include the "
+            "automatic recounts; vote counts are those reported on election night."
+        ),
+    }
+    return snap
+
+
 def _build_night(
     session: Session,
     election: Election,
@@ -242,7 +568,9 @@ def _build_night(
     recount_config: RecountConfig | None = None,
 ) -> _Night:
     """Build the engine and clock of an election night from the database and bring them to the
-    persisted state (FINAL elections: the finished night, read-only)."""
+    persisted state (FINAL elections: the finished night, read-only, replayed on the count as it
+    stood on election night — see :func:`_night_count` — with the certified outcome loaded for
+    :func:`_apply_certified`)."""
     eid = election.id
     if election.status == ElectionStatus.SCHEDULED.value:
         raise ElectionError(f"election {eid} has not been simulated yet (simulate it first)")
@@ -250,6 +578,8 @@ def _build_night(
     with Timer(log, f"build election night {eid}"):
         inputs = election_inputs(session, eid)
         votes = load_final_race_votes(session, eid, inputs)
+        if final:
+            votes = _night_count(session, eid, inputs, votes)
         timeline = load_timeline(session, eid, inputs.frame)
         meta = timeline_meta(session, eid)
         cfg = config or load_night_config()
@@ -279,11 +609,15 @@ def _build_night(
             meta=meta,
             final=final,
             has_session=ns is not None,
+            recount_config=recount_config,
         )
         if final:
             engine.finish()
             clock.finish()
+            if ns is not None and float(ns.speed or 0.0) in clock.speeds:
+                clock.speed = float(ns.speed)
             night.persisted = len(engine.call_history)
+            night.certified = _load_certified(session, night)
         elif ns is not None:
             engine.advance_to_time(float(ns.sim_time_s))
             if engine.seq != int(ns.current_seq):
@@ -420,6 +754,43 @@ def _persist(session: Session, night: _Night) -> None:
     night.marker = _marker(election, ns)
 
 
+def _store_night_run(session: Session, night: _Night, election: Election, source: str) -> SimulationRun:
+    """Persist the finished night's summary state (certified outcome overlaid) as the election's
+    ``simulation_run`` of kind :data:`RUN_NIGHT`; reported elections are then served without
+    rebuilding the engine.  ``source``: ``live`` (a played night), ``instant`` or ``replay`` (a
+    reported election whose night was rebuilt from the database)."""
+    state = _state_dict(night, election.status, "summary", 0.0)
+    session.execute(
+        delete(SimulationRun).where(
+            SimulationRun.election_id == night.election_id, SimulationRun.kind == RUN_NIGHT
+        )
+    )
+    now = utcnow()
+    run = SimulationRun(
+        kind=RUN_NIGHT,
+        election_id=night.election_id,
+        scenario_id=election.scenario_id,
+        seed=int(election.seed),
+        config_hash=str(night.meta.get("config_fingerprint") or "")[:16] or None,
+        status="completed",
+        started_at=now,
+        finished_at=now,
+        summary_json=dumps(
+            {
+                "data_category": "SIMULATED",
+                "source": source,
+                "events": int(night.engine.total_events),
+                "calls": len(night.engine.call_history),
+                "state": state,
+            }
+        ),
+        code_version=app_pkg.__version__,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
 def _finalize(session: Session, night: _Night) -> None:
     """The last event has been applied: certify the election with the night's calls (once)."""
     election = get_election(session, night.election_id)
@@ -429,7 +800,14 @@ def _finalize(session: Session, night: _Night) -> None:
     night.clock.finish()
     history = night.engine.call_history
     with Timer(log, f"finalize election {night.election_id} after its night"):
-        finalize_election(session, night.election_id, call_records=history)
+        finalize_election(
+            session,
+            night.election_id,
+            call_records=history,
+            recount_config=night.recount_config,
+            inputs=night.inputs,
+            votes=night.votes,
+        )
     night.persisted = len(history)
     night.called = {}
     for rec in history:
@@ -437,9 +815,10 @@ def _finalize(session: Session, night: _Night) -> None:
     night.final = True
     ns = _upsert_session_row(session, night, election)
     session.flush()
+    night.certified = _load_certified(session, night)
+    _store_night_run(session, night, election, "live")
     night.marker = _marker(election, ns)
-    snap = night.engine.snapshot("summary")
-    pres = snap.get("president") or {}
+    pres = (night.engine.snapshot("summary").get("president")) or {}
     log.info(
         "election night finished",
         extra=log_ctx(
@@ -451,18 +830,76 @@ def _finalize(session: Session, night: _Night) -> None:
     )
 
 
-def _advance(session: Session, night: _Night, now: float, *, force: bool = False) -> None:
-    """Advance the engine to the playback clock at ``now``; persist what changed; finalize the
-    election when the last reporting event has been applied."""
+def _apply_events(night: _Night, now: float, budget_s: float | None) -> None:
+    """Apply the events due on the playback clock at ``now``.  With ``budget_s`` the engine
+    stops after about that much work (one event at a time); the rest is applied by later calls
+    and the night shows the last event applied (it lags behind the clock meanwhile)."""
+    engine, clock = night.engine, night.clock
+    if clock.state == PlaybackState.READY:
+        return
+    finished = clock.state == PlaybackState.FINISHED
+    target_time = clock.end_sim if finished else clock.target_sim_time(now)
+    target = engine.total_events if finished else engine.timeline.seq_at_time(target_time)
+    if target < engine.seq:
+        # never rewind: ``now`` is older than a time the night has already been shown at (a
+        # caller that read its clock before another request advanced the night)
+        return
+    if budget_s is None:
+        if finished:
+            engine.finish()
+        else:
+            engine.advance_to_time(target_time)
+        return
+    deadline = time.perf_counter() + max(float(budget_s), 0.0)
+    while engine.seq < target and time.perf_counter() < deadline:
+        engine.advance(1)
+    if engine.seq >= target and not finished:
+        engine.advance_to_time(target_time)
+
+
+def _require_certifiable(session: Session, election_id: int) -> None:
+    """A night may only run when its election can be certified at the end (elections are
+    finalized in chronological order)."""
+    election = get_election(session, election_id)
+    later = reported_on_or_after(session, election.election_date, exclude_id=election.id)
+    if later is not None:
+        raise ElectionNightError(
+            f"election {election_id} can no longer be certified: election {later} on or after "
+            f"{election.election_date} is already final (elections are finalized in chronological order)"
+        )
+
+
+def _lag(night: _Night, now: float) -> int:
+    """Events due on the playback clock that the engine has not applied yet."""
+    clock, engine = night.clock, night.engine
+    if night.final or clock.state == PlaybackState.READY:
+        return 0
+    due = engine.total_events if clock.state == PlaybackState.FINISHED else clock.target_seq(now)
+    return max(int(due) - int(engine.seq), 0)
+
+
+def _drivable(night: _Night) -> bool:
+    """True while the night has events to apply without a request (running, or finishing)."""
+    if night.final:
+        return False
+    state = night.clock.state
+    return state == PlaybackState.RUNNING or (
+        state == PlaybackState.FINISHED and not night.engine.is_finished
+    )
+
+
+def _advance(
+    session: Session, night: _Night, now: float, *, force: bool = False, budget_s: float | None = None
+) -> None:
+    """Advance the engine to the playback clock at ``now`` (at most ``budget_s`` seconds of
+    engine work when given); persist what changed; finalize the election when the last reporting
+    event has been applied."""
     if night.final:
         return
     engine, clock = night.engine, night.clock
     before = (engine.seq, clock.state, clock.speed)
     clock.tick(now)
-    if clock.state == PlaybackState.FINISHED:
-        engine.finish()
-    elif clock.state != PlaybackState.READY:
-        engine.advance_to_time(clock.target_sim_time(now))
+    _apply_events(night, now, budget_s)
     if engine.is_finished:
         # finalize_election stores the complete call log itself (it replaces the rows)
         _finalize(session, night)
@@ -476,6 +913,7 @@ def _advance(session: Session, night: _Night, now: float, *, force: bool = False
 def _clock_dict(night: _Night, now: float) -> dict[str, Any]:
     engine, clock = night.engine, night.clock
     tl = engine.timeline
+    lag = _lag(night, now)
     return {
         "status": clock.state.value,
         "speed": clock.speed,
@@ -488,7 +926,8 @@ def _clock_dict(night: _Night, now: float) -> dict[str, Any]:
         "base_rate": clock.base_rate,
         "end_sim_time_s": clock.end_sim,
         "end_clock": tl.local_clock(clock.end_sim),
-        "next_event_in_s": None if night.final else clock.seconds_until_next_event(now),
+        "next_event_in_s": None if night.final else (0.0 if lag else clock.seconds_until_next_event(now)),
+        "lag_events": lag,
     }
 
 
@@ -502,6 +941,9 @@ def _labels() -> dict[str, str]:
 
 
 def _state_dict(night: _Night, election_status: str, detail: str, now: float) -> dict[str, Any]:
+    snapshot = night.engine.snapshot(detail)
+    if night.final:
+        _apply_certified(night, snapshot)
     return {
         "election_id": night.election_id,
         "year": night.year,
@@ -509,7 +951,7 @@ def _state_dict(night: _Night, election_status: str, detail: str, now: float) ->
         "election_status": election_status,
         "clock": _clock_dict(night, now),
         "labels": _labels(),
-        "snapshot": night.engine.snapshot(detail),
+        "snapshot": snapshot,
         "data_category": "SIMULATED",
     }
 
@@ -704,6 +1146,21 @@ class NightManager:
     up to the playback clock at ``now`` (``time.monotonic()`` when omitted).  Nights are rebuilt
     from the database when they are not in memory, or when another process changed them.
 
+    Applying reporting events costs engine time (the calling model re-evaluates every touched
+    race: a few ms per event on the real country, and a 25× night reveals ~100 events per
+    second).  An interactive server therefore uses ``background=True``: a daemon thread (the
+    *driver*) applies due events in slices of ``slice_s`` seconds while a night runs, persists
+    them and finalizes the election at the end, and read requests (``state``, ``race_detail``,
+    ``municipality_rows``, ``municipality_detail``) spend at most ``read_budget_s`` on engine work,
+    so they answer within about one slice.  When the engine is behind the clock, the state shows
+    the last event applied (``clock.lag_events`` > 0).  Control actions always apply every due
+    event first.  With the defaults (no driver, no budget) every call is synchronous and fully
+    deterministic in ``now`` (tests, the CLI).
+
+    The summary state of a reported (FINAL) election is served from its stored final state
+    (``simulation_run`` of kind :data:`RUN_NIGHT`, written when the night finished) without
+    rebuilding the engine; it carries the certified outcome (:func:`_apply_certified`).
+
     Args:
         session_factory: context-manager factory yielding a transactional session.
         max_nights: number of nights kept in memory (least recently used ones are dropped; they
@@ -711,6 +1168,9 @@ class NightManager:
         config: night configuration (default ``config/night.yaml``).
         recount_config: automatic-recount rule of the night (default ``config/recount.yaml``).
         clock: wall-clock source used when ``now`` is omitted.
+        background: run the driver thread for running nights (uses ``clock`` for the time).
+        read_budget_s: engine-work budget of a read request (None: unlimited).
+        slice_s: engine-work budget of one driver slice.
     """
 
     def __init__(
@@ -721,6 +1181,9 @@ class NightManager:
         config: NightConfig | None = None,
         recount_config: RecountConfig | None = None,
         clock: Callable[[], float] = _now_default,
+        background: bool = False,
+        read_budget_s: float | None = None,
+        slice_s: float = DEFAULT_SLICE_S,
     ) -> None:
         self._factory = session_factory
         self._max = max(int(max_nights), 1)
@@ -730,6 +1193,14 @@ class NightManager:
         self._lock = threading.RLock()
         self._locks: dict[int, threading.RLock] = {}
         self._nights: OrderedDict[int, _Night] = OrderedDict()
+        self._background = bool(background)
+        self._read_budget = None if read_budget_s is None else max(float(read_budget_s), 0.0)
+        self._slice = max(float(slice_s), 0.001)
+        self._driver: threading.Thread | None = None
+        self._wake = threading.Event()
+        self._closed = False
+        #: (election id, night run id) → stored summary JSON of a reported election's night.
+        self._final_states: OrderedDict[tuple[int, int], str] = OrderedDict()
 
     # ------------------------------------------------------------------ plumbing
     def _session(self) -> AbstractContextManager[Session]:
@@ -783,6 +1254,8 @@ class NightManager:
         night = _build_night(
             session, election, ns, now=now, config=self._config, recount_config=self._recount_config
         )
+        if night.final and latest_run(session, election_id, RUN_NIGHT) is None:
+            _store_night_run(session, night, election, "replay")
         if ns is not None and not night.final:
             stored = session.scalar(
                 select(func.count()).select_from(RaceCall).where(RaceCall.election_id == election_id)
@@ -803,19 +1276,157 @@ class NightManager:
         self._remember(night)
         return night, election
 
-    def _run(self, election_id: int, now: float | None, fn: Callable[[Session, _Night, float], Any]) -> Any:
-        """Run ``fn`` on the up-to-date night inside a transaction (the night is dropped from
-        memory when anything fails, so the next call starts again from the database)."""
-        t = self._time(now)
-        with self._election_lock(int(election_id)):
-            try:
-                with self._session() as session:
-                    night, _ = self._night(session, int(election_id), t)
-                    _advance(session, night, t)
-                    return fn(session, night, t)
-            except Exception:
-                self._evict(int(election_id))
-                raise
+    def _synced(self, election_id: int, now: float, budget_s: float | None = None) -> _Night:
+        """The night advanced to the clock at ``now`` (at most ``budget_s`` of engine work),
+        persisted in its own transaction (the night is dropped from memory when that fails, so
+        the next call starts again from the database)."""
+        try:
+            with self._session() as session:
+                night, _ = self._night(session, election_id, now)
+                _advance(session, night, now, budget_s=budget_s)
+                return night
+        except Exception:
+            self._evict(election_id)
+            raise
+
+    def _run(
+        self,
+        election_id: int,
+        now: float | None,
+        fn: Callable[[Session, _Night, float], Any],
+        *,
+        read: bool = False,
+    ) -> Any:
+        """Run ``fn`` on the up-to-date night inside a transaction.  When ``fn`` fails after
+        changing the night (its writes are rolled back) the night is dropped from memory; a
+        rejected request (invalid action, unknown race …) keeps it.  ``read`` requests spend at
+        most the manager's read budget on engine work."""
+        eid = int(election_id)
+        try:
+            with self._election_lock(eid):
+                t = self._time(now)  # read under the lock (see control)
+                night = self._synced(eid, t, self._read_budget if read else None)
+                before = _version(night)
+                try:
+                    with self._session() as session:
+                        return fn(session, night, t)
+                except Exception:
+                    if _version(night) != before:
+                        self._evict(eid)
+                    raise
+        finally:
+            self._kick()
+
+    # ------------------------------------------------------------------ background driver
+    def _kick(self) -> None:
+        """Start (or wake) the driver thread when a night in memory needs it."""
+        if not self._background or self._closed:
+            return
+        with self._lock:
+            if not any(_drivable(n) for n in self._nights.values()):
+                return
+            if self._driver is not None:
+                self._wake.set()
+                return
+            thread = threading.Thread(target=self._drive_loop, name="night-driver", daemon=True)
+            self._driver = thread
+        thread.start()
+
+    def _drive_loop(self) -> None:
+        """Apply due events of every running night until none is running (then exit; a later
+        request starts a new driver)."""
+        log.info("election-night driver started")
+        while not self._closed:
+            wait = self._drive_once()
+            with self._lock:
+                if self._closed or not any(_drivable(n) for n in self._nights.values()):
+                    self._driver = None
+                    log.info("election-night driver stopped (no running night)")
+                    return
+            self._wake.wait(wait)
+            self._wake.clear()
+        with self._lock:
+            self._driver = None
+
+    def _drive_once(self) -> float:
+        """One slice of engine work per running night; returns how long to wait before the next
+        slice (0-ish while a night is behind its clock)."""
+        with self._lock:
+            ids = [eid for eid, n in self._nights.items() if _drivable(n)]
+        wait = _DRIVER_IDLE_S
+        for eid in ids:
+            with self._election_lock(eid):
+                with self._lock:
+                    held = self._nights.get(eid)
+                if held is None or not _drivable(held):
+                    continue  # reset, finished or dropped meanwhile: nothing to drive
+                now = self._time(None)
+                try:
+                    with self._session() as session:
+                        night, _ = self._night(session, eid, now)
+                        _advance(session, night, now, budget_s=self._slice)
+                except Exception:
+                    log.exception("election night %d: background advance failed; night dropped", eid)
+                    self._evict(eid)
+                    continue
+                if not _drivable(night):
+                    continue
+                if _lag(night, now) > 0:
+                    # yield the lock briefly so waiting requests are served between slices
+                    wait = min(wait, 0.002)
+                else:
+                    nxt = night.clock.seconds_until_next_event(now)
+                    wait = min(wait, _DRIVER_IDLE_S if nxt is None else max(float(nxt), 0.002))
+        return wait
+
+    def close(self) -> None:
+        """Stop the driver thread (nights stay in memory; a closed manager no longer drives
+        them in the background)."""
+        self._closed = True
+        self._wake.set()
+        with self._lock:
+            thread = self._driver
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
+
+    # ------------------------------------------------------------------ reported elections
+    def _stored_final_state(self, election_id: int) -> dict[str, Any] | None:
+        """Summary state of a reported election from its stored night run (None when the election
+        is not reported, has no stored night, or its night is in memory)."""
+        with self._lock:
+            if election_id in self._nights:
+                return None
+        with self._session() as session:
+            election = get_election(session, election_id)
+            if election.status not in REPORTED_STATUSES:
+                return None
+            run_id = session.scalar(
+                select(SimulationRun.id)
+                .where(
+                    SimulationRun.election_id == election_id,
+                    SimulationRun.kind == RUN_NIGHT,
+                    SimulationRun.status == "completed",
+                )
+                .order_by(SimulationRun.id.desc())
+                .limit(1)
+            )
+            if run_id is None:
+                return None
+            key = (election_id, int(run_id))
+            with self._lock:
+                text = self._final_states.get(key)
+            if text is None:
+                text = session.scalar(select(SimulationRun.summary_json).where(SimulationRun.id == run_id))
+                with self._lock:
+                    self._final_states[key] = text or ""
+                    while len(self._final_states) > _FINAL_STATES_CACHED:
+                        self._final_states.popitem(last=False)
+            status = election.status
+        state = loads(text).get("state") if text else None
+        if not isinstance(state, dict) or "snapshot" not in state:
+            return None
+        state["election_status"] = status
+        return state
 
     # ------------------------------------------------------------------ public API
     def state(self, election_id: int, detail: str = "summary", now: float | None = None) -> dict[str, Any]:
@@ -825,11 +1436,15 @@ class NightManager:
         "election_status", "data_category": "SIMULATED"}``."""
         if detail not in ("summary", "full"):
             raise ElectionNightError("detail must be 'summary' or 'full'")
+        if detail == "summary":
+            stored = self._stored_final_state(int(election_id))
+            if stored is not None:
+                return stored
 
         def read(session: Session, night: _Night, t: float) -> dict[str, Any]:
             return _state_dict(night, get_election(session, night.election_id).status, detail, t)
 
-        return self._run(election_id, now, read)
+        return self._run(election_id, now, read, read=True)
 
     def control(
         self, election_id: int, action: str, speed: float | None = None, now: float | None = None
@@ -852,27 +1467,28 @@ class NightManager:
         act = str(action).strip().lower()
         if act not in ACTIONS:
             raise ElectionNightError(f"unknown action {action!r}; expected one of {list(ACTIONS)}")
-        t = self._time(now)
         eid = int(election_id)
         with self._election_lock(eid):
+            # the time is read once the lock is held: a request that waited for another one must
+            # not act on an earlier clock than the night has already reached
+            t = self._time(now)
             if act == "reset":
                 self._reset(eid, t)
                 return self.state(eid, now=t)
-            try:
-                with self._session() as session:
-                    night, _ = self._night(session, eid, t)
-                    _advance(session, night, t)
-                    if night.final:
-                        if act != "finish":
-                            raise ElectionNightError(
-                                f"election {eid} is final: its election night is over (history is immutable)"
-                            )
-                    else:
-                        self._apply(night, act, speed, t)
-                        _advance(session, night, t, force=True)
-            except Exception:
-                self._evict(eid)
-                raise
+
+            def apply(session: Session, night: _Night, now_: float) -> None:
+                if night.final:
+                    if act != "finish":
+                        raise ElectionNightError(
+                            f"election {eid} is final: its election night is over (history is immutable)"
+                        )
+                    return
+                if act in ("start", "resume", "step", "finish"):
+                    _require_certifiable(session, eid)
+                self._apply(night, act, speed, now_)
+                _advance(session, night, now_, force=True)
+
+            self._run(eid, t, apply)
             return self.state(eid, now=t)
 
     @staticmethod
@@ -906,28 +1522,28 @@ class NightManager:
         )
 
     def _reset(self, election_id: int, now: float) -> None:
-        try:
-            with self._session() as session:
-                election = get_election(session, election_id)
-                if election.status in REPORTED_STATUSES:
-                    raise ElectionNightError(
-                        f"election {election_id} is {election.status}: its night cannot be reset "
-                        "(history is immutable)"
-                    )
-                if election.status == ElectionStatus.SCHEDULED.value:
-                    raise ElectionError(f"election {election_id} has not been simulated yet")
-                session.execute(delete(RaceCall).where(RaceCall.election_id == election_id))
-                session.execute(delete(NightSession).where(NightSession.election_id == election_id))
-                session.execute(
-                    update(Race)
-                    .where(Race.election_id == election_id)
-                    .values(status=RaceStatus.SCHEDULED.value, called_at=None)
-                    .execution_options(synchronize_session=False)
+        """Delete the night's calls and session (the election is SIMULATED again).  A refused
+        reset changes nothing and keeps the night in memory."""
+        with self._session() as session:
+            election = get_election(session, election_id)
+            if election.status in REPORTED_STATUSES:
+                raise ElectionNightError(
+                    f"election {election_id} is {election.status}: its night cannot be reset "
+                    "(history is immutable)"
                 )
-                election.status = ElectionStatus.SIMULATED.value
-                session.flush()
-        finally:
+            if election.status == ElectionStatus.SCHEDULED.value:
+                raise ElectionError(f"election {election_id} has not been simulated yet")
             self._evict(election_id)
+            session.execute(delete(RaceCall).where(RaceCall.election_id == election_id))
+            session.execute(delete(NightSession).where(NightSession.election_id == election_id))
+            session.execute(
+                update(Race)
+                .where(Race.election_id == election_id)
+                .values(status=RaceStatus.SCHEDULED.value, called_at=None)
+                .execution_options(synchronize_session=False)
+            )
+            election.status = ElectionStatus.SIMULATED.value
+            session.flush()
         log.info("election night reset", extra=log_ctx(election_id=election_id))
 
     def race_detail(self, election_id: int, race_code: str, now: float | None = None) -> dict[str, Any]:
@@ -942,9 +1558,11 @@ class NightManager:
             out["election_id"] = night.election_id
             out["seq"] = int(night.engine.seq)
             out["clock"] = night.engine.timeline.local_clock(night.engine.sim_time_s)
+            if night.final and night.certified is not None:
+                out["certified"] = night.certified["races"].get(race_code)
             return out
 
-        return self._run(election_id, now, read)
+        return self._run(election_id, now, read, read=True)
 
     def municipality_rows(
         self, election_id: int, race_code: str = PRESIDENT_KEY, now: float | None = None
@@ -954,7 +1572,22 @@ class NightManager:
         label, colour), counted margin, expected and outstanding (expected, not actual) ballots,
         and — when the previous comparable race has been reported — its winning party, margin,
         the swing of the current leader's party and whether the municipality flips."""
-        return self._run(election_id, now, lambda s, night, t: _municipality_rows(s, night, race_code))
+        return self._run(
+            election_id, now, lambda s, night, t: _municipality_rows(s, night, race_code), read=True
+        )
+
+    def municipality_rows_many(
+        self, election_id: int, race_codes: Sequence[str], now: float | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
+        """:meth:`municipality_rows` of several races at the same ``seq`` in one call (e.g. every
+        House district of a family map): race code → rows."""
+        codes = [str(c) for c in race_codes]
+        return self._run(
+            election_id,
+            now,
+            lambda s, night, t: {c: _municipality_rows(s, night, c) for c in codes},
+            read=True,
+        )
 
     def municipality_detail(self, election_id: int, code: str, now: float | None = None) -> dict[str, Any]:
         """Reporting events so far and the counted result of every race in one municipality."""
@@ -967,7 +1600,7 @@ class NightManager:
                 race["lines"] = _line_info(night, race["key"])
             return out
 
-        return self._run(election_id, now, read)
+        return self._run(election_id, now, read, read=True)
 
     def override_call(
         self,
@@ -1065,7 +1698,9 @@ def reset_night_manager() -> None:
     """Forget the process-wide manager and every night in memory (tests, simulated restarts)."""
     global _manager
     with _manager_lock:
-        _manager = None
+        old, _manager = _manager, None
+    if old is not None:
+        old.close()
 
 
 # =========================================================================== instant night
@@ -1078,22 +1713,33 @@ def run_instant_night(
 ) -> dict[str, Any]:
     """Run an election night to the end at once in the caller's transaction: every reporting
     event is applied (continuing a persisted night and its manual overrides, if any), every call
-    record is stored and the election is finalized.  Returns a summary of the night."""
+    record is stored and the election is finalized.  Returns a summary of the night with the
+    certified outcome (recounted races resolved)."""
     t0 = time.perf_counter()
     election = get_election(session, int(election_id))
     if election.status in REPORTED_STATUSES:
         raise ElectionError(f"election {election.id} is already {election.status}")
+    _require_certifiable(session, election.id)
     ns = _session_row(session, election.id)
     night = _build_night(session, election, ns, now=0.0, config=config, recount_config=recount_config)
     with Timer(log, f"instant election night {election.id}"):
         night.engine.finish()
         night.clock.finish()
-    snap = night.engine.snapshot("summary")
     history = night.engine.call_history
-    finalize_election(session, election.id, call_records=history)
+    finalize_election(
+        session,
+        election.id,
+        call_records=history,
+        recount_config=recount_config,
+        inputs=night.inputs,
+        votes=night.votes,
+    )
     night.final = True
     ns = _upsert_session_row(session, night, election)
     session.flush()
+    night.certified = _load_certified(session, night)
+    run = _store_night_run(session, night, election, "instant")
+    snap = loads(run.summary_json)["state"]["snapshot"]
     president = snap.get("president") or {}
     house = snap.get("house") or {}
     senate = snap.get("senate") or {}

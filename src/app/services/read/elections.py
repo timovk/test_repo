@@ -66,7 +66,7 @@ from app.services.read._base import (
 from app.services.read._races import FAMILIES, RaceBook, compact_line, holders_on, party_key, share_map
 from app.services.read.live import (
     live_municipality_detail,
-    live_municipality_rows,
+    live_municipality_rows_many,
     live_race_detail,
     live_state,
     night_available,
@@ -89,20 +89,20 @@ MUNICIPALITY_SORT_FIELDS: tuple[str, ...] = (
 
 
 # =========================================================================== helpers
-def _family(race: str | None, default: str = "PRES") -> str:
+def family_code(race: str | None, default: str = "PRES") -> str:
     fam = (race or default).upper()
     if fam not in FAMILIES:
         raise ValidationError(f"unknown race family {race!r}; expected one of {sorted(FAMILIES)}")
     return fam
 
 
-def _municipal_types(family: str) -> tuple[RaceType, ...]:
+def municipal_types(family: str) -> tuple[RaceType, ...]:
     """Race types whose municipality rows describe a family without double counting (the national
     ``PRES`` race covers every municipality; its province contests would repeat it)."""
     return (RaceType.PRESIDENT,) if family == "PRES" else FAMILIES[family]
 
 
-def _previous_with(session: Session, ref: ElectionRef, types: Iterable[RaceType]) -> ElectionRef | None:
+def previous_with(session: Session, ref: ElectionRef, types: Iterable[RaceType]) -> ElectionRef | None:
     """The latest reported election before ``ref`` that held races of ``types``."""
     eid = session.scalar(
         select(Election.id)
@@ -121,7 +121,7 @@ def _previous_with(session: Session, ref: ElectionRef, types: Iterable[RaceType]
     return None if el is None else ref_of(el)
 
 
-def _lineage(session: Session, prev: ElectionRef, curr: ElectionRef) -> pd.DataFrame | None:
+def lineage_between(session: Session, prev: ElectionRef, curr: ElectionRef) -> pd.DataFrame | None:
     """Municipality lineage between two vintages (``None`` when they share the vintage)."""
     if prev.vintage_id == curr.vintage_id:
         return None
@@ -136,7 +136,7 @@ def _lineage(session: Session, prev: ElectionRef, curr: ElectionRef) -> pd.DataF
     return pd.DataFrame(rows, columns=["from_code", "to_code", "population_weight"])
 
 
-def _frame(
+def stored_frame(
     session: Session, ref: ElectionRef, levels: Sequence[str], types: Sequence[RaceType]
 ) -> pd.DataFrame:
     """Standard results frame of a reported election (cached; never mutate the result)."""
@@ -146,10 +146,11 @@ def _frame(
         "frame",
         (*ref.cache_key(), tuple(levels), tuple(t.value for t in types)),
         lambda: results_frame(session, [ref.id], levels=list(levels), race_types=list(types)),
+        big=True,
     )
 
 
-def _geo_party_table(df: pd.DataFrame) -> dict[str, dict[str, Any]]:
+def geo_party_table(df: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Per geo code of a (single-level) frame: party votes pooled over the races, valid votes,
     eligible, ballots, leader, runner-up and margin."""
     if df.empty:
@@ -189,16 +190,16 @@ def _swing_table(
     ``{geo: {"swing": {party: pp}, "winner_prev": party, "flip_status": str}}``."""
     if prev is None:
         return {}
-    types = _municipal_types(family) if level == "municipality" else FAMILIES[family]
+    types = municipal_types(family) if level == "municipality" else FAMILIES[family]
 
     def build() -> dict[str, dict[str, Any]]:
-        p = _frame(session, prev, (level,), types)
-        c = _frame(session, ref, (level,), types)
+        p = stored_frame(session, prev, (level,), types)
+        c = stored_frame(session, ref, (level,), types)
         if p.empty or c.empty:
             return {}
         try:
             table = compare_elections(
-                p, c, level, race_type=types[0], lineage=_lineage(session, prev, ref), by="family"
+                p, c, level, race_type=types[0], lineage=lineage_between(session, prev, ref), by="family"
             )
         except (ResultsFrameError, ValueError, KeyError) as exc:
             log.warning("swing %s → %s (%s, %s) unavailable: %s", prev.id, ref.id, family, level, exc)
@@ -439,7 +440,7 @@ def _pres_frame_analysis(
 ) -> dict[str, Any]:
     """Tipping point (+ EC bias) and EV/PV divergence of a reported presidential election."""
     ref = book.ref
-    frame = _frame(session, ref, ("province", "national"), FAMILIES["PRES"])
+    frame = stored_frame(session, ref, ("province", "national"), FAMILIES["PRES"])
     ev_by_prov = {r.province_code: int(r.electoral_votes or 0) for r in _pres_specs(book)}
     out: dict[str, Any] = {"tipping_point": None, "divergence": None}
     key = winner or (max(ev_by_line, key=lambda k: ev_by_line[k]) if ev_by_line else None)
@@ -509,7 +510,7 @@ def _pres_specs(book: RaceBook) -> list[_Spec]:
 def _ticket(ln: Mapping[str, Any]) -> dict[str, Any]:
     """A presidential ticket line: the line plus explicit ``president`` / ``running_mate``."""
     d = dict(ln)
-    d["president"] = ln.get("candidate")
+    d["president"] = d.pop("candidate", None)
     return d
 
 
@@ -664,6 +665,12 @@ def president(session: Session, ref: ElectionRef) -> dict[str, Any]:
                         for ln in lines
                     ],
                     "popular_vote": None,
+                    # nothing is allocated before the night: 0 EV decided, every EV available
+                    "ev_decided_total": 0,
+                    "ev_uncalled": sum(
+                        int(r.electoral_votes or 0) for r in book.of_type(RaceType.PRESIDENT_PROVINCE)
+                    ),
+                    "majority_reached": False,
                     "tipping_point": None,
                     "divergence": None,
                     "contingent": None,
@@ -832,7 +839,7 @@ def provinces_results(session: Session, ref: ElectionRef, race: str | None = Non
     """``GET /api/elections/{id}/provinces?race=PRES|GOV|SEN|PROVLEG`` — one row per province of
     the family's province-wide contest: EV (President), winner / leader, status, margin, turnout,
     reporting, shares by line key and hold / flip against the seat's previous party."""
-    family = _family(race)
+    family = family_code(race)
     if family in ("HOUSE", "MAYOR", "COUNCIL"):
         raise ValidationError("provinces view needs a province-wide race family (PRES, GOV, SEN, PROVLEG)")
 
@@ -874,11 +881,11 @@ def _municipality_meta(session: Session, ref: ElectionRef) -> dict[str, dict[str
 def _final_municipality_rows(
     session: Session, ref: ElectionRef, family: str, colors: Mapping[str, str]
 ) -> list[dict[str, Any]]:
-    types = _municipal_types(family)
+    types = municipal_types(family)
 
     def build() -> list[dict[str, Any]]:
-        geo = _geo_party_table(_frame(session, ref, ("municipality",), types))
-        prev = _previous_with(session, ref, types)
+        geo = geo_party_table(stored_frame(session, ref, ("municipality",), types))
+        prev = previous_with(session, ref, types)
         sw = _swing_table(session, ref, prev, family, "municipality")
         meta = _municipality_meta(session, ref)
         rows = []
@@ -926,8 +933,12 @@ def _live_rows(
     meta = _municipality_meta(session, ref)
     line_party = {ln["key"]: ln["party"] for r in races for ln in book.lines.get(r.id, [])}
     pooled: dict[str, dict[str, Any]] = {}
+    local = (RaceType.MAYOR.value, RaceType.MUNICIPAL_COUNCIL.value)
+    night_rows = live_municipality_rows_many(
+        session, ref.id, [r.code for r in races if r.race_type not in local]
+    )
     for r in races:
-        if r.race_type in (RaceType.MAYOR.value, RaceType.MUNICIPAL_COUNCIL.value):
+        if r.race_type in local:
             lr = book.live.get(r.code) or {}
             geo = book.geo(r)
             src = [
@@ -940,13 +951,25 @@ def _live_rows(
                 }
             ]
         else:
-            src = live_municipality_rows(session, ref.id, r.code)
+            src = night_rows.get(r.code, [])
         for m in src:
             code = str(m.get("code"))
             agg = pooled.setdefault(
                 code,
-                {"votes": {}, "expected": 0.0, "outstanding": 0.0, "reporting_w": 0.0, "n": 0, "src": m},
+                {
+                    "votes": {},
+                    "expected": 0.0,
+                    "outstanding": 0.0,
+                    "reporting_w": 0.0,
+                    "n": 0,
+                    "units_total": 0,
+                    "units_reported": 0,
+                    "src": m,
+                },
             )
+            if m.get("units_total") is not None:
+                agg["units_total"] += int(m["units_total"])
+                agg["units_reported"] += int(m.get("units_reported") or 0)
             for k, v in (m.get("votes") or {}).items():
                 p = party_key(line_party.get(k))
                 agg["votes"][p] = agg["votes"].get(p, 0) + int(v)
@@ -973,8 +996,8 @@ def _live_rows(
                 "eligible": info.get("eligible"),
                 "votes": counted,
                 "reporting_pct": rnd(agg["reporting_w"] / weight, 3) if weight else 0.0,
-                "units_total": m.get("units_total"),
-                "units_reported": m.get("units_reported"),
+                "units_total": agg["units_total"] or m.get("units_total"),
+                "units_reported": agg["units_reported"] if agg["units_total"] else m.get("units_reported"),
                 "leader": lead,
                 "leader_party": None if lead in (None, INDEPENDENT) else lead,
                 "leader_color": colors.get(lead) if lead else None,
@@ -1012,8 +1035,8 @@ def municipality_rows(
             raise NotFoundError(f"race {code} not found in election {ref.id}")
         family = code
     else:
-        family = _family(code)
-        book = RaceBook.load(session, ref, types=_municipal_types(family))
+        family = family_code(code)
+        book = RaceBook.load(session, ref, types=municipal_types(family))
         if not book.races:
             raise NotFoundError(f"election {ref.id} has no {family} races")
     colors = _party_colors(book)
@@ -1024,11 +1047,6 @@ def municipality_rows(
         else:
             rows = _final_municipality_rows(session, ref, family, colors)
     elif ref.live:
-        if family == "HOUSE":
-            raise ValidationError(
-                "live municipality maps of the House need a single race code (e.g. race=HOUSE-NB-07); "
-                "use /api/elections/{id}/house for the district map"
-            )
         rows = _live_rows(session, ref, book, book.races, colors)
     else:
         rows = _hidden_municipality_rows(session, ref, book)
@@ -1224,7 +1242,7 @@ def province_page(
     largest_remaining: list[dict[str, Any]] = []
     outstanding = None
     if headline is not None:
-        prev_ref = _previous_with(session, ref, FAMILIES[family])
+        prev_ref = previous_with(session, ref, FAMILIES[family])
         if prev_ref is not None and (ref.reported or ref.live):
             pbook = RaceBook.load(session, prev_ref, codes=[headline.code])
             if pbook.races:
@@ -1506,13 +1524,15 @@ def _control(comp: Mapping[str, int], total: int, majority: int) -> dict[str, An
     }
 
 
-def _district_row(book: RaceBook, r: Race) -> dict[str, Any]:
-    v = book.view(r, top=3, compact=True)
+def _race_row(book: RaceBook, r: Race, top: int = 3) -> dict[str, Any]:
+    """Compact row of one race for lists of many races (House districts, mayors)."""
+    v = book.view(r, top=top, compact=True)
+    inc = v["incumbent"]
     return {
-        "code": v["district_code"],
         "race_code": r.code,
-        "name": v["district_name"],
         "province_code": v["province_code"],
+        "district_code": v["district_code"],
+        "municipality_code": v["municipality_code"],
         "status": v["status"],
         "winner": v["winner"],
         "winner_name": v["winner_name"],
@@ -1526,12 +1546,24 @@ def _district_row(book: RaceBook, r: Race) -> dict[str, Any]:
         "reporting_pct": v["reporting_pct"],
         "turnout_pct": v["turnout_pct"],
         "win_probability": v["win_probability"],
-        "incumbent": v["incumbent"],
+        "incumbent": None if inc is None else {k: inc[k] for k in ("name", "party", "running")},
         "open_seat": v["open_seat"],
         "previous_party": v["previous_party"],
         "flip_status": v["flip_status"],
-        "top": v["lines"],
+        "top": [
+            {k: ln[k] for k in ("key", "name", "party", "color", "votes", "pct", "winner", "incumbent")}
+            for ln in v["lines"]
+        ],
+        "_district_name": v["district_name"],
+        "_municipality_name": v["municipality_name"],
     }
+
+
+def _district_row(book: RaceBook, r: Race) -> dict[str, Any]:
+    row = _race_row(book, r)
+    name = row.pop("_district_name")
+    row.pop("_municipality_name")
+    return {"code": row["district_code"], "name": name, **row}
 
 
 def house(session: Session, ref: ElectionRef) -> dict[str, Any]:
@@ -1578,6 +1610,8 @@ def house(session: Session, ref: ElectionRef) -> dict[str, Any]:
                 for ln in book.lines.get(r.id, []):
                     p = party_key(ln["party"])
                     popular[p] = popular.get(p, 0) + int(votes.get(ln["key"], 0))
+            for p in popular:
+                slot(p)
             comp = _composition(row["winner_party"] for row in rows if row["winner"] is not None)
             for p, n in comp.items():
                 s = slot(p)
@@ -1813,7 +1847,13 @@ def mayors(session: Session, ref: ElectionRef, province: str | None = None) -> d
 
     def build() -> list[dict[str, Any]]:
         book = RaceBook.load(session, ref, types=[RaceType.MAYOR])
-        return [book.view(r, top=3, compact=True) for r in sorted(book.races, key=lambda r: r.code)]
+        rows = []
+        for r in sorted(book.races, key=lambda r: r.code):
+            row = _race_row(book, r, top=2)
+            row.pop("_district_name")
+            name = row.pop("_municipality_name")
+            rows.append({"code": row["municipality_code"], "name": name, **row})
+        return rows
 
     rows = build() if ref.live else cached(session, "mayors", ref.cache_key(), build)
     if province is not None:
@@ -1829,9 +1869,17 @@ def mayors(session: Session, ref: ElectionRef, province: str | None = None) -> d
 
 # =========================================================================== race detail
 def _race_calls(
-    session: Session, ref: ElectionRef, race_ids: Sequence[int] | None, *, evidence: bool
+    session: Session,
+    ref: ElectionRef,
+    race_ids: Sequence[int] | None,
+    *,
+    evidence: bool,
+    upto_seq: int | None = None,
 ) -> list[dict[str, Any]]:
-    require_reported(ref)
+    """Stored race calls (reported elections; or, with ``upto_seq``, a live night's calls up to
+    the event it has revealed — the night service persists them as they are made)."""
+    if upto_seq is None:
+        require_reported(ref)
     q = (
         select(RaceCall, Race.code, Race.race_type, Race.name, BallotCandidate)
         .join(Race, Race.id == RaceCall.race_id)
@@ -1839,6 +1887,8 @@ def _race_calls(
         .where(RaceCall.election_id == ref.id)
         .order_by(RaceCall.seq, RaceCall.id)
     )
+    if upto_seq is not None:
+        q = q.where(RaceCall.seq <= int(upto_seq))
     if race_ids is not None:
         q = q.where(RaceCall.race_id.in_(list(race_ids)))
     out = []
@@ -1981,7 +2031,8 @@ def calls(
     limit: int | None = None,
 ) -> dict[str, Any]:
     """``GET /api/elections/{id}/calls`` — chronological race-call log (FINAL: every stored call
-    state change with its evidence summary; LIVE: the night's recent calls)."""
+    state change; LIVE: every call the night has made so far, as persisted by the night service;
+    ``evidence`` adds each call's evidence)."""
     rows: list[dict[str, Any]]
     if ref.reported:
         rows = cached(
@@ -1991,10 +2042,11 @@ def calls(
             lambda: _race_calls(session, ref, None, evidence=evidence),
         )
     elif ref.live:
-        from app.services.read.live import live_snapshot
-
-        rows = list(live_snapshot(session, ref.id).get("recent_calls") or [])
-        rows.reverse()
+        # bring the night (and its stored calls) up to date, then read with a fresh snapshot
+        state = live_state(session, ref.id)
+        upto = int((state.get("clock") or {}).get("seq") or 0)
+        session.rollback()
+        rows = _race_calls(session, ref, None, evidence=evidence, upto_seq=upto)
     else:
         rows = []
     if race_type is not None:

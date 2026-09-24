@@ -36,10 +36,13 @@ ELECTION_HELP = "Election id, year, 'latest' or 'demo'."
 
 # =========================================================================== helpers
 def _scenario_for_year(year: int) -> str:
-    """The slug of the (single valid) scenario file of ``year``."""
+    """The slug of the (single valid) built-in or user scenario of ``year``."""
     from app.scenarios.loader import list_scenarios
+    from app.services.read.scenarios import default_user_dir
 
-    found = [s for s in list_scenarios() if s.valid and s.year == int(year)]
+    user = default_user_dir()
+    infos = list_scenarios() + (list_scenarios(user) if user.exists() else [])
+    found = [s for s in infos if s.valid and s.year == int(year)]
     if not found:
         raise ScenarioError(f"no scenario for {year} in config/scenarios (pass --scenario)")
     if len(found) > 1:
@@ -120,11 +123,14 @@ def create(
 
     if scenario is None and year is None:
         raise ScenarioError("give --year and/or --scenario")
+    from app.cli.scenario import load_any
+
     slug = scenario or _scenario_for_year(int(year))  # type: ignore[arg-type]
+    doc = load_any(slug)
     with session_scope() as s:
         strict = not (lenient or _synthetic_geography(s))
         with spinner(f"creating election from {slug} …"):
-            el = create_election(s, slug, seed=seed, year=year, strict=strict)
+            el = create_election(s, doc, seed=seed, year=year, strict=strict)
         eid = el.id
     if simulate_now:
         with session_scope() as s, spinner("simulating …"):
@@ -251,6 +257,12 @@ def forecast(
     simulations: int = typer.Option(10000, "--simulations", "-n", min=1, help="Monte Carlo draws."),
     seed: int = typer.Option(42, "--seed", help="Seed of the forecast."),
     workers: int = typer.Option(0, "--workers", help="Worker processes (0 = automatic, 1 = in-process)."),
+    use_polls: bool = typer.Option(
+        True, "--polls/--no-polls", help="Condition the national environment on the polling average."
+    ),
+    include_local: bool = typer.Option(
+        False, "--include-local", help="Also forecast provincial legislatures, mayors and councils."
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print the stored forecast as JSON."),
 ) -> None:
     """Run and store a Monte Carlo forecast (SIMULATED model estimates, not predictions)."""
@@ -263,7 +275,15 @@ def forecast(
     with session_scope() as s:
         eid = resolve_election(s, election)
         with spinner(f"forecasting election {eid} ({simulations:,} simulations) …"):
-            run = run_forecast_for_election(s, eid, int(simulations), int(seed), workers=int(workers))
+            run = run_forecast_for_election(
+                s,
+                eid,
+                int(simulations),
+                int(seed),
+                workers=int(workers),
+                use_polls=use_polls,
+                include_local=include_local,
+            )
         run_id = int(run.id)
     with session_scope() as s:
         data = load_forecast(s, run_id)
@@ -452,7 +472,9 @@ def history(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -
             r["year"],
             r["type"],
             f"{r['president']} ({r['president_party']})" if r["president"] else "",
-            r["electoral_votes"] if r["electoral_votes"] is not None else "",
+            ""
+            if r["electoral_votes"] is None
+            else f"{r['electoral_votes']}{'*' if r['decided_by'] == 'contingent' else ''}",
             fmt_pct(r["popular_vote_pct"]),
             seats(r["house_seats"], r["house_control"]),
             seats(r["senate_seats"], r["senate_control"]),
@@ -476,43 +498,97 @@ def history(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) -
             rows,
         )
     )
+    if any(r["decided_by"] == "contingent" for r in out):
+        console.print("[dim]* no ticket reached the majority: President chosen by the contingent election[/]")
 
 
 # =========================================================================== export
+#: Datasets of ``--dataset all`` (the large unit table and the swing comparison only on request).
+ALL_DATASETS: tuple[str, ...] = (
+    "national_results",
+    "province_results",
+    "municipality_results",
+    "district_results",
+    "house_results",
+    "senate_results",
+    "governor_results",
+    "electoral_votes",
+    "reporting_timeline",
+    "race_calls",
+    "montecarlo_summary",
+    "montecarlo_distribution",
+    "polls",
+    "polling_averages",
+    "districts",
+    "apportionment",
+)
+
+
 @friendly
 def export(
     election: str = typer.Option(..., "--election", "-e", help=ELECTION_HELP),
-    dataset: str = typer.Option("national", "--dataset", "-d", help="Dataset name, or 'all'."),
+    dataset: str = typer.Option(
+        "national", "--dataset", "-d", help="Dataset (schema name or alias; comma-separated) or 'all'."
+    ),
     fmt: str = typer.Option("csv", "--format", "-f", help="csv, json or both."),
     out: Path = typer.Option(Path("data/exports"), "--out", "-o", help="Output directory."),
+    race: str | None = typer.Option(None, "--race", help="Only this race (results) / race family (swing)."),
+    race_type: str | None = typer.Option(None, "--race-type", help="Only this race type (results)."),
+    level: str | None = typer.Option(None, "--level", help="Geographic level of the swing dataset."),
 ) -> None:
-    """Export stable-schema CSV / JSON datasets (results, calls, timeline, polls, forecasts …)."""
-    from app.cli.datasets import DATASETS, DEFAULT_ALL, build_dataset
+    """Export stable-schema CSV / JSON datasets (results, calls, timeline, polls, forecasts …)
+    with a manifest (schema versions, fingerprints, SHA-256)."""
+    from app.core.errors import NLFedError
+    from app.export.schemas import ALIASES, SCHEMAS
     from app.export.writers import export_bundle
+    from app.services.read import exports as export_models
+    from app.services.read._base import resolve_election as election_ref
 
     formats = ["csv", "json"] if fmt == "both" else [fmt]
     if any(f not in ("csv", "json") for f in formats):
         raise NotFoundError(f"unknown format {fmt!r} (csv, json or both)")
-    names = list(DEFAULT_ALL) if dataset == "all" else [d.strip() for d in dataset.split(",") if d.strip()]
-    unknown = [n for n in names if n not in DATASETS]
+    everything = dataset.strip().lower() == "all"
+    names = list(ALL_DATASETS) if everything else [d.strip() for d in dataset.split(",") if d.strip()]
+    unknown = [n for n in names if n not in SCHEMAS and n not in ALIASES]
     if unknown:
-        raise NotFoundError(f"unknown dataset(s) {unknown}; available: {', '.join(DATASETS)}, all")
+        raise NotFoundError(
+            f"unknown dataset(s) {unknown}; available: {', '.join(sorted(SCHEMAS))} (aliases: "
+            f"{', '.join(sorted(ALIASES))}) or all"
+        )
+    opts = {k: v for k, v in (("race", race), ("race_type", race_type), ("level", level)) if v}
     frames = {}
+    meta: dict[str, Any] = {}
     with session_scope() as s:
         eid = resolve_election(s, election)
+        ref = election_ref(s, eid)
         for name in names:
             try:
                 with spinner(f"building {name} …"):
-                    ds, df = build_dataset(s, eid, name)
-            except NotFoundError as exc:
-                if dataset != "all":
+                    schema, df, meta = export_models.build(s, ref, name, **opts)
+            except NLFedError as exc:
+                if not everything:
                     raise
                 err_console.print(f"[yellow]skipped {name}:[/] {exc}")
                 continue
-            frames[ds.schema] = df
+            frames[schema] = df
     if not frames:
         raise NotFoundError(f"nothing to export for election {eid}")
     target = out / f"election_{eid}"
-    paths = export_bundle(frames, target, formats, metadata={"election_id": eid, "datasets": sorted(frames)})
-    rows = [(p.name, fmt_int(p.stat().st_size)) for p in paths]
-    console.print(table(f"exported to {target}", ["file", ("bytes", "right")], rows))
+    paths = export_bundle(frames, target, formats, metadata={**meta, "datasets": sorted(frames)})
+    console.print(f"exported {len(frames)} dataset(s) of election {eid} to {target}")
+    console.print(
+        table(
+            None,
+            ["file", ("rows", "right"), ("bytes", "right")],
+            [
+                (
+                    p.name,
+                    ""
+                    if p.name == "manifest.json"
+                    else fmt_int(len(frames.get(p.name.rsplit(".", 1)[0], []))),
+                    fmt_int(p.stat().st_size),
+                )
+                for p in paths
+            ],
+        )
+    )

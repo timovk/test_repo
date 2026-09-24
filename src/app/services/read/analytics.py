@@ -25,8 +25,8 @@ from app.analytics.results import ResultsFrameError
 from app.core.constitution import RaceType
 from app.core.logging import get_logger
 from app.services.read._base import ElectionRef, cached, reported_refs
-from app.services.read.elections import _frame
-from app.services.read.history import _has_types, _party, _records, _val
+from app.services.read.elections import stored_frame
+from app.services.read.history import has_types, json_value, party_label, records_of
 
 log = get_logger(__name__)
 
@@ -53,19 +53,25 @@ def _lean(frame: pd.DataFrame) -> dict[str, Any] | None:
     by_geo: dict[str, dict[str, Any]] = {}
     for r in lean.itertuples(index=False):
         g = by_geo.setdefault(
-            str(r.geo_code), {"code": str(r.geo_code), "name": _val(r.geo_name), "lean_pp": {}}
+            str(r.geo_code), {"code": str(r.geo_code), "name": json_value(r.geo_name), "lean_pp": {}}
         )
-        g["lean_pp"][_party(r.party)] = round(float(r.lean_pp), 3)
+        g["lean_pp"][party_label(r.party)] = round(float(r.lean_pp), 3)
     two = _safe("margin lean", lambda: margin_lean(prov, level="province", by="race"))
     if two is not None and not two.empty:
         for r in two.itertuples(index=False):
             g = by_geo.get(str(r.geo_code))
             if g is not None:
-                g["two_party_lean_pp"] = _val(r.lean_pp, 3)
+                g["two_party_lean_pp"] = json_value(r.lean_pp, 3)
                 g["leans"] = (
-                    _party(r.leans) if isinstance(r.leans, str) and r.leans != "even" else _val(r.leans)
+                    party_label(r.leans)
+                    if isinstance(r.leans, str) and r.leans != "even"
+                    else json_value(r.leans)
                 )
-        pair = [_party(two["party_a"].iloc[0]), _party(two["party_b"].iloc[0])] if "party_a" in two else None
+        pair = (
+            [party_label(two["party_a"].iloc[0]), party_label(two["party_b"].iloc[0])]
+            if "party_a" in two
+            else None
+        )
     else:
         pair = None
     return {"level": "province", "race": "PRES", "pair": pair, "provinces": list(by_geo.values())}
@@ -75,7 +81,7 @@ def _elasticity(session: Session, ref: ElectionRef) -> dict[str, Any] | None:
     refs = [
         r
         for r in reported_refs(session)
-        if r.election_date <= ref.election_date and _has_types(session, r, PRES_TYPES)
+        if r.election_date <= ref.election_date and has_types(session, r, PRES_TYPES)
     ]
     if len(refs) < 2:
         return {
@@ -83,7 +89,7 @@ def _elasticity(session: Session, ref: ElectionRef) -> dict[str, Any] | None:
             "reason": "needs at least two reported presidential elections",
             "provinces": [],
         }
-    frames = [_frame(session, r, ("province", "national"), (RaceType.PRESIDENT,)) for r in refs]
+    frames = [stored_frame(session, r, ("province", "national"), (RaceType.PRESIDENT,)) for r in refs]
     df = pd.concat(frames, ignore_index=True)
     el = _safe("elasticity", lambda: elasticity(df, level="province", by="race"))
     if el is None or el.empty:
@@ -91,11 +97,11 @@ def _elasticity(session: Session, ref: ElectionRef) -> dict[str, Any] | None:
     by_geo: dict[str, dict[str, Any]] = {}
     for r in el.itertuples(index=False):
         g = by_geo.setdefault(
-            str(r.geo_code), {"code": str(r.geo_code), "name": _val(r.geo_name), "elasticity": {}}
+            str(r.geo_code), {"code": str(r.geo_code), "name": json_value(r.geo_name), "elasticity": {}}
         )
-        g["elasticity"][_party(r.party)] = _val(r.elasticity, 3)
-        g["method"] = _val(r.method)
-        g["n_obs"] = _val(r.n_obs)
+        g["elasticity"][party_label(r.party)] = json_value(r.elasticity, 3)
+        g["method"] = json_value(r.method)
+        g["n_obs"] = json_value(r.n_obs)
     return {"available": True, "elections": [r.id for r in refs], "provinces": list(by_geo.values())}
 
 
@@ -108,9 +114,9 @@ def election_analytics(session: Session, ref: ElectionRef) -> dict[str, Any]:
 
     def build() -> dict[str, Any]:
         out: dict[str, Any] = {"available": True}
-        has_pres = _has_types(session, ref, PRES_TYPES)
+        has_pres = has_types(session, ref, PRES_TYPES)
         if has_pres:
-            pf = _frame(session, ref, ("province", "national"), PRES_TYPES)
+            pf = stored_frame(session, ref, ("province", "national"), PRES_TYPES)
             out["lean"] = _safe("lean", lambda: _lean(pf))
             out["elasticity"] = _elasticity(session, ref)
             ev = _ev_by_province(session, ref)
@@ -120,14 +126,14 @@ def election_analytics(session: Session, ref: ElectionRef) -> dict[str, Any]:
                 if tally is None
                 else [
                     {
-                        "party": _party(r["key"]),
-                        "label": _val(r["label"]),
-                        "popular_votes": _val(r["popular_votes"]),
-                        "pv_share": _val(r["pv_share"], 6),
-                        "electoral_votes": _val(r["electoral_votes"]),
-                        "ev_share": _val(r["ev_share"], 6),
-                        "provinces_won": _val(r["provinces_won"]),
-                        "efficiency_pp": _val(r["efficiency_pp"], 4),
+                        "party": party_label(r["key"]),
+                        "label": json_value(r["label"]),
+                        "popular_votes": json_value(r["popular_votes"]),
+                        "pv_share": json_value(r["pv_share"], 6),
+                        "electoral_votes": json_value(r["electoral_votes"]),
+                        "ev_share": json_value(r["ev_share"], 6),
+                        "provinces_won": json_value(r["provinces_won"]),
+                        "efficiency_pp": json_value(r["efficiency_pp"], 4),
                     }
                     for r in tally.to_dict(orient="records")
                 ]
@@ -137,14 +143,16 @@ def election_analytics(session: Session, ref: ElectionRef) -> dict[str, Any]:
                 None
                 if bias is None
                 else {
-                    "party": _party(bias.key),
+                    "party": party_label(bias.key),
                     "province_code": bias.tipping_province,
                     "margin_pp": round(bias.tipping_margin_pp, 4),
                     "national_margin_pp": round(bias.national_margin_pp, 4),
                     "ec_bias_pp": round(bias.bias_pp, 4),
                 }
             )
-        all_frame = _frame(session, ref, ("municipality", "district", "province", "national"), ALL_TYPES)
+        all_frame = stored_frame(
+            session, ref, ("municipality", "district", "province", "national"), ALL_TYPES
+        )
         comp = _safe("competitiveness", lambda: competitiveness(all_frame))
         if comp is not None and not comp.empty:
             summ = competitiveness_summary(comp, by="race_type")
@@ -152,18 +160,18 @@ def election_analytics(session: Session, ref: ElectionRef) -> dict[str, Any]:
                 ["competitiveness", "margin_pp"], ascending=[False, True], kind="mergesort"
             ).head(15)
             out["competitiveness"] = {
-                "by_race_type": _records(summ.reset_index() if "race_type" not in summ.columns else summ),
+                "by_race_type": records_of(summ.reset_index() if "race_type" not in summ.columns else summ),
                 "most_competitive": [
                     {
                         "race_code": r["race_code"],
                         "race_type": r["race_type"],
-                        "geo_code": _val(r["geo_code"]),
-                        "winner_party": _party(r["winner_party"]),
-                        "runner_up_party": _party(r["runner_up_party"]),
-                        "margin_pp": _val(r["margin_pp"], 4),
-                        "enc": _val(r["enc"], 3),
-                        "competitiveness": _val(r["competitiveness"], 4),
-                        "rating": _val(r["rating"]),
+                        "geo_code": json_value(r["geo_code"]),
+                        "winner_party": party_label(r["winner_party"]),
+                        "runner_up_party": party_label(r["runner_up_party"]),
+                        "margin_pp": json_value(r["margin_pp"], 4),
+                        "enc": json_value(r["enc"], 3),
+                        "competitiveness": json_value(r["competitiveness"], 4),
+                        "rating": json_value(r["rating"]),
                     }
                     for r in top.to_dict(orient="records")
                 ],
@@ -172,21 +180,21 @@ def election_analytics(session: Session, ref: ElectionRef) -> dict[str, Any]:
         if not house.empty:
             eg = _safe("efficiency gap", lambda: efficiency_gap(house))
             pe = _safe("party efficiency", lambda: party_efficiency(house))
-            out["efficiency_gap"] = None if eg is None else _records(eg, 6)
+            out["efficiency_gap"] = None if eg is None else records_of(eg, 6)
             out["seat_vote"] = (
                 None
                 if pe is None
                 else [
                     {
-                        "party": _party(r["party"]),
-                        "votes": _val(r["votes"]),
-                        "vote_share": _val(r["vote_share"], 6),
-                        "seats": _val(r["seats"]),
-                        "seat_share": _val(r["seat_share"], 6),
-                        "seat_bonus_pp": _val(r["seat_bonus_pp"], 4),
-                        "waste_rate": _val(r["waste_rate"], 6),
-                        "efficiency_gap": _val(r["efficiency_gap"], 6),
-                        "votes_per_seat": _val(r["votes_per_seat"], 1),
+                        "party": party_label(r["party"]),
+                        "votes": json_value(r["votes"]),
+                        "vote_share": json_value(r["vote_share"], 6),
+                        "seats": json_value(r["seats"]),
+                        "seat_share": json_value(r["seat_share"], 6),
+                        "seat_bonus_pp": json_value(r["seat_bonus_pp"], 4),
+                        "waste_rate": json_value(r["waste_rate"], 6),
+                        "efficiency_gap": json_value(r["efficiency_gap"], 6),
+                        "votes_per_seat": json_value(r["votes_per_seat"], 1),
                     }
                     for r in pe.to_dict(orient="records")
                 ]

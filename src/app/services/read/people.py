@@ -31,8 +31,8 @@ from app.services.read._base import (
     chunks,
     current_holders,
     iso,
-    person,
     pct,
+    person,
     ref_of,
     reported_refs,
     rnd,
@@ -99,7 +99,9 @@ def parties(session: Session) -> dict[str, Any]:
             )
         record = _party_record(session)
         counts = dict(
-            session.execute(select(Candidate.party_id, func.count()).group_by(Candidate.party_id)).tuples().all()
+            session.execute(select(Candidate.party_id, func.count()).group_by(Candidate.party_id))
+            .tuples()
+            .all()
         )
         return {
             "data_category": FICTIONAL,
@@ -168,17 +170,21 @@ def candidates(
         q, cq = q.where(Party.code == party.upper()), cq.where(Party.code == party.upper())
     if office:
         pref = office.upper().rstrip("-")
-        ids = sorted(cid for cid, codes in holders.items() if any(c == pref or c.startswith(pref + "-") for c in codes))
+        ids = sorted(
+            cid for cid, codes in holders.items() if any(c == pref or c.startswith(pref + "-") for c in codes)
+        )
         q, cq = q.where(Candidate.id.in_(ids)), cq.where(Candidate.id.in_(ids))
     total = int(session.scalar(cq) or 0)
-    rows = session.execute(q.order_by(Candidate.last_name, Candidate.first_name, Candidate.id).offset(offset).limit(limit)).all()
+    rows = session.execute(
+        q.order_by(Candidate.last_name, Candidate.first_name, Candidate.id).offset(offset).limit(limit)
+    ).all()
     ids = [c.id for c, _p, _col in rows]
     races: dict[int, int] = {}
     for part in chunks(ids):
         for cid, n in session.execute(
-            select(BallotCandidate.candidate_id, func.count()).where(BallotCandidate.candidate_id.in_(part)).group_by(
-                BallotCandidate.candidate_id
-            )
+            select(BallotCandidate.candidate_id, func.count())
+            .where(BallotCandidate.candidate_id.in_(part))
+            .group_by(BallotCandidate.candidate_id)
         ).all():
             races[int(cid)] = int(n)
     prov = dict(session.execute(select(Province.id, Province.code)).tuples().all())
@@ -211,9 +217,15 @@ def candidate_profile(session: Session, candidate_id: int) -> dict[str, Any]:
     code_of = dict(session.execute(select(Party.id, Party.code)).tuples().all())
     prov = dict(session.execute(select(Province.id, Province.code)).tuples().all())
     affiliations = [
-        {"party": code_of.get(a.party_id) if a.party_id else None, "from_year": a.from_year, "to_year": a.to_year}
+        {
+            "party": code_of.get(a.party_id) if a.party_id else None,
+            "from_year": a.from_year,
+            "to_year": a.to_year,
+        }
         for a in session.scalars(
-            select(CandidateAffiliation).where(CandidateAffiliation.candidate_id == c.id).order_by(CandidateAffiliation.from_year)
+            select(CandidateAffiliation)
+            .where(CandidateAffiliation.candidate_id == c.id)
+            .order_by(CandidateAffiliation.from_year)
         )
     ]
     offices = []
@@ -275,7 +287,9 @@ def candidate_profile(session: Session, candidate_id: int) -> dict[str, Any]:
                 "race_code": r.code,
                 "race_name": r.name,
                 "race_type": r.race_type,
-                "role": "running_mate" if b.running_mate_id == c.id and b.candidate_id != c.id else "candidate",
+                "role": "running_mate"
+                if b.running_mate_id == c.id and b.candidate_id != c.id
+                else "candidate",
                 "ballot_name": b.ballot_name,
                 "line_key": b.line_key,
                 "party": b.party_code_snapshot,

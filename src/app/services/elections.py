@@ -20,7 +20,7 @@ the transaction.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -37,6 +37,7 @@ from app.districts.service import active_plan
 from app.elections.calendar import ElectionCalendar
 from app.elections.recount import RecountConfig, load_recount_config
 from app.elections.seats import chamber_composition, chamber_control
+from app.elections.types import RaceVotes
 from app.models import (
     Apportionment,
     ApportionmentSeat,
@@ -99,6 +100,8 @@ __all__ = [
     "instant_finalize",
     "list_elections",
     "president_holder",
+    "reported_on_or_after",
+    "require_certifiable",
     "simulate_election",
 ]
 
@@ -249,6 +252,7 @@ def create_election(
     mapping = plan_mapping(session, plan.id, frame) if plan is not None else None
     plan_id = plan.id if plan is not None else None
     edate = doc.scenario.election_date or cycle.date
+    require_certifiable(session, edate)
     run_seed = int(seed if seed is not None else doc.scenario.seed)
     scen = _store_scenario(session, doc, text)
     prev = session.scalars(
@@ -509,35 +513,67 @@ def simulate_election(session: Session, election_id: int, *, seed: int | None = 
 
 
 # =========================================================================== finalize
+def reported_on_or_after(
+    session: Session, election_date: date, *, exclude_id: int | None = None
+) -> int | None:
+    """Id of a reported (FINAL / CERTIFIED) election held on or after ``election_date``."""
+    q = select(Election.id).where(
+        Election.status.in_(list(REPORTED_STATUSES)),
+        Election.election_date >= election_date,
+    )
+    if exclude_id is not None:
+        q = q.where(Election.id != int(exclude_id))
+    return session.scalars(q.order_by(Election.election_date, Election.id).limit(1)).first()
+
+
+def require_certifiable(session: Session, election_date: date, *, exclude_id: int | None = None) -> None:
+    """Elections are certified in chronological order (office holders, incumbents and history
+    build on the previous election): raise :class:`ElectionError` when an election held on or
+    after ``election_date`` is already reported, so an election of that date could never be
+    finalized."""
+    later = reported_on_or_after(session, election_date, exclude_id=exclude_id)
+    if later is not None:
+        raise ElectionError(
+            f"election {later} on or after {election_date} is already final; elections are finalized "
+            "in chronological order, so an election of that date can no longer be certified"
+        )
+
+
 def finalize_election(
     session: Session,
     election_id: int,
     *,
     call_records: Sequence[CallRecord] | None = None,
     recount_config: RecountConfig | None = None,
+    inputs: ElectionInputs | None = None,
+    votes: Mapping[str, RaceVotes] | None = None,
 ) -> Election:
     """Certify a simulated election: tabulation (seeded lots), automatic recounts (audited
     corrections applied to the stored rows), Electoral College and contingent election, race
     summaries, D'Hondt seats, office holders (terms from the calendar) and — when given — the race
-    calls of the election night.  Status → FINAL (the result becomes visible)."""
+    calls of the election night.  Status → FINAL (the result becomes visible).
+
+    ``inputs`` / ``votes`` may pass the engine inputs and the stored unit results already in
+    memory (the election-night service holds both), which saves reloading them; ``votes`` is not
+    modified.  They must be those of this election as stored (``election_inputs`` /
+    ``load_final_race_votes``)."""
     el = get_election(session, election_id)
     if el.status in REPORTED_STATUSES:
         raise ElectionError(f"election {el.id} is already {el.status}")
     if el.status == ElectionStatus.SCHEDULED.value:
         raise ElectionError(f"election {el.id} has not been simulated")
-    later = session.scalars(
-        select(Election.id).where(
-            Election.id != el.id,
-            Election.status.in_(list(REPORTED_STATUSES)),
-            Election.election_date >= el.election_date,
-        )
-    ).first()
-    if later is not None:
-        raise ElectionError(
-            f"election {later} on or after {el.election_date} is already final; elections are finalized in order"
-        )
-    inputs = election_inputs(session, el.id)
-    votes = load_final_race_votes(session, el.id, inputs, with_expectation=False)
+    require_certifiable(session, el.election_date, exclude_id=el.id)
+    if inputs is None or votes is None:
+        inputs = election_inputs(session, el.id)
+        race_votes = load_final_race_votes(session, el.id, inputs, with_expectation=False)
+    else:
+        missing = sorted(set(inputs.races) - set(votes))
+        if int(inputs.election_id) != el.id or missing:
+            raise ElectionError(
+                f"finalize_election({el.id}): the given inputs/votes do not belong to this election"
+                + (f" (missing races {missing[:5]})" if missing else "")
+            )
+        race_votes = {code: votes[code] for code in inputs.races}
     cfg = recount_config or load_recount_config()
     with (
         Timer(log, f"finalize election {el.id}"),
@@ -550,7 +586,7 @@ def finalize_election(
             config_hash=inputs.scenario_hash,
         ) as rec,
     ):
-        fin = Finalizer(session, el, inputs, votes, cfg)
+        fin = Finalizer(session, el, inputs, race_votes, cfg)
         fin.tabulate_and_recount()
         fin.electoral_college()
         fin.race_summaries()

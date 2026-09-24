@@ -29,7 +29,9 @@ MAX_LIMIT = 2000
 def _frames(session: Session, ref: ElectionRef, poll_type: str | None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Poll frames of an election (cached per election state; do not mutate)."""
     n = _poll_count(session, ref)
-    return cached(session, "poll-frames", (ref.id, poll_type, n), lambda: polls_frames(session, ref.id, poll_type))
+    return cached(
+        session, "poll-frames", (ref.id, poll_type, n), lambda: polls_frames(session, ref.id, poll_type)
+    )
 
 
 def _poll_count(session: Session, ref: ElectionRef) -> tuple[int, int]:
@@ -167,7 +169,11 @@ def poll_average(
 
     def build() -> dict[str, Any]:
         pdf, rdf = _frames(session, ref, ptype)
-        groups = sorted({(str(t), str(g)) for t, g in pdf[["poll_type", "geo_code"]].itertuples(index=False)}) if not pdf.empty else []
+        groups = (
+            sorted({(str(t), str(g)) for t, g in pdf[["poll_type", "geo_code"]].itertuples(index=False)})
+            if not pdf.empty
+            else []
+        )
         averages = aggregate_polls(pdf, rdf, None, day, pollsters=load_pollster_configs(session))
         avg = averages.get((ptype, geo_code))
         if avg is None:
@@ -180,7 +186,12 @@ def poll_average(
         d["accuracy"] = _accuracy(session, ref, ptype, geo_code, d["mean"]) if ref.reported else None
         return d
 
-    payload = cached(session, "poll-average", (*ref.cache_key(), _poll_count(session, ref), ptype, geo_code, day.isoformat()), build)
+    payload = cached(
+        session,
+        "poll-average",
+        (*ref.cache_key(), _poll_count(session, ref), ptype, geo_code, day.isoformat()),
+        build,
+    )
     colors = {c: p["color"] for c, p in party_index(session).items()}
     return ref.envelope(
         data_category=SIMULATED,
@@ -210,7 +221,9 @@ def _accuracy(
                     actual[p["party"]] = float(p["vote_pct"])
         elif poll_type == "province_president":
             party_of = {t["key"]: t["party"] for t in president(session, ref)["tickets"]}
-            row = next((r for r in provinces_results(session, ref, "PRES")["provinces"] if r["code"] == geo), None)
+            row = next(
+                (r for r in provinces_results(session, ref, "PRES")["provinces"] if r["code"] == geo), None
+            )
             for k, v in ((row or {}).get("pct") or {}).items():
                 if party_of.get(k):
                     actual[party_of[k]] = actual.get(party_of[k], 0.0) + float(v)
