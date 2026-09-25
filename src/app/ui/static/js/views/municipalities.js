@@ -6,6 +6,7 @@
  * Live elections re-poll the municipality rows every ~5 s while the night runs.
  */
 import { api } from "../api.js";
+import { getState } from "../store.js";
 import { h, keyed, mount } from "../dom.js";
 import { fmtCompact, fmtInt, fmtPP } from "../format.js";
 import { setQuery } from "../router.js";
@@ -60,7 +61,7 @@ async function nameResolver(id, fam, signal) {
 export async function render(el, params, ctx) {
   const id = currentElectionId();
   const ctrl = new AbortController();
-  const ui = { race: ctx.query.race, metric: ctx.query.map, party: ctx.query.party, prov: ctx.query.prov || "", q: "" };
+  const ui = { race: ctx.query.race, metric: ctx.query.map || getState().settings?.mapMetric || undefined, party: ctx.query.party, prov: ctx.query.prov || "", q: "" };
   const frame = pageFrame(el, {
     eyebrow: "Results · Municipalities",
     title: "Municipalities",

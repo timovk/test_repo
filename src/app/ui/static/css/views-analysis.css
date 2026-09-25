@@ -1797,3 +1797,85 @@ table.data td.ana-wrap,
   color: var(--text-primary);
   font-weight: 600;
 }
+
+/* ---- Settings page ------------------------------------------------------ */
+.settings-list {
+  display: flex;
+  flex-direction: column;
+}
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--grid);
+}
+.settings-row:last-child {
+  border-bottom: 0;
+}
+.settings-row__label {
+  font-weight: 700;
+}
+.settings-row__hint {
+  font-size: var(--fs-sm);
+  margin-top: 2px;
+}
+.settings-row__control {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+input[type="color"] {
+  width: 44px;
+  height: 28px;
+  padding: 0 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+/* ---- Data page ------------------------------------------------------------ */
+.data-body {
+  margin-top: var(--sp-4);
+}
+.data-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+.data-list b {
+  color: var(--text-primary);
+}
+
+/* ---- Race page ------------------------------------------------------------ */
+.res-calls .feed__item.is-selected {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.res-calls .feed__item.is-superseded {
+  opacity: 0.55;
+}
+.race-evidence__raw summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  margin-top: 10px;
+}
+.race-recount + .race-recount {
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--grid);
+}
+@media (max-width: 960px) {
+  .settings-row {
+    grid-template-columns: 1fr;
+  }
+  .settings-row__control {
+    justify-content: flex-start;
+  }
+}

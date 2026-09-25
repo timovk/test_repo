@@ -8,6 +8,7 @@ says so and links to the API docs.  Unknown ``/api/...`` paths never fall throug
 
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -21,6 +22,28 @@ from app.api.deps import ApiJSON
 
 #: Default location of the built UI.
 UI_DIR = Path(__file__).resolve().parents[1] / "ui" / "static"
+
+#: Content types of the UI's static files.  Python's ``mimetypes`` reads the operating-system
+#: registry, and on many Windows machines ``.js`` is registered as ``text/plain`` — browsers then
+#: refuse to execute the UI's ES modules and the page never starts.  Register the correct types
+#: explicitly so the UI works on every platform.
+UI_MIME_TYPES: dict[str, str] = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".geojson": "application/geo+json",
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+    ".png": "image/png",
+    ".html": "text/html",
+}
+
+
+def register_ui_mime_types() -> None:
+    """Override (possibly wrong) OS-registry MIME types for the UI's file extensions."""
+    for ext, ctype in UI_MIME_TYPES.items():
+        mimetypes.add_type(ctype, ext)
 
 PLACEHOLDER_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -67,6 +90,7 @@ def install_api_catch_all(app: FastAPI) -> None:
 
 def mount_ui(app: FastAPI, ui_dir: Path | None = None) -> Path:
     """Mount the UI at ``/`` (placeholder page when ``index.html`` does not exist yet)."""
+    register_ui_mime_types()
     directory = Path(ui_dir) if ui_dir is not None else UI_DIR
     if directory.is_dir():
         app.mount("/", SPAStaticFiles(directory=str(directory), html=True), name="ui")

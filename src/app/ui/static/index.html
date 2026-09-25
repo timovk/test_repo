@@ -10,10 +10,54 @@
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
     <link rel="stylesheet" href="/css/app.css" />
     <script src="/vendor/leaflet/leaflet.js" defer></script>
-    <script type="module" src="/js/app.js"></script>
+    <script>
+      /* Boot watchdog (plain script, runs even when the ES modules cannot): if the application code
+         fails to load or never starts, show why instead of an endless loading screen. */
+      (function () {
+        function show(title, detail) {
+          var box = document.getElementById("boot");
+          if (!box) return;
+          box.innerHTML = "";
+          var h = document.createElement("h1");
+          h.textContent = title;
+          h.style.cssText = "font-size:20px;margin:0 0 10px";
+          var p = document.createElement("p");
+          p.textContent = detail;
+          p.style.cssText = "margin:0 0 12px;line-height:1.5;color:#b6c1d3";
+          var a = document.createElement("a");
+          a.href = "/api/health";
+          a.textContent = "Check the server status (/api/health)";
+          a.style.color = "#6aa8ff";
+          box.appendChild(h);
+          box.appendChild(p);
+          box.appendChild(a);
+        }
+        window.__nlfedBootFail = show;
+        setTimeout(function () {
+          if (!window.__nlfedBooted)
+            show(
+              "The application did not start",
+              "The page loaded but its JavaScript did not run. Open the browser console (F12 → Console) for the exact error. Common causes: a browser older than 2022, an extension blocking scripts, or a server that sends JavaScript files with the wrong content type (update the code and restart `python -m app run`).",
+            );
+        }, 12000);
+      })();
+    </script>
+    <script
+      type="module"
+      src="/js/app.js"
+      onerror="window.__nlfedBootFail && window.__nlfedBootFail('Could not load the application code', 'The browser refused /js/app.js. This usually means the server sent it with the wrong content type (seen on some Windows machines) or the file is missing. Update to the latest code, restart `python -m app run`, and reload with Ctrl+F5.')"
+    ></script>
   </head>
   <body>
-    <div id="app" class="app"></div>
+    <div id="app" class="app">
+      <div
+        id="boot"
+        role="status"
+        style="grid-column: 1 / -1; grid-row: 1 / -1; display: grid; place-content: center; min-height: 100vh; padding: 24px; max-width: 640px; margin: 0 auto; font-family: system-ui, sans-serif; color: #f3f6fb; background: #080d19"
+      >
+        <p style="margin: 0; color: #b6c1d3">Starting the NL Federal Election Simulator…</p>
+      </div>
+    </div>
     <noscript>This application requires JavaScript.</noscript>
   </body>
 </html>

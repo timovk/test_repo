@@ -137,7 +137,9 @@ function loadFinal(id) {
   if (finalCache.has(id)) return;
   finalCache.set(id, "loading");
   const soft = (p) => p.catch(() => null);
-  Promise.all([soft(api.get(`/api/elections/${id}/president`)), soft(api.get(`/api/elections/${id}/house`)), soft(api.get(`/api/elections/${id}/senate`))]).then(([pres, house, senate]) => {
+  // Only general (presidential-year) elections have a presidential race; don't ask otherwise.
+  const hasPresident = String(getElection(id)?.election_type || "general") === "general";
+  Promise.all([hasPresident ? soft(api.get(`/api/elections/${id}/president`)) : Promise.resolve(null), soft(api.get(`/api/elections/${id}/house`)), soft(api.get(`/api/elections/${id}/senate`))]).then(([pres, house, senate]) => {
     finalCache.set(id, { pres, house, senate });
     updateStrip();
   });
@@ -508,7 +510,12 @@ async function onRoute({ route, params, query, path }) {
   }
   document.title = `${route.title} · NL Federal Election Simulator`;
   const token = ++renderToken;
-  mount(main, h("div", { class: "state" }, h("div", { class: "skeleton", style: { width: "240px", height: "18px" } })));
+  const loading = connectingState("Loading…");
+  mount(main, loading);
+  const slowHint = setTimeout(() => {
+    if (token === renderToken && loading.isConnected)
+      mount(loading, h("div", { class: "skeleton", style: { width: "240px", height: "18px" } }), h("span", { class: "muted" }, "Still loading — the first visit to an election night prepares it on the server, which can take up to a minute on a slow machine."));
+  }, 6000);
   try {
     const mod = await import(`./views/${route.view}.js`);
     if (token !== renderToken) return;
@@ -525,6 +532,8 @@ async function onRoute({ route, params, query, path }) {
     console.error(err);
     if (token !== renderToken) return;
     mount(main, h("div", { class: "state" }, h("h2", null, "Could not load this page"), h("p", { class: "muted" }, String(err.message || err))));
+  } finally {
+    clearTimeout(slowHint);
   }
 }
 
@@ -534,11 +543,40 @@ export function selectElection(id) {
   watchNight(id);
 }
 
+/** Visible banner for unexpected errors (so a failure is never a silent endless spinner). */
+function showErrorBanner(message) {
+  let bar = document.getElementById("error-banner");
+  if (!bar) {
+    bar = h("div", { id: "error-banner", class: "error-banner", role: "alert" });
+    document.body.appendChild(bar);
+  }
+  mount(
+    bar,
+    h("strong", null, "Something went wrong: "),
+    h("span", null, String(message).slice(0, 400)),
+    h("button", { class: "btn btn--sm", onclick: () => bar.remove(), "aria-label": "Dismiss" }, "Dismiss"),
+  );
+}
+
+window.addEventListener("error", (e) => {
+  if (e?.message) showErrorBanner(e.message);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r = e?.reason;
+  if (r?.name === "AbortError") return;
+  showErrorBanner(r?.message || r || "unknown error");
+});
+
+function connectingState(text) {
+  return h("div", { class: "state" }, h("div", { class: "skeleton", style: { width: "240px", height: "18px" } }), h("span", { class: "muted" }, text));
+}
+
 async function boot() {
+  window.__nlfedBooted = true;
   const saved = safeStorage(() => localStorage.getItem(THEME_KEY));
   applyTheme(saved || "dark");
   const app = $("#app");
-  mount(app, renderStrip(), renderNav(), h("main", { class: "main", id: "main" }));
+  mount(app, renderStrip(), renderNav(), h("main", { class: "main", id: "main" }, connectingState("Connecting to the simulator…")));
   subscribe("night", updateStrip);
   subscribe("meta", () => {
     // statuses changed (e.g. a night finished): final summaries must be refetched
@@ -549,15 +587,36 @@ async function boot() {
   subscribe("settings", updateStrip);
   try {
     const [meta, settings] = await Promise.all([api.get("/api/meta"), api.get("/api/settings").catch(() => null)]);
-    if (settings?.party_colors) setState({ settings: { ...getState().settings, partyColors: settings.party_colors } });
+    if (settings)
+      setState({
+        settings: {
+          ...getState().settings,
+          partyColors: settings.party_colors || {},
+          playbackSpeed: settings.playback_speed ?? null,
+          defaultElectionId: settings.default_election_id ?? null,
+          mapMetric: settings.map_metric || null,
+        },
+      });
     setState({ meta });
     const stored = Number(safeStorage(() => localStorage.getItem(ELECTION_KEY)));
     const ids = (meta.elections || []).map((e) => e.id);
-    const initial = Number(parseHash().query.e) || (ids.includes(stored) ? stored : null) || meta.demo_election_id || ids[ids.length - 1] || null;
+    const preferred = Number(settings?.default_election_id);
+    const initial =
+      Number(parseHash().query.e) || (ids.includes(preferred) ? preferred : null) || (ids.includes(stored) ? stored : null) || meta.demo_election_id || ids[ids.length - 1] || null;
     if (initial) selectElection(initial);
   } catch (err) {
     console.error(err);
-    mount($("#main"), h("div", { class: "state" }, h("h2", null, "Backend not reachable"), h("p", { class: "muted" }, "Start the server with `python -m app run` after `python -m app demo`.")));
+    mount(
+      $("#main"),
+      h(
+        "div",
+        { class: "state" },
+        h("h2", null, "Cannot load the simulator's data"),
+        h("p", { class: "muted" }, String(err?.message || err)),
+        h("p", { class: "muted" }, "Is `python -m app run` still running? Did `python -m app demo` finish with “validation ok”?"),
+        h("button", { class: "btn btn--primary", onclick: () => location.reload() }, "Retry"),
+      ),
+    );
     return;
   }
   startRouter(onRoute);
