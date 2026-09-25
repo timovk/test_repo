@@ -139,6 +139,8 @@ export function watchedElection() {
 /** Send a playback control action and publish the resulting state. */
 export async function nightControl(action, speed) {
   const id = currentId || getState().electionId;
+  // Starting a night uses the preferred playback speed from Settings (when set).
+  if (action === "start" && speed === undefined && getState().settings?.playbackSpeed) speed = getState().settings.playbackSpeed;
   // "finish" applies every remaining reporting event and certifies the result: allow it time.
   const st = await api.post(`/api/night/${id}/control`, speed ? { action, speed } : { action }, { timeout: 300000 });
   if (Number(id) === Number(currentId)) publish(st, { authoritative: true });

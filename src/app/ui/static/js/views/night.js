@@ -498,6 +498,12 @@ export async function render(el, params, ctx) {
   /* ---------------------------------------------------------------- data */
   const presFetch = throttledFetch(
     async (signal) => {
+      // Midterm / municipal elections have no presidential race: skip the request entirely.
+      if (String(getElection(id)?.election_type || "general") !== "general") {
+        S.infoState = "none";
+        refresh();
+        return;
+      }
       try {
         const info = await api.get(`/api/elections/${id}/president`, { signal });
         S.info = info;

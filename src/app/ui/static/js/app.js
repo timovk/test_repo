@@ -137,7 +137,9 @@ function loadFinal(id) {
   if (finalCache.has(id)) return;
   finalCache.set(id, "loading");
   const soft = (p) => p.catch(() => null);
-  Promise.all([soft(api.get(`/api/elections/${id}/president`)), soft(api.get(`/api/elections/${id}/house`)), soft(api.get(`/api/elections/${id}/senate`))]).then(([pres, house, senate]) => {
+  // Only general (presidential-year) elections have a presidential race; don't ask otherwise.
+  const hasPresident = String(getElection(id)?.election_type || "general") === "general";
+  Promise.all([hasPresident ? soft(api.get(`/api/elections/${id}/president`)) : Promise.resolve(null), soft(api.get(`/api/elections/${id}/house`)), soft(api.get(`/api/elections/${id}/senate`))]).then(([pres, house, senate]) => {
     finalCache.set(id, { pres, house, senate });
     updateStrip();
   });
@@ -585,11 +587,22 @@ async function boot() {
   subscribe("settings", updateStrip);
   try {
     const [meta, settings] = await Promise.all([api.get("/api/meta"), api.get("/api/settings").catch(() => null)]);
-    if (settings?.party_colors) setState({ settings: { ...getState().settings, partyColors: settings.party_colors } });
+    if (settings)
+      setState({
+        settings: {
+          ...getState().settings,
+          partyColors: settings.party_colors || {},
+          playbackSpeed: settings.playback_speed ?? null,
+          defaultElectionId: settings.default_election_id ?? null,
+          mapMetric: settings.map_metric || null,
+        },
+      });
     setState({ meta });
     const stored = Number(safeStorage(() => localStorage.getItem(ELECTION_KEY)));
     const ids = (meta.elections || []).map((e) => e.id);
-    const initial = Number(parseHash().query.e) || (ids.includes(stored) ? stored : null) || meta.demo_election_id || ids[ids.length - 1] || null;
+    const preferred = Number(settings?.default_election_id);
+    const initial =
+      Number(parseHash().query.e) || (ids.includes(preferred) ? preferred : null) || (ids.includes(stored) ? stored : null) || meta.demo_election_id || ids[ids.length - 1] || null;
     if (initial) selectElection(initial);
   } catch (err) {
     console.error(err);
