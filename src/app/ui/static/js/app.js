@@ -19,7 +19,7 @@ import { toast } from "./components/live-toast.js";
 import { ROUTES } from "./routes.js";
 import { parseHash, startRouter } from "./router.js";
 import { getElection, getState, nightFor, partyColor, setState, subscribe } from "./store.js";
-import { nightControl, watchNight } from "./night-poller.js";
+import { nightControl, stopNight, watchNight } from "./night-poller.js";
 
 const THEME_KEY = "nlfed.theme";
 const ELECTION_KEY = "nlfed.election";
@@ -414,16 +414,63 @@ async function control(action, speed) {
   }
 }
 
+/**
+ * Whether an election can be reset to polls closing (mirrors the server rule in
+ * services/reset.py): it has been simulated, and when reported no later election is reported or
+ * has its night under way.  The server has the final word (409 with the reason).
+ */
+export function canResetElection(election, elections = getState().meta?.elections || []) {
+  if (!election || election.status === "scheduled") return false;
+  const reported = election.status === "final" || election.status === "certified";
+  if (!reported) return true;
+  const later = (e) => e.election_date > election.election_date || (e.election_date === election.election_date && e.id > election.id);
+  return !elections.some((e) => e.id !== election.id && later(e) && ["final", "certified", "live"].includes(e.status));
+}
+
+/**
+ * Reset an election to polls closing (POST /api/elections/{id}/reset): the election keeps its id
+ * and its hidden result, so its night replays the same election.  Refreshes everything and opens
+ * the election night.
+ */
+export async function resetElection(id) {
+  const res = await api.post(`/api/elections/${id}/reset`, {}, { timeout: 300000 });
+  finalCache.delete(id);
+  api.invalidate("/api/");
+  stopNight();
+  setState({ night: null });
+  try {
+    setState({ meta: await api.get("/api/meta") });
+  } catch {
+    /* the poller refreshes it later */
+  }
+  selectElection(id);
+  const target = `#/night?e=${id}`;
+  if (location.hash === target) window.dispatchEvent(new HashChangeEvent("hashchange"));
+  else location.hash = target;
+  toast(`${res?.election?.year ?? "Election"} reset to polls closing — press Start to replay the night`);
+  return res;
+}
+
+async function replay(id) {
+  try {
+    await resetElection(id);
+  } catch (err) {
+    toast(err?.message || "Could not reset the election", { kind: "error" });
+  }
+}
+
 function renderControls(m) {
   const el = $("#strip-controls");
   if (m.kind === "final") {
-    const key = `final|${m.ev?.decidedBy}|${m.election?.id}`;
+    const resettable = canResetElection(m.election);
+    const key = `final|${m.ev?.decidedBy}|${m.election?.id}|${resettable}`;
     keyed(el, key, () =>
       h(
         "div",
         { class: "lv-final" },
         h("span", { class: "pill pill--final lv-final__pill", style: { "--party": "var(--surface-3)" } }, icon("lock", { size: 11, className: "pill__icon" }), "Final"),
-        h("div", { class: "lv-final__text" }, h("span", { class: "strip__label" }, "Certified result"), h("span", { class: "lv-final__sub" }, m.ev?.decidedBy === "contingent" ? "President chosen by contingent election" : m.noPresident ? "Midterm · House, Senate, local" : "Historic election · no live controls")),
+        h("div", { class: "lv-final__text" }, h("span", { class: "strip__label" }, "Certified result"), h("span", { class: "lv-final__sub" }, m.ev?.decidedBy === "contingent" ? "President chosen by contingent election" : m.noPresident ? "Midterm · House, Senate, local" : resettable ? "Replay resets it to polls closing" : "Historic election · no live controls")),
+        resettable ? confirmButton("Replay", "reset", "Reset this election to polls closing and replay its night (the result stays the same)", () => replay(m.election.id), false) : null,
       ),
     );
     return;

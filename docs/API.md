@@ -485,7 +485,8 @@ The envelope plus `seed, scenario, contents, apportionment_id, district_plan_id,
 polls, campaigns, simulated_at, finalized_at, runs` (`{"election-setup"|"election"|"election-final":
 {id, seed, duration_s}}`), `results` (reported only — President, EV, chambers, governors,
 legislature seats, turnout, flips, recounts), `next_election_id`, `night`
-(`{available, live, clock}`) and `constitution` (totals and majorities).
+(`{available, live, clock}`), `reset` (`{allowed, reason}`, see `POST …/reset`) and
+`constitution` (totals and majorities).
 
 ### `POST /api/elections/{id}/simulate`
 
@@ -497,6 +498,20 @@ election-night timeline; SIMULATED status. 409 for live / final elections.
 Instant finish without an election night (simulates first when needed); FINAL status. 409 when
 already final or when the election is live (finish the night instead:
 `POST /api/night/{id}/control {"action": "finish"}`).
+
+### `POST /api/elections/{id}/reset`
+
+Back to polls closing, so the election night can be replayed. The election keeps its id and its
+hidden simulated result, so the replay reveals the same election. An unreported election
+(`simulated` / `live`) has its night's calls and session deleted. A reported election
+(`final` / `certified`) also has its certification undone: recount corrections are reversed from
+their audit rows; Electoral College allocations, the contingent election, chamber seats, race
+summaries and calls are removed; the office terms it started are deleted and those it ended are
+reopened. Returns the election detail plus `reset_result`
+(`{election_id, year, previous_status, status, mode: "night"|"uncertified", seconds, changed}`).
+409 for a scheduled election and for a reported election that is followed by a reported (or
+live) one — elections are certified in chronological order. `GET /api/elections/{id}` tells in
+advance: `reset: {allowed, reason}`.
 
 ---
 
@@ -848,7 +863,8 @@ winner) and the House / Senate counters are the certified seats; `snapshot.certi
 Body `{"action": "start"|"pause"|"resume"|"speed"|"step"|"finish"|"reset", "speed"?: number}`;
 returns the new state. `step` reveals the next reporting event and pauses; `finish` applies every
 remaining event and finalizes the election; `reset` returns to polls closing (refused for FINAL
-elections). 409 for invalid transitions (e.g. `pause` before `start`, or starting the night of an
+elections — use `POST /api/elections/{id}/reset`, which also undoes the certification of the most
+recent reported election). 409 for invalid transitions (e.g. `pause` before `start`, or starting the night of an
 election that can no longer be certified because a later one is FINAL), 422 for unknown actions.
 
 ### `GET /api/night/{id}/stream`
@@ -1261,7 +1277,7 @@ serve `index.html` (client-side routing); until the UI exists a placeholder page
 | GET | `/api/data/provenance` · `/api/data/validation` | 3 |
 | GET | `/api/provinces` · `/api/provinces/{code}` · `/api/municipalities` · `/api/municipalities/{code}` · `/api/apportionment` | 4 |
 | GET | `/api/districts` · `/api/districts/plan` · `/api/districts/{code}` · `/api/senate/seats` · `/api/geo/{layer}.geojson` | 4 |
-| GET/POST | `/api/elections` · GET `/api/elections/{id}` · POST `/api/elections/{id}/simulate` · POST `/api/elections/{id}/finalize` | 5 |
+| GET/POST | `/api/elections` · GET `/api/elections/{id}` · POST `/api/elections/{id}/simulate` · POST `/api/elections/{id}/finalize` · POST `/api/elections/{id}/reset` | 6 |
 | GET | `/api/elections/{id}/president` · `/electoral-college` · `/provinces` · `/provinces/{code}` · `/municipalities` · `/municipalities/{code}` · `/house` · `/house/{district}` · `/senate` · `/governors` · `/mayors` · `/races/{race}` · `/calls` · `/timeline` | 6 |
 | GET/POST | `/api/night/{id}/state` · POST `/control` · GET `/stream` · `/municipalities` · `/municipalities/{code}` · `/races/{race}` · POST `/calls/{race}/override` | 7 |
 | GET | `/api/history/summary` · `/compare` · `/closest` · `/landslides` · `/divergence` · `/municipality/{code}` · `/province/{code}` · `/district/{code}` · `/api/analytics/{id}` | 8 |

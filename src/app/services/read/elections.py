@@ -71,6 +71,7 @@ from app.services.read.live import (
     live_state,
     night_available,
 )
+from app.services.reset import can_reset
 from app.services.results import results_frame
 
 log = get_logger(__name__)
@@ -331,6 +332,8 @@ def election_detail(session: Session, ref: ElectionRef) -> dict[str, Any]:
     out = ref.envelope(**{k: v for k, v in s.items() if k not in skip})
     out["next_election_id"] = nxt
     out["night"] = night
+    allowed, why = can_reset(session, ref.id)
+    out["reset"] = {"allowed": allowed, "reason": why}
     out["constitution"] = _thresholds()
     return out
 

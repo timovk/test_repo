@@ -1217,6 +1217,11 @@ class NightManager:
                 lock = self._locks[election_id] = threading.RLock()
             return lock
 
+    def election_lock(self, election_id: int) -> threading.RLock:
+        """The per-election lock that serialises playback actions, reads and the background
+        driver; hold it while changing an election's stored rows from outside the manager."""
+        return self._election_lock(int(election_id))
+
     def _time(self, now: float | None) -> float:
         return float(self._clock() if now is None else now)
 

@@ -118,3 +118,38 @@ def test_candidates(client: TestClient) -> None:
     assert serving["total"] == 1 and serving["candidates"][0]["offices"] == ["PRES"]
     assert client.get("/api/candidates/999999").status_code == 404
     assert client.get("/api/candidates?limit=0").status_code == 422
+
+
+def test_reset_final_election_replays_identically(rw_client: TestClient, api_world) -> None:  # type: ignore[no-untyped-def]
+    e = api_world.hidden_id
+    detail = rw_client.get(f"/api/elections/{e}").json()
+    assert detail["reset"]["allowed"] is True
+    final = rw_client.post(f"/api/elections/{e}/finalize").json()
+    first = rw_client.get(f"/api/elections/{e}/president").json()
+    assert first["results_source"] == "final"
+    # the founding election is followed by a reported one: history stays immutable
+    blocked = rw_client.post(f"/api/elections/{api_world.final_id}/reset")
+    assert blocked.status_code == 409 and "most recent reported" in blocked.json()["detail"]
+    assert rw_client.get(f"/api/elections/{api_world.final_id}").json()["reset"]["allowed"] is False
+
+    r = rw_client.post(f"/api/elections/{e}/reset")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["reset_result"]["election_id"] == e and body["reset_result"]["previous_status"] == "final"
+    assert body["election"]["status"] == "simulated"
+    assert rw_client.get(f"/api/elections/{e}/president").json()["results_source"] == "hidden"
+    state = rw_client.get(f"/api/night/{e}/state").json()
+    assert state["clock"]["status"] == "ready" and state["snapshot"]["seq"] == 0
+    assert state["election_status"] == "simulated"
+
+    again = rw_client.post(f"/api/elections/{e}/finalize").json()
+    assert again["results"]["president"] == final["results"]["president"]
+    second = rw_client.get(f"/api/elections/{e}/president").json()
+    assert second["tickets"] == first["tickets"]
+
+
+def test_reset_refuses_scheduled_and_unknown(rw_client: TestClient) -> None:
+    created = rw_client.post("/api/elections", json={"scenario": "midterm-2026", "seed": 5}).json()
+    r = rw_client.post(f"/api/elections/{created['election']['id']}/reset")
+    assert r.status_code == 409 and "not been simulated" in r.json()["detail"]
+    assert rw_client.post("/api/elections/9999/reset").status_code == 404

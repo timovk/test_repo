@@ -1,5 +1,5 @@
 """Write actions exposed by the API, each one a committed unit of work: create / simulate /
-finalize an election, persist UI settings and add a manual (FICTIONAL) poll.
+finalize / reset an election, persist UI settings and add a manual (FICTIONAL) poll.
 
 The election mathematics stays in :mod:`app.services.elections` (and the engines); these
 functions validate the request, call the service, commit and clear the read cache."""
@@ -103,6 +103,35 @@ def finalize_election(session: Session, ref: ElectionRef) -> dict[str, Any]:
         clear_read_cache()
         raise
     return election_detail(session, resolve_election(session, ref.id))
+
+
+def reset_election(session: Session, ref: ElectionRef) -> dict[str, Any]:
+    """``POST /api/elections/{id}/reset`` — back to polls closing so the election night can be
+    run again.  The election keeps its id and its hidden result, so the replay reveals the same
+    election; a reported election has its certification undone (recount corrections reversed,
+    office terms restored).  Only the most recent reported election can be reset (409)."""
+    from contextlib import nullcontext
+
+    from app.services.read.elections import election_detail
+    from app.services.read.live import manager_for, night_available
+    from app.services.reset import reset_election as reset_service
+
+    manager = manager_for(session) if night_available() else None
+    lock = manager.election_lock(ref.id) if manager is not None else nullcontext()
+    with lock:
+        try:
+            result = reset_service(session, ref.id, night_manager=manager)
+            _commit(session)
+        except Exception:
+            session.rollback()
+            clear_read_cache()
+            raise
+        if manager is not None:  # a read may have reloaded the old night before the commit
+            manager.forget(ref.id)
+    log.info("election reset via API", extra=log_ctx(**result.to_dict()))
+    out = election_detail(session, resolve_election(session, ref.id))
+    out["reset_result"] = result.to_dict()
+    return out
 
 
 def update_settings(session: Session, patch: Mapping[str, Any]) -> dict[str, Any]:

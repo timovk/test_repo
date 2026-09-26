@@ -96,6 +96,13 @@ In the web UI, go to **Election Night** and press ▶. You can also watch the ni
 python -m app election-night --election demo --speed 25
 ```
 
+### Replaying a night
+
+Once a night has finished, the election is FINAL. To watch it again, press **↺ Replay** in the top bar
+(or use **Settings → Replay an election**, or `python -m app reset --election 2028`). This puts the most
+recent election back at polls closing, and it keeps the same hidden result, so the replay reveals the
+same election. To start over completely, rebuild the demo with `python -m app demo --force`.
+
 ## Step by step (what `demo` does)
 
 ```bash
@@ -113,7 +120,7 @@ python -m app election-night --election 2028         # or run it live in the UI
 python -m app run
 ```
 
-Other useful commands: `validate`, `history`, `polls`, `export`, `scenario list|show|duplicate|import|export`,
+Other useful commands: `reset`, `validate`, `history`, `polls`, `export`, `scenario list|show|duplicate|import|export`,
 and `db upgrade|current|revision`. The complete reference is in [docs/CLI.md](docs/CLI.md).
 
 ### Apportionment with the canonical data (CBS 2025)

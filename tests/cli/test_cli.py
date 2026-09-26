@@ -315,3 +315,20 @@ def test_run_command_starts_uvicorn(runner: CliRunner, monkeypatch: pytest.Monke
     assert args == ("app.api.main:create_app",)
     assert kwargs["factory"] is True and kwargs["port"] == 9999 and kwargs["host"] == "0.0.0.0"
     assert kwargs["reload"] is True
+
+
+def test_reset(cli_db: CliDB, runner: CliRunner) -> None:
+    run(runner, "finalize", "-e", "2028", "--json")
+    assert status_of(cli_db, cli_db.second) == "final"
+    run(runner, "reset", "-e", "2024", "--yes", code=_common.EXIT_CONFLICT)  # followed by 2028
+    declined = runner.invoke(app, ["reset", "-e", "2028"], input="n\n")
+    assert declined.exit_code == 1 and status_of(cli_db, cli_db.second) == "final"
+    res = as_json(run(runner, "reset", "-e", "2028", "--yes", "--json"))
+    assert (
+        res["election_id"] == cli_db.second
+        and res["previous_status"] == "final"
+        and res["mode"] == "uncertified"
+    )
+    assert status_of(cli_db, cli_db.second) == "simulated"
+    out = run(runner, "reset", "-e", "2028", "--yes").output
+    assert "reset to polls closing" in out

@@ -20,6 +20,7 @@ from app.cli.elections import (
     forecast,
     history,
     polls,
+    reset,
     simulate,
 )
 from app.cli.geography import geography_app
@@ -78,6 +79,7 @@ app.add_typer(districts_app, name="districts", help="FICTIONAL House districts: 
 app.add_typer(election_app, name="election", help="Create, list and inspect elections.")
 app.command("simulate")(simulate)
 app.command("finalize")(finalize)
+app.command("reset")(reset)
 app.command("forecast")(forecast)
 app.command("election-night")(election_night)
 app.command("export")(export)

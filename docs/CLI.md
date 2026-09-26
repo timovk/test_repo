@@ -225,6 +225,29 @@ the office holders.
 python -m app finalize --election 2028
 ```
 
+### `reset`
+
+`reset` puts an election back to polls closing so its election night can be replayed. The
+election keeps its id and its hidden simulated result, so the replay reveals exactly the same
+election:
+
+- an election that is not reported yet (`simulated` or `live`) has its night's race calls and
+  playback session deleted;
+- a reported election (`final` / `certified`) also has its certification undone: the automatic
+  recount corrections are reversed from their audit rows, the Electoral College allocations,
+  contingent election, chamber seats, race summaries and calls are removed, the office terms it
+  started are deleted and the terms it ended are reopened.
+
+Elections are certified in chronological order, so only the **most recent** reported election can
+be reset; an earlier one is refused with exit code 6 while a later election is reported (or its
+night is under way). The command asks for confirmation unless `--yes` is given.
+
+```bash
+python -m app reset --election 2028          # asks for confirmation
+python -m app reset --election 2028 --yes    # e.g. in scripts
+python -m app demo --force                   # start over completely: rebuild the demo database
+```
+
 ### `election-night`
 
 `election-night` shows a broadcast-style night in the terminal. It runs through the election-night
@@ -250,19 +273,20 @@ python -m app election-night --election 2028 --until 23:30    # pause at 23:30 (
 python -m app election-night --election 2028 --headless       # calls and periodic summaries as text
 python -m app election-night --election 2028 --instant        # every event at once, then FINAL
 python -m app election-night --election 2028 --instant --json # final state as JSON
-python -m app election-night --election 2028 --reset          # back to polls closing (not for FINAL elections)
+python -m app election-night --election 2028 --reset          # back to polls closing first, then run it
 ```
 
 Options:
 
 - `--speed`: one of 1, 2, 5, 10 or 25.
 - `--until HH:MM`: pause exactly when the simulated clock reaches that time.
-- `--reset`: delete the night's calls and session first.
+- `--reset`: reset the election to polls closing first (same as `reset`; for the most recent
+  FINAL election its certification is undone, so the night can be replayed).
 
 When the last reporting event is applied, the election is finalized once, with the night's calls.
 The final screen shows the certified outcome: races that ended the night in RECOUNT are resolved
 by the automatic recounts, so all 174 EV and every seat are allocated. A FINAL election's night
-can be displayed but not changed.
+can be displayed but not changed; use `reset` (or `--reset`) on the most recent one to replay it.
 
 ### `forecast`
 

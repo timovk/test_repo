@@ -3,11 +3,12 @@
  * theme, default playback speed for starting an election night, default election, default
  * municipality-map metric and party colour overrides (applied app-wide through
  * store.partyColor).  Party colours are FICTIONAL display data; overriding them never changes
- * any result.
+ * any result.  The "Replay an election" card resets an election to polls closing
+ * (POST /api/elections/{id}/reset) so its night can be watched again with the same result.
  */
 import { api } from "../api.js";
 import { h, mount } from "../dom.js";
-import { applyTheme } from "../app.js";
+import { applyTheme, canResetElection, resetElection } from "../app.js";
 import { card, pageHeader } from "./_shared.js";
 import { callout, humanize, statusBadge } from "../components/ana-ui.js";
 import { getState, setState } from "../store.js";
@@ -174,6 +175,7 @@ export async function render(el) {
         ),
         { categories: ["FICTIONAL"] },
       ),
+      replayCard(elections),
       card(
         "Reset",
         h(
@@ -194,6 +196,75 @@ export async function render(el) {
           ),
         ),
       ),
+    );
+  }
+
+  /* Replay: reset an election to polls closing (same id, same hidden result). */
+  function replayCard(elections) {
+    const byDate = [...elections].sort((a, b) => (a.election_date < b.election_date ? 1 : -1));
+    const eligible = byDate.filter((e) => canResetElection(e, elections));
+    const pick = { id: (eligible[0] || byDate[0])?.id ?? null };
+    const note = h("div", { class: "muted settings-row__hint" });
+    const btn = h("button", { type: "button", class: "btn" }, "Reset to polls closing");
+    let armed = null;
+    const disarm = () => {
+      clearTimeout(armed);
+      armed = null;
+      btn.textContent = "Reset to polls closing";
+      btn.classList.remove("is-armed");
+    };
+    const describe = () => {
+      const e = elections.find((x) => x.id === pick.id);
+      const ok = canResetElection(e, elections);
+      btn.disabled = !ok;
+      disarm();
+      if (!e) note.textContent = "There are no elections yet.";
+      else if (e.status === "scheduled") note.textContent = "Not simulated yet — there is no election night to replay.";
+      else if (!ok) note.textContent = "A later election is already reported (or its night is running), so this one is history. Only the most recent reported election can be reset.";
+      else if (e.status === "final" || e.status === "certified") note.textContent = "The certified result is hidden again: recount corrections, calls, seats and office terms are undone. The replayed night reveals exactly the same election.";
+      else note.textContent = "The election night goes back to polls closing; the hidden result is unchanged.";
+    };
+    btn.addEventListener("click", async () => {
+      if (!armed) {
+        btn.textContent = "Click again to reset";
+        btn.classList.add("is-armed");
+        armed = setTimeout(disarm, 4000);
+        return;
+      }
+      disarm();
+      btn.disabled = true;
+      status.textContent = "Resetting…";
+      try {
+        await resetElection(pick.id);
+      } catch (err) {
+        status.textContent = "";
+        mount(status, statusBadge("fail", `Not reset: ${err.message}`));
+        describe();
+      }
+    });
+    const select = h(
+      "select",
+      {
+        class: "select",
+        "aria-label": "Election to reset",
+        onchange: (ev) => {
+          pick.id = Number(ev.target.value);
+          describe();
+        },
+      },
+      byDate.map((e) => h("option", { value: e.id, selected: e.id === pick.id }, `${e.year} · ${e.name} (${e.status})`)),
+    );
+    describe();
+    return card(
+      "Replay an election",
+      h(
+        "div",
+        { class: "settings-list" },
+        row("Election", null, select),
+        h("div", { class: "settings-row" }, h("div", null, h("div", { class: "settings-row__label" }, "Back to polls closing"), note), h("div", { class: "settings-row__control" }, btn)),
+        callout("info", "To start over completely, rebuild the demo database from the command line: python -m app demo --force (about 2 minutes)."),
+      ),
+      { categories: ["SIMULATED"] },
     );
   }
 

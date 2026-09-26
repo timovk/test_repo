@@ -84,7 +84,13 @@ def test_headless_night_pauses_at_until_and_resumes(cli_db, runner: CliRunner, f
     assert status == "final" and ns.status == "finished"
     res = invoke(runner, "election-night", "-e", "2028", "--headless")
     assert "its night is complete" in res.output
-    invoke(runner, "election-night", "-e", "2028", "--reset", code=EXIT_CONFLICT)
+    # the most recent FINAL election can be replayed: --reset undoes its certification
+    res = invoke(runner, "election-night", "-e", "2028", "--reset", "--headless", "--until", "21:30")
+    assert "reset to polls closing" in res.output and "paused at 21:30" in res.output
+    status, ns, _ = db_state(cli_db.url, eid)
+    assert status == "live" and ns.status == "paused"
+    # the founding election is history while a later night is under way
+    invoke(runner, "election-night", "-e", "2024", "--reset", code=EXIT_CONFLICT)
 
 
 def test_live_broadcast_screen(cli_db, runner: CliRunner, fake_clock: FakeClock) -> None:  # type: ignore[no-untyped-def]
