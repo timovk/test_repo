@@ -139,9 +139,15 @@ The race caller ([RACE_CALLING.md](RACE_CALLING.md)) handles the contest rules:
 - **Yes/No questions** compare YES·(1−t) with NO·t, which handles supermajorities. A remaining
   ballot moves that gap by at most max(t, 1−t).
 
-Automatic recounts (`config/recount.yaml`) cover the new race types too. A vote-for-N recount only
-corrects misread tallies and found ballots, because a ruling on a ballot would move several marks
-at once.
+Automatic recounts (`config/recount.yaml`) cover the new race types too.
+
+- A vote-for-N race is close when its last winner and first loser are close; its top two are both
+  elected anyway. That field is bunched (a water board elects 9 of about 18 candidates, each with
+  4–6 % of the marks), so its thresholds are much tighter (0.05 points of all marks for school
+  boards, 0.003 for water boards). About 5 % of races are recounted, as for the other race types.
+- A Yes/No question is close when few votes would have to switch to cross its threshold.
+- A vote-for-N recount only corrects misread tallies and found ballots, because a ruling on a
+  ballot would move several marks at once.
 
 ## Strict date order
 

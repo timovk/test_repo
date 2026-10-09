@@ -11,11 +11,14 @@ thresholds:
   SENATE:             {margin_pct: 0.25, exact_tie: true}
   GOVERNOR:           {margin_pct: 0.25, exact_tie: true}
   MAYOR:              {margin_pct: 0.5,  exact_tie: true}
-  # in-between local contests: the margin of a vote-for-N race is last seat vs first loser; of a
-  # Yes/No question the votes that would have to switch to flip the outcome
+  # in-between local contests: the margin of a vote-for-N race is last seat vs first loser, in
+  # points of all marks; of a Yes/No question the votes that would have to switch to flip the
+  # outcome.  A vote-for-N field is bunched (a water board elects 9 of ~18 candidates at 4–6 %
+  # each), so its thresholds are much tighter: calibrated on the demo to recount about as often
+  # as the other race types (~5 % of races).
   COUNCIL_SEAT:       {margin_pct: 0.5,  exact_tie: true}
-  SCHOOL_BOARD:       {margin_pct: 0.25, exact_tie: true}
-  WATER_BOARD:        {margin_pct: 0.25, exact_tie: true}
+  SCHOOL_BOARD:       {margin_pct: 0.05, exact_tie: true}
+  WATER_BOARD:        {margin_pct: 0.003, exact_tie: true}
   BALLOT_MEASURE:     {margin_pct: 0.5,  exact_tie: true}
   RECALL:             {margin_pct: 0.5,  exact_tie: true}
 

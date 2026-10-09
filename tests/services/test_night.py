@@ -599,7 +599,7 @@ def test_recount_check_follows_the_contest_rules() -> None:
     Yes/No question is close at its threshold."""
     check = make_recount_check()
 
-    def inp(totals, seats=1, threshold=None, race_type=RaceType.WATER_BOARD):  # type: ignore[no-untyped-def]
+    def inp(totals, seats=1, threshold=None, race_type=RaceType.SCHOOL_BOARD):  # type: ignore[no-untyped-def]
         t = np.array(totals)
         keys = ["YES", "NO"] if threshold is not None else [f"c{i}" for i in range(len(t))]
         return RecountInput(
