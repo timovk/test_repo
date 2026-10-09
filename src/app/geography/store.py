@@ -166,6 +166,16 @@ def has_water_boards(year: int | None = None) -> bool:
     return is_prepared(year) and (store_dir(year) / WATER_BOARDS_FILE).exists()
 
 
+def is_current(year: int | None = None) -> bool:
+    """True when the store of ``year`` is complete for this version: prepared and, when the water
+    board source is configured, built with the water boards.  A store built by an older version
+    has none; it stays readable (:func:`is_prepared`), but ``demo`` and ``init --with-geography``
+    rebuild it so local elections get their water boards."""
+    if not is_prepared(year):
+        return False
+    return not load_geography_config().has_water_boards or has_water_boards(year)
+
+
 def load_water_boards(year: int | None = None, geometry: bool = False) -> pd.DataFrame | None:
     """The water board table (``app.geography.water_boards.BOARD_COLUMNS``; with ``geometry``
     the REAL board polygons as a GeoDataFrame, EPSG:28992), or None when the store has none."""

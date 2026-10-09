@@ -109,6 +109,10 @@ Elections are finished in strict date order. To run a later election, first fini
 ones with the **Finish earlier elections** button or `python -m app finish-earlier --election 2030`.
 Details are in [docs/LOCAL_ELECTIONS.md](docs/LOCAL_ELECTIONS.md).
 
+**Upgrading a demo built by an older version?** The election picker then lists only the big
+elections. Run `python -m app demo --force`: it rebuilds the geography with the water boards
+(a ~7 MB download) and the database with all local elections.
+
 ### Replaying a night
 
 Once a night has finished, the election is FINAL. To watch it again, press **↺ Replay** in the top bar

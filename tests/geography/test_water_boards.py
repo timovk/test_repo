@@ -448,3 +448,15 @@ def test_load_store_into_db_with_water_boards(built: dict[str, Any], db_session:
     assert sum(v is not None for v in boards.values()) == facts["n_units"] - 1
     load_into_db(db_session, 2025)  # idempotent
     assert db_session.scalar(select(func.count()).select_from(WaterBoard)) == 4
+
+
+def test_a_store_without_water_boards_is_rebuilt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store built before water boards existed stays readable but is not current: ``demo`` and
+    ``init --with-geography`` rebuild it, so an upgraded install gets its water boards."""
+    for name in store._REQUIRED:
+        (tmp_path / name).write_text("{}")
+    monkeypatch.setattr(store, "store_dir", lambda year=None: tmp_path)
+    assert store.is_prepared() and not store.has_water_boards()
+    assert store.is_current() is not store.load_geography_config().has_water_boards
+    (tmp_path / store.WATER_BOARDS_FILE).write_text("")
+    assert store.is_current()

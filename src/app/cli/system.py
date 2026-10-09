@@ -42,9 +42,9 @@ def init(
     console.print(f"database ready: {settings.db_url if '@' not in settings.db_url else '(configured URL)'}")
     if not with_geography:
         return
-    from app.geography.store import is_prepared
+    from app.geography.store import is_current
 
-    if not is_prepared(year):
+    if not is_current(year):
         with spinner("downloading and building the REAL geography …"):
             prepare_geography(year, download=True)
     with session_scope() as s, spinner("setting up the system (apportionment, districts, offices) …"):

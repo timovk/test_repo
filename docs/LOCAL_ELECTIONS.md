@@ -225,4 +225,7 @@ election day in 2030. The roughly 190 local elections it holds add about 12 minu
 - `water_board` and `geo_unit.water_board_id`.
 
 Migration `572107020ab6` adds the new columns. A database from an older version is upgraded
-automatically when the app or the CLI starts.
+automatically when the app or the CLI starts, but it holds no local elections. A geography store
+built by an older version has no water boards: `demo` and `init --with-geography` rebuild it
+(`app.geography.store.is_current`). To get the full local history, run `python -m app demo
+--force`.

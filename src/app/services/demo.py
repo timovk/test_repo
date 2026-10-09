@@ -260,15 +260,18 @@ def build_demo(
     def geography() -> tuple[str, str]:
         if synthetic:
             return "skipped", "synthetic toy country (no REAL data needed)"
-        from app.geography.store import is_prepared, manifest
+        from app.geography.store import is_current, is_prepared, manifest
 
-        if is_prepared():
+        if is_current():
             m = manifest()
             return (
                 "skipped",
                 f"REAL CBS store {m.get('year')} present ({m.get('counts', {}).get('units', '?')} units)",
             )
+        outdated = is_prepared()  # built by an older version: no water boards yet
         prepare_geography(download=True)
+        if outdated:
+            return "done", "rebuilt the REAL CBS store with the water boards"
         return "done", "downloaded and built the REAL CBS store"
 
     b.run("geography", geography)
