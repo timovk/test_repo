@@ -1,14 +1,14 @@
 # Database
 
 The NL Federal Election Simulator persists everything relationally through SQLAlchemy 2 models
-(`src/app/models/`, 55 tables) and Alembic migrations (`src/app/db/migrations/`). The default
+(`src/app/models/`, 56 tables) and Alembic migrations (`src/app/db/migrations/`). The default
 database is SQLite (`data/nlfed.db`); PostgreSQL works through `NLFED_DATABASE_URL`. Models hold
 no election logic: pure engines compute, and the services layer (`src/app/services/`) translates
 between rows and engine types and owns every transaction.
 
 > **REAL vs FICTIONAL.** Each table below belongs to one data category
 > (`app.core.constitution.DataCategory`). The REAL tables hold official Dutch geography and
-> statistics (CBS / PDOK). The FICTIONAL tables hold the invented federal system, parties and
+> statistics (CBS / PDOK) and the water authority areas (Het Waterschapshuis / PDOK). The FICTIONAL tables hold the invented federal system, parties and
 > people. The SIMULATED tables hold model output. No table mixes REAL facts with invented values
 > without labelling them: DERIVED columns (estimated eligible voters, imputed demographics) are
 > flagged where they live.
@@ -27,9 +27,42 @@ between rows and engine types and owns every transaction.
 | `province_stats` | population, area, density and simplified EPSG:4326 geometry (WKB) per province and vintage |
 | `municipality` | CBS gemeenten per vintage: population, area, density, urbanity class, centroids, geometry |
 | `municipality_demographics` | CBS indicators per municipality (`imputed_fields` lists DERIVED values) |
-| `geo_unit` | CBS buurten, used as precincts: population, `eligible_voters_est` (DERIVED), wijk code, centroid |
+| `geo_unit` | CBS buurten, used as precincts: population, `eligible_voters_est` (DERIVED), wijk code, centroid, `water_board_id` (DERIVED assignment, see below) |
 | `geo_unit_demographics` | CBS indicators per buurt (`imputed_fields` lists DERIVED values) |
+| `water_board` | the 21 water authorities (*waterschappen*) per vintage: `code` (`WS33`), `name`, `province_id`, `population`, `area_km2`, `source_id` (section 1a) |
 | `municipality_lineage` | mergers and splits between vintages, with population weights |
+
+#### 1a. Water boards
+
+`water_board` (unique `vintage_id, code`) holds one row per REAL water board of a vintage. The
+areas come from Het Waterschapshuis (INSPIRE administrative units, PDOK, CC0 1.0; the
+`data_source` row `water_boards_<year>`); see docs/DATA_PROVENANCE.md §1a.
+
+| column | meaning | category |
+|---|---|---|
+| `code` | `WS` + the two-digit national water board code (`au:nationalCode`), e.g. `WS33` | REAL |
+| `name` | official name, e.g. *Waterschap Hunze en Aa's* | REAL |
+| `area_km2` | area of the published board polygon (EPSG:28992), water included | REAL |
+| `population` | sum of the populations of the buurten assigned to the board | DERIVED |
+| `province_id` | the province holding most of the board's estimated eligible voters; it would hold the board's (fictional) election | DERIVED |
+| `source_id` | the `data_source` of the areas (NULL for the synthetic test geography) | |
+
+`geo_unit.water_board_id` (nullable, indexed) links every buurt to the board whose area contains
+its representative point (its centroid, or a point on its surface when the centroid lies outside
+the buurt); a buurt outside every polygon falls back to the nearest board within 2 km
+(`config/geography.yaml`, `water_boards.nearest_max_m`) and stays NULL beyond that. With the 2025
+geography all 14,729 buurten lie inside a board polygon, so none is NULL. A buurt crossed by a
+board boundary belongs to one board as a whole. Water boards cross municipal and provincial
+borders, so they are not part of the province → municipality → buurt hierarchy.
+
+`app.geography.loader_db.sync_water_boards` writes both, idempotently: boards are upserted by
+code (ids are kept), boards that disappear are deleted after their buurten are detached, and only
+buurten whose board changed are updated. `load_into_db` passes the store's `water_boards.parquet`;
+an older store without water boards leaves existing rows alone. `services.runtime.get_frame`
+reads the rows into `GeographyFrame.water_board_*` / `unit_water_board` (−1 = no board). The
+synthetic test geography has 4 boards (`WS01`–`WS04`, "Synthetic Water Board 1" …) made of
+vertical bands of municipalities; they cross province borders. Anything *elected* in a water board
+is FICTIONAL and lives in the election tables.
 
 ### FICTIONAL (the invented system, its actors and scenarios)
 
@@ -81,11 +114,28 @@ comes from the REAL store, from a registered synthetic test geography, or from t
 
 ---
 
+### Local elections (FICTIONAL / SIMULATED)
+
+In-between local elections ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)) reuse the election tables:
+
+- `election.election_type = 'local'` with `election.province_id` (one province, one date).
+- `race.race_type`: `SCHOOL_BOARD`, `WATER_BOARD`, `BALLOT_MEASURE`, `RECALL`, `COUNCIL_SEAT`,
+  plus special `MAYOR` races.
+- `race.threshold` is the YES share a question needs.
+- `race.details_json` holds the contest data (measure text and topic, board seats up and terms,
+  recall target, vacancy reason, term end). After certification it also holds `winners`,
+  `passed`, `yes_share`, `seat_assignment`, `recall_passed`, `moot` and `ended_holder_id`; a
+  reset removes these.
+- `office` rows per school board / water board seat (`SB-GM0363-3`, `WB-WS33-1`) and per council
+  (`COUNCIL-GM0363`: winners of council-seat special elections).
+- For vote-for-N races, `election_result.votes` counts marks and `turnout_result.valid_votes`
+  counts valid ballots.
+
 ## 2. Key relationships
 
 ```
 geo_vintage ─┬─ municipality ── geo_unit ─── district_assignment ── house_district ── district_plan ── apportionment
-province ────┘        │               │                                   │
+province ────┘        │               │  └── water_board (vintage, province)  │
                       │               └── election_result.geo_unit_id     └── office (HOUSE-<code>, by district code)
 senate_seat ── office (SEN-<PV>-<n>)      governor_seat / mayor_seat ── office          legislature (provincial | municipal)
 
@@ -238,6 +288,12 @@ tables exist. The downgrade clears and drops it before dropping `ballot_candidat
 create the schema with `Base.metadata.create_all`, which is equivalent; `alembic check` reports no
 difference.
 
+Revision `572107020ab6` (local elections) adds, among other changes, the `water_board` table and
+the nullable, indexed foreign key `geo_unit.water_board_id`. A database upgraded from an earlier
+revision has no water boards until the geography is loaded again (`python -m app geography load`
+or the bootstrap): the store rebuilt with water boards has a new fingerprint, so the loader
+re-synchronises the vintage in place and fills both.
+
 PostgreSQL notes: install the `postgres` extra (`psycopg[binary]`). Long constraint names are
 truncated with a hash (63-character limit). All `IN (…)` queries are chunked.
 
@@ -251,6 +307,7 @@ races incl. 342 mayors and 342 councils, `demo-2028` 195 races):
 | table | rows |
 |---|---|
 | `geo_unit`, `geo_unit_demographics`, `district_assignment` | 14,729 each |
+| `water_board` | 21 |
 | `municipality` / `legislature` / `office` | 342 / 354 / 542 |
 | `election_result` | 686,000 / 355,000 / 553,000 per election (≈ 85 % at unit level) |
 | `turnout_result` | 106,000 / 58,000 / 86,000 per election |

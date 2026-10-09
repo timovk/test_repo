@@ -152,6 +152,12 @@ class CycleContents:
     def has_elections(self) -> bool:
         return self.election_type is not None
 
+    @classmethod
+    def local(cls, day: date) -> CycleContents:
+        """The contents of an in-between local election day: none of the regular offices."""
+        t = datetime.combine(day, time(0, 0))
+        return cls(day.year, day, ElectionType.LOCAL, False, False, (), False, False, False, False, t, t)
+
     @property
     def offices(self) -> list[OfficeType]:
         """Office types regularly elected this year."""

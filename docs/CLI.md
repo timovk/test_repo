@@ -65,10 +65,15 @@ are skipped when you run it again.
    (generated from `--seed`), Senate seats, offices and legislatures.
 4. **history:** `founding-2024` and `midterm-2026` are each created, simulated, run through a
    complete election night at once and finalized, so every race call is stored.
-5. **demo-2028:** created and simulated, then left **SIMULATED**. Its election night starts at
+5. **local elections:** every in-between local election before the 2026 midterm, and every one
+   between the midterm and 2028, is held in date order the same way
+   ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). `--no-local-elections` skips them.
+6. **demo-2028:** created and simulated, then left **SIMULATED**. Its election night starts at
    polls closing: 0 EV allocated, 174 available, **88 TO WIN**.
-6. **forecast:** a 2028 Monte Carlo forecast (`--forecast-simulations`, seed `--seed`).
-7. **validate:** `app_meta.demo_election_id` is set and `validate_system` must pass.
+7. **scheduled local elections:** the local elections after 2028, up to the next regular
+   election day, are created (not simulated).
+8. **forecast:** a 2028 Monte Carlo forecast (`--forecast-simulations`, seed `--seed`).
+9. **validate:** `app_meta.demo_election_id` is set and `validate_system` must pass.
 
 ```bash
 python -m app demo                                  # data/nlfed.db
@@ -76,6 +81,7 @@ python -m app demo --force                          # rebuild the database from 
 python -m app demo --seed 7 --forecast-simulations 0
 python -m app demo --synthetic --database-url sqlite:///tmp/toy.db   # offline toy country
 python -m app demo --json                           # summary with per-step timings
+python -m app demo --no-local-elections             # only the big November elections (faster)
 ```
 
 Options:
@@ -247,6 +253,30 @@ python -m app reset --election 2028          # asks for confirmation
 python -m app reset --election 2028 --yes    # e.g. in scripts
 python -m app demo --force                   # start over completely: rebuild the demo database
 ```
+
+### `local calendar | list | create | schedule` and `finish-earlier`
+
+In-between local elections (school boards, water boards, ballot measures, special elections and
+mayor recalls; [LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). A local election is one province on
+one of its local election days.
+
+```bash
+python -m app local calendar                      # the next 12 months of local election days
+python -m app local calendar --year 2029 -p GE    # one year, one province
+python -m app local list --year 2027              # the stored local elections
+python -m app local create -p GE -d 2029-03-14 --simulate
+python -m app local schedule --until 2030-11-05   # create every planned local election up to a date
+python -m app finish-earlier --election 2030      # hold every unfinished election before 2030, oldest first
+```
+
+Elections are certified in strict date order. `finalize`, `election-night` and the UI refuse an
+election while an earlier one is unfinished (exit code 6). Once local elections are in use, a
+planned local election that has not been created yet also counts as unfinished. `finish-earlier`
+creates, simulates and runs an instant election night for every unfinished election before the
+given one (`--limit N` stops after N).
+
+`--election latest` and `--election <year>` address the regular elections; local elections are
+addressed by id.
 
 ### `election-night`
 

@@ -7,6 +7,10 @@ canonical 12 provinces, but every geometry and number here is synthetic.
 Layout: provinces are a 4 × 3 grid of squares; each province is a grid of square units
 (``cells`` × ``cells``); municipalities are rectangular blocks of units.  The first
 municipality of each province is a dense "city" large enough to require splitting.
+
+Water boards (:func:`synthetic_water_boards`): the municipalities, ordered west → east, are cut
+into 4 vertical bands of roughly equal population.  Like the real water boards they cross
+province borders and split several provinces between two boards; every unit is assigned.
 """
 
 from __future__ import annotations
@@ -16,10 +20,16 @@ from dataclasses import dataclass
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
 from shapely.geometry import box
 
 from app.core.rng import make_rng
 from app.geography.frame import DEMOGRAPHIC_VARIABLES, GeographyFrame
+from app.geography.topology import dissolve_coverage
+from app.geography.water_boards import summarize_water_boards
+
+#: Number of water boards of the synthetic country.
+SYNTHETIC_WATER_BOARDS = 4
 
 PROVINCES: list[tuple[str, str, str]] = [
     ("GR", "PV20", "Groningen"),
@@ -59,10 +69,13 @@ UNIT_COLUMNS: tuple[str, ...] = (
 @dataclass
 class SyntheticGeography:
     frame: GeographyFrame
-    units: gpd.GeoDataFrame  # UNIT_COLUMNS + DEMOGRAPHIC columns + 'imputed_fields' + geometry (EPSG:28992)
+    #: UNIT_COLUMNS + DEMOGRAPHIC columns + 'imputed_fields' + 'water_board_code' + geometry (EPSG:28992)
+    units: gpd.GeoDataFrame
     municipalities: gpd.GeoDataFrame
     provinces: gpd.GeoDataFrame
     unit_adjacency: pd.DataFrame  # columns: a, b, shared_border_m, kind
+    #: Store-schema water board table (``app.geography.water_boards.BOARD_COLUMNS`` + geometry)
+    water_boards: gpd.GeoDataFrame | None = None
 
 
 def synthetic_geography(
@@ -156,10 +169,71 @@ def synthetic_geography(
     munis["name"] = [f"Gemeente {c}" for c in munis["code"]]
     provinces = gpd.GeoDataFrame(prov_rows, geometry="geometry", crs="EPSG:28992")
     adjacency = _grid_adjacency(units)
-    frame = frame_from_tables(units, munis, provinces, year=0)
+    water_boards, unit_board = synthetic_water_boards(units, munis, list(provinces["code"]))
+    units["water_board_code"] = unit_board.to_numpy(dtype=object)
+    frame = frame_from_tables(units, munis, provinces, year=0, water_boards=water_boards)
     return SyntheticGeography(
-        frame=frame, units=units, municipalities=munis, provinces=provinces, unit_adjacency=adjacency
+        frame=frame,
+        units=units,
+        municipalities=munis,
+        provinces=provinces,
+        unit_adjacency=adjacency,
+        water_boards=water_boards,
     )
+
+
+def synthetic_water_boards(
+    units: gpd.GeoDataFrame,
+    municipalities: gpd.GeoDataFrame,
+    province_codes: list[str],
+    n_boards: int = SYNTHETIC_WATER_BOARDS,
+) -> tuple[gpd.GeoDataFrame, pd.Series]:
+    """Deterministic toy water boards ``WS01`` … ``WS0n`` ("Synthetic Water Board 1" …).
+
+    Municipalities are ordered west → east by the x of their centroid and cut into ``n_boards``
+    vertical bands of roughly equal population (each municipality goes to the band holding the
+    midpoint of its cumulative population; municipalities with the same x stay together).  With
+    the default layout every board spans several provinces and several provinces are split
+    between two boards.  A board's geometry is the union of its municipalities.
+
+    Returns the store-schema board table and the board code of every unit (aligned with ``units``).
+    """
+    munis = municipalities.sort_values("code").reset_index(drop=True)
+    x = np.round(shapely.get_x(shapely.centroid(np.asarray(munis.geometry.values, dtype=object))), 3)
+    pop = (
+        units.groupby("municipality_code")["population"]
+        .sum()
+        .reindex(munis["code"])
+        .fillna(0)
+        .to_numpy(float)
+    )
+    xs, inverse = np.unique(x, return_inverse=True)
+    pop_x = np.bincount(inverse, weights=pop, minlength=len(xs))
+    total = pop_x.sum()
+    mid = np.cumsum(pop_x) - pop_x / 2.0
+    band_x = (
+        np.floor(n_boards * mid / total).astype(np.int64)
+        if total > 0
+        else np.floor(n_boards * np.arange(len(xs)) / max(len(xs), 1)).astype(np.int64)
+    )
+    band = np.clip(band_x[inverse], 0, n_boards - 1)
+    codes = np.array([f"WS{b + 1:02d}" for b in band], dtype=object)
+    muni_board = pd.Series(codes, index=munis["code"].to_numpy())
+    keys, geoms = dissolve_coverage(np.asarray(munis.geometry.values, dtype=object), codes)
+    boards = gpd.GeoDataFrame(
+        {
+            "code": keys.astype(str),
+            "name": [f"Synthetic Water Board {int(k[2:])}" for k in keys],
+            "national_code": np.array([int(k[2:]) for k in keys], dtype=np.int64),
+        },
+        geometry=gpd.GeoSeries(geoms, crs=municipalities.crs),
+        crs=municipalities.crs,
+    )
+    unit_board = units["municipality_code"].map(muni_board)
+    table = summarize_water_boards(
+        boards, units.assign(water_board_code=unit_board.to_numpy()), province_codes
+    )
+    return table, unit_board
 
 
 def _synthetic_demo(rng: np.random.Generator, density: float) -> dict[str, float]:
@@ -200,12 +274,18 @@ def _grid_adjacency(units: gpd.GeoDataFrame) -> pd.DataFrame:
 
 
 def frame_from_tables(
-    units: pd.DataFrame, munis: pd.DataFrame, provinces: pd.DataFrame, year: int
+    units: pd.DataFrame,
+    munis: pd.DataFrame,
+    provinces: pd.DataFrame,
+    year: int,
+    water_boards: pd.DataFrame | None = None,
 ) -> GeographyFrame:
     """Build a :class:`GeographyFrame` from unit/municipality/province tables with the store schema.
 
     ``provinces`` must be in canonical order (column ``code``); ``munis`` needs ``code``,
-    ``name``, ``province_code``; ``units`` needs UNIT_COLUMNS + DEMOGRAPHIC_VARIABLES.
+    ``name``, ``province_code``; ``units`` needs UNIT_COLUMNS + DEMOGRAPHIC_VARIABLES.  With a
+    ``water_boards`` table (``code``, ``name``, ``province_code``) and a ``water_board_code`` unit
+    column the frame's water board fields are filled too (``unit_water_board`` −1 = none).
     """
     pcodes = list(provinces["code"])
     pidx = {c: i for i, c in enumerate(pcodes)}
@@ -235,6 +315,17 @@ def frame_from_tables(
                 for f in str(fields).split(","):
                     if f in DEMOGRAPHIC_VARIABLES:
                         imputed[i, DEMOGRAPHIC_VARIABLES.index(f)] = True
+    wb: dict[str, object] = {}
+    if water_boards is not None and "water_board_code" in units.columns:
+        boards = water_boards.sort_values("code").reset_index(drop=True)
+        bcodes = [str(c) for c in boards["code"]]
+        bidx = {c: i for i, c in enumerate(bcodes)}
+        wb = {
+            "water_board_codes": bcodes,
+            "water_board_names": [str(n) for n in boards["name"]],
+            "water_board_province": boards["province_code"].map(pidx).fillna(-1).to_numpy(dtype=np.int64),
+            "unit_water_board": units["water_board_code"].map(bidx).fillna(-1).to_numpy(dtype=np.int64),
+        }
     return GeographyFrame(
         year=year,
         province_codes=pcodes,
@@ -258,4 +349,5 @@ def frame_from_tables(
         demo_names=DEMOGRAPHIC_VARIABLES,
         unit_demo=demo,
         unit_demo_imputed=imputed,
+        **wb,  # type: ignore[arg-type]
     )

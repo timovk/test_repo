@@ -182,3 +182,47 @@ def test_setup_rejects_missing_geography(fresh_session) -> None:  # type: ignore
 
     with pytest.raises(DataNotPreparedError):
         ensure_apportionment(fresh_session)
+
+
+# --------------------------------------------------------------------------- water boards
+def test_frame_has_the_synthetic_water_boards(world) -> None:  # type: ignore[no-untyped-def]
+    """The synthetic system loads 4 REAL-schema water boards; ``get_frame`` attaches them from the
+    database (every unit assigned, boards crossing province borders)."""
+    from app.models import WaterBoard
+
+    s = world.session
+    frame = get_frame(s)
+    assert frame.n_water_boards == 4 and frame.water_board_codes == ["WS01", "WS02", "WS03", "WS04"]
+    assert frame.water_board_names[0] == "Synthetic Water Board 1"
+    assert frame.unit_water_board is not None and (frame.unit_water_board >= 0).all()
+    assert frame.validate() == []
+    rows = s.execute(select(WaterBoard.code, WaterBoard.id, WaterBoard.population)).tuples().all()
+    ids = {code: wid for code, wid, _ in rows}
+    assert frame.water_board_ids is not None
+    assert frame.water_board_ids.tolist() == [ids[c] for c in frame.water_board_codes]
+    pops = {code: pop for code, _, pop in rows}
+    assert frame.to_water_boards(frame.unit_population).tolist() == [pops[c] for c in frame.water_board_codes]
+    crossing = [
+        w
+        for w in range(frame.n_water_boards)
+        if len(np.unique(frame.unit_province[frame.units_in_water_board(w)])) > 1
+    ]
+    assert crossing, "at least one water board must cross a province border"
+    # the database assignment equals the registered synthetic geography's
+    base = synthetic_world(1).frame
+    assert np.array_equal(frame.unit_water_board, base.unit_water_board)
+    assert np.array_equal(frame.water_board_province, base.water_board_province)
+    assert s.scalar(select(func.count()).select_from(GeoUnit).where(GeoUnit.water_board_id.is_(None))) == 0
+
+
+def test_setup_synthetic_keeps_water_board_ids(fresh_session) -> None:  # type: ignore[no-untyped-def]
+    from app.models import WaterBoard
+
+    s = fresh_session
+    setup_synthetic_system(s, seed=3)
+    first = dict(s.execute(select(WaterBoard.code, WaterBoard.id)).tuples().all())
+    units = dict(s.execute(select(GeoUnit.cbs_code, GeoUnit.water_board_id)).tuples().all())
+    setup_synthetic_system(s, seed=3)
+    assert dict(s.execute(select(WaterBoard.code, WaterBoard.id)).tuples().all()) == first
+    assert dict(s.execute(select(GeoUnit.cbs_code, GeoUnit.water_board_id)).tuples().all()) == units
+    assert len(first) == 4 and None not in units.values()

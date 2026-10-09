@@ -487,6 +487,27 @@ promises.)
 
 ---
 
+## 7a. In-between local contests
+
+Local elections ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)) use the same model with the
+environment of the latest regular election, plus an off-cycle turnout shift
+(`config/local.yaml` → `turnout_logit_shift`).
+
+- **Lines without a party** take their support from every party by ideological closeness: the
+  routing used for independents, through `BallotLine.ideology`. These are nonpartisan school
+  board and water board candidates, and the YES / NO sides of ballot measures and recalls (YES
+  at the topic's lean, NO at the opposite). A Yes/No side's `quality` is its appeal (a logit
+  shift), not a candidate effect.
+- **Vote for up to N** (`ElectoralSystem.PLURALITY_AT_LARGE`): `RaceVotes.votes` counts marks
+  and `marks_per_ballot = N`. Each valid ballot marks 1..N lines (on average
+  `1 + at_large_mark_fill × (N − 1)`). Mark shares are flattened first preferences
+  (`∝ p^(1/at_large_flatten)`), and a line gets at most one mark per ballot. Tabulation elects
+  the top N; a tie across the last seat is drawn by seeded lot.
+- **Yes/No questions** (`ElectoralSystem.QUESTION`, `RaceSpec.threshold`) pass when
+  YES·(1−t) > NO·t for a simple majority (a tie fails), or ≥ for supermajorities.
+- `race_line_sd_by_race` gives measures, recalls and nonpartisan boards much larger race-specific
+  shocks. `undervote_by_race` adds blank ballots for contests lower down a local ballot.
+
 ## 8. Reproducibility
 
 * All randomness flows from `app.core.rng.make_rng(seed, *keys)`; no global RNG state.

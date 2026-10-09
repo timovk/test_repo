@@ -141,6 +141,28 @@ def mayors(ref: ElectionDep, session: SessionDep, province: str | None = None) -
     return respond(el.mayors(session, ref, province))
 
 
+@router.get("/{election_id}/races", summary="Every race as a searchable list (local election results page)")
+def races(
+    ref: ElectionDep,
+    session: SessionDep,
+    q: str | None = Query(None, description="search race names, places and candidates"),
+    type: str | None = Query(None, description="race type(s), comma separated, e.g. BALLOT_MEASURE"),
+    municipality: str | None = Query(None, description="CBS municipality code"),
+    sort: Literal["name", "type"] = "name",
+) -> ApiJSON:
+    return respond(el.race_list(session, ref, q=q, race_type=type, municipality=municipality, sort=sort))
+
+
+@router.post("/{election_id}/finish-earlier", summary="Finish every earlier election (strict date order)")
+def finish_earlier(ref: ElectionDep, session: SessionDep) -> ApiJSON:
+    return respond(actions.finish_earlier(session, ref))
+
+
+@router.get("/{election_id}/earlier", summary="What must be finished before this election can be certified")
+def earlier(ref: ElectionDep, session: SessionDep) -> ApiJSON:
+    return respond(el.earlier(session, ref))
+
+
 @router.get("/{election_id}/races/{race}", summary="Any race: lines, result, calls, recounts, breakdown")
 def race(ref: ElectionDep, race: str, session: SessionDep) -> ApiJSON:
     return respond(el.race_detail(session, ref, race))

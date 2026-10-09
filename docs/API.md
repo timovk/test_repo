@@ -513,6 +513,50 @@ reopened. Returns the election detail plus `reset_result`
 live) one — elections are certified in chronological order. `GET /api/elections/{id}` tells in
 advance: `reset: {allowed, reason}`.
 
+### `GET /api/elections/{id}/races?q=&type=&municipality=&sort=name|type`
+
+Every race of the election as a compact, searchable list (the local election results page; works
+for every election). `q` matches race names, places and candidate names; `type` takes race types,
+comma separated (`SCHOOL_BOARD,BALLOT_MEASURE`). Per race: `code, name, type, province_code,
+municipality_code, municipality_name, status, reporting_pct, is_special, vote_for, candidates,
+leader, leader_party, leader_color, leader_pct, winners` (names), `decided, question, label,
+title, threshold, passed, passing, yes_pct, moot` and `top` (the best lines). Results follow the
+hidden-until-reported rule. Also `count` and `counts` (per race type).
+
+### `GET /api/elections/{id}/earlier` · `POST /api/elections/{id}/finish-earlier`
+
+Elections are certified in strict date order ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)).
+`earlier` reports what must be finished first: `count`, `unreported` (`[{id, name, date,
+status}]`), `unreported_count`, `not_created_count` (planned local elections not created yet) and
+`first`. `finish-earlier` creates, simulates and runs an instant election night for each of them,
+oldest first, committing each one. It can take minutes; it returns the same shape plus
+`finished` (ids). `finalize` and starting a night answer 409 while `count > 0`.
+
+### Local elections: `GET /api/local/calendar` · `GET /api/local/elections` · `POST /api/local/elections` → 201
+
+- `GET /api/local/calendar?start=&end=&province=` returns the planned local election days
+  (default: the 12 months after the latest reported election, at most three years). Per day:
+  `province_code, date, slot, name, municipalities, races, counts` (school_board, water_board,
+  measure, mayor_special, council_seat, recall), `contests` (`[{kind, code, name,
+  municipality_code}]`), `election_id` and `status`. Also `province_days` (each province's
+  `{month, occurrence}` rules).
+- `GET /api/local/elections?year=&province=` lists the stored local elections, newest first,
+  with `races` and `race_counts`.
+- `POST /api/local/elections {province_code, date, simulate?}` creates the local election of a
+  province on one of its local days. It answers 409 when that election exists, when the province
+  holds no local election that day, or when a later election is already reported.
+
+Election briefs (`/api/meta`, every envelope) carry `local` and `province_code`. Race views
+(§2.4) of local contests add `contest`:
+- the contest data: `kind, label, title, summary, measure_kind, threshold, vote_for, body,
+  water_board, seats_total, seats_up, cycle, reason, event_date, target_name, target_party,
+  vacated_party, parent, replacement_race, term_start, term_end, nonpartisan`;
+- reported only: `passed, yes_share, moot, recall_passed, seat_assignment`;
+- live only: `passing`.
+
+They also add `winners` (every elected line key of a vote-for-N race) and `winner_names`. Night
+snapshot races add `called_keys, seats, threshold, passing`.
+
 ---
 
 ## 6. Results pages

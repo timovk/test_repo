@@ -16,6 +16,8 @@ from app.core.config import load_config
 from app.core.constitution import PROVINCE_COUNT
 
 SourceKind = Literal["file", "wfs_geojson", "odata"]
+#: Category of an external dataset (``app.core.constitution.DataCategory``); sources are REAL.
+SourceCategory = Literal["REAL", "DERIVED"]
 
 
 class SourceSpec(BaseModel):
@@ -32,6 +34,8 @@ class SourceSpec(BaseModel):
     kind: SourceKind | None = None
     #: Page size used for WFS paging (``count``/``startIndex``) when the server caps results.
     page_size: int = Field(1000, ge=1)
+    #: Data category recorded with the provenance (``data_source.data_category``).
+    data_category: SourceCategory = "REAL"
 
     def resolved_kind(self) -> SourceKind:
         if self.kind:
@@ -68,6 +72,19 @@ class SimplifyConfig(BaseModel):
     municipalities_m: float = Field(80.0, ge=0)
     districts_m: float = Field(80.0, ge=0)
     units_m: float = Field(20.0, ge=0)
+    water_boards_m: float = Field(150.0, ge=0)
+
+
+class WaterBoardConfig(BaseModel):
+    """Assignment of units to the REAL water board areas (:mod:`app.geography.water_boards`)."""
+
+    #: Key of the source holding the water board areas; no water boards are built when it is not
+    #: configured under ``sources``.
+    source: str = "water_boards"
+    #: A unit whose representative point lies outside every board polygon is assigned to the
+    #: nearest board when that board is at most this far away (metres); otherwise it stays
+    #: unassigned.  ``0`` disables the fallback.
+    nearest_max_m: float = Field(2000.0, ge=0)
 
 
 class AdjacencyConfig(BaseModel):
@@ -89,6 +106,7 @@ class GeographyConfig(BaseModel):
     eligible_voters: EligibleVotersConfig = Field(default_factory=EligibleVotersConfig)
     simplify: SimplifyConfig = Field(default_factory=SimplifyConfig)
     adjacency: AdjacencyConfig = Field(default_factory=AdjacencyConfig)
+    water_boards: WaterBoardConfig = Field(default_factory=WaterBoardConfig)
     provinces: list[ProvinceSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -114,6 +132,11 @@ class GeographyConfig(BaseModel):
             if p.code == code:
                 return p
         raise KeyError(code)
+
+    @property
+    def has_water_boards(self) -> bool:
+        """True when the water board source is configured (the store then has water boards)."""
+        return self.water_boards.source in self.sources
 
     def source(self, key: str) -> SourceSpec:
         try:

@@ -33,6 +33,7 @@ from app.models.geography import (
     MunicipalityLineage,
     Province,
     ProvinceStats,
+    WaterBoard,
 )
 from app.models.meta import AppMeta
 from app.models.offices import (
@@ -122,5 +123,6 @@ __all__ = [
     "SimulationRun",
     "TurnoutResult",
     "Vacancy",
+    "WaterBoard",
     "utcnow",
 ]

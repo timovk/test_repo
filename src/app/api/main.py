@@ -46,6 +46,7 @@ from app.api.routers import (
     forecast,
     geography,
     history,
+    local,
     meta,
     night,
     polls,
@@ -97,6 +98,9 @@ def create_app(
     """
     settings = get_settings()
     url = db_url or settings.db_url
+    from app.db.migrate import ensure_current
+
+    ensure_current(url)  # a database from an older version gets the new tables and columns
     if cors_origins is None:
         env = os.environ.get(CORS_ENV, "")
         cors_origins = [o.strip() for o in env.split(",") if o.strip()]
@@ -162,6 +166,7 @@ def create_app(
         geography,
         districts,
         elections,
+        local,
         night,
         forecast,
         polls,

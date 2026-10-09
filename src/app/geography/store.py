@@ -4,6 +4,7 @@
     if is_prepared():
         frame = load_frame()            # cached GeographyFrame (≈1 s, no geometry read)
         units = load_units_gdf(2025)    # full-resolution GeoDataFrame (EPSG:28992)
+        boards = load_water_boards(2025)  # REAL water board areas + DERIVED totals (None if absent)
 
 Every loader raises :class:`~app.core.errors.DataNotPreparedError` when the store (or the requested
 file) is missing.
@@ -30,7 +31,9 @@ from app.geography.synthetic import UNIT_COLUMNS, frame_from_tables
 
 log = get_logger(__name__)
 
-WEB_LAYERS = ("provinces", "municipalities", "units")
+WEB_LAYERS = ("provinces", "municipalities", "units", "water_boards")
+#: Store file of the water boards (schema 3+; older stores have none and stay readable).
+WATER_BOARDS_FILE = "water_boards.parquet"
 _REQUIRED = (
     "manifest.json",
     "provinces.parquet",
@@ -106,6 +109,10 @@ def _frame_cached(year: int, directory: str, _mtime_ns: int) -> GeographyFrame:
     d = Path(directory)
     with Timer(log, f"load_frame({year})"):
         unit_cols = [*UNIT_COLUMNS, *DEMOGRAPHIC_VARIABLES, "imputed_fields"]
+        boards = None
+        if (d / WATER_BOARDS_FILE).exists() and "water_board_code" in _columns(d / "units_attrs.parquet"):
+            unit_cols.append("water_board_code")
+            boards = pd.read_parquet(d / WATER_BOARDS_FILE, columns=["code", "name", "province_code"])
         units = pd.read_parquet(d / "units_attrs.parquet", columns=unit_cols)
         munis = pd.read_parquet(d / "municipalities.parquet", columns=["code", "name", "province_code"])
         cfg = load_geography_config()
@@ -116,8 +123,14 @@ def _frame_cached(year: int, directory: str, _mtime_ns: int) -> GeographyFrame:
                 "cbs_code": [p.cbs_code for p in cfg.provinces],
             }
         )
-        frame = frame_from_tables(units, munis, provinces, year=year)
+        frame = frame_from_tables(units, munis, provinces, year=year, water_boards=boards)
     return frame
+
+
+def _columns(path: Path) -> list[str]:
+    import pyarrow.parquet as pq
+
+    return list(pq.read_schema(path).names)
 
 
 # --------------------------------------------------------------------------- tables
@@ -148,6 +161,22 @@ def _read_geo(year: int | None, name: str, columns: list[str] | None) -> gpd.Geo
     return gpd.read_parquet(path, columns=columns)
 
 
+def has_water_boards(year: int | None = None) -> bool:
+    """True when the store of ``year`` has water boards (built by schema 3+ with the source)."""
+    return is_prepared(year) and (store_dir(year) / WATER_BOARDS_FILE).exists()
+
+
+def load_water_boards(year: int | None = None, geometry: bool = False) -> pd.DataFrame | None:
+    """The water board table (``app.geography.water_boards.BOARD_COLUMNS``; with ``geometry``
+    the REAL board polygons as a GeoDataFrame, EPSG:28992), or None when the store has none."""
+    path = _require(year, "manifest.json").parent / WATER_BOARDS_FILE
+    if not path.exists():
+        return None
+    if geometry:
+        return gpd.read_parquet(path)
+    return pd.read_parquet(path, columns=[c for c in _columns(path) if c != "geometry"])
+
+
 def load_unit_adjacency(year: int | None = None) -> pd.DataFrame:
     """Unit edge table ``a, b, shared_border_m, kind, gap_m`` (``kind``: border | water_link)."""
     return pd.read_parquet(_require(year, "unit_adjacency.parquet"))
@@ -159,8 +188,9 @@ def load_municipality_adjacency(year: int | None = None) -> pd.DataFrame:
 
 
 def web_geojson_path(year: int | None, layer: str, province: str | None = None) -> Path:
-    """Path of a web GeoJSON layer: ``'provinces'``, ``'municipalities'`` or unit layers as
-    ``'units/<PV>'`` / ``layer='units', province='<PV>'`` (2-letter province code)."""
+    """Path of a web GeoJSON layer: ``'provinces'``, ``'municipalities'``, ``'water_boards'``
+    (stores with water boards) or unit layers as ``'units/<PV>'`` / ``layer='units',
+    province='<PV>'`` (2-letter province code)."""
     name = layer.strip().strip("/")
     if name.endswith(".geojson"):
         name = name[: -len(".geojson")]

@@ -25,11 +25,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_constitution
-from app.core.constitution import ElectionStatus, RaceType
+from app.core.constitution import ElectionStatus, ElectionType, RaceType
 from app.core.errors import ElectionError, ScenarioError
 from app.core.logging import Timer, get_logger, log_ctx
 from app.core.rng import config_hash
@@ -95,6 +96,7 @@ log = get_logger(__name__)
 
 __all__ = [
     "create_election",
+    "earlier_unfinished",
     "election_summary",
     "finalize_election",
     "instant_finalize",
@@ -102,6 +104,7 @@ __all__ = [
     "president_holder",
     "reported_on_or_after",
     "require_certifiable",
+    "require_earlier_finished",
     "simulate_election",
 ]
 
@@ -481,11 +484,19 @@ def simulate_election(session: Session, election_id: int, *, seed: int | None = 
         counts = store_results(session, inputs, draw.races)
         el.national_environment_json = dumps(draw.environment)
         night = load_night_config()
+        # a local election is counted only where it is held (the units of its races)
+        local = el.election_type == ElectionType.LOCAL.value
+        mask = None
+        if local:
+            mask = np.zeros(inputs.frame.n_units, dtype=bool)
+            for r in inputs.races.values():
+                mask[np.asarray(r.unit_index, dtype=np.int64)] = True
         tl = generate_timeline(
             inputs.frame,
             draw.turnout.ballots_cast,
             night,
             seed=int(el.seed),
+            units_mask=mask,
             election_date=el.election_date,
             unit_wijk=_unit_wijk(session, inputs),
         )
@@ -493,8 +504,9 @@ def simulate_election(session: Session, election_id: int, *, seed: int | None = 
         if problems:
             raise ElectionError(f"invalid reporting timeline: {problems}")
         meta = store_timeline(session, inputs, tl)
-        total_b = int(draw.turnout.ballots_cast.sum())
-        total_e = int(draw.turnout.eligible.sum())
+        in_scope = slice(None) if mask is None else mask
+        total_b = int(draw.turnout.ballots_cast[in_scope].sum())
+        total_e = int(draw.turnout.eligible[in_scope].sum())
         rec.summary.update(
             {
                 "races": len(draw.races),
@@ -516,14 +528,27 @@ def simulate_election(session: Session, election_id: int, *, seed: int | None = 
 def reported_on_or_after(
     session: Session, election_date: date, *, exclude_id: int | None = None
 ) -> int | None:
-    """Id of a reported (FINAL / CERTIFIED) election held on or after ``election_date``."""
-    q = select(Election.id).where(
+    """Id of a reported (FINAL / CERTIFIED) election held on or after ``election_date`` that
+    blocks certifying an election of that date.  Local elections of different provinces held on
+    the same day are independent of each other (``exclude_id`` names the election asking)."""
+    asking = session.get(Election, int(exclude_id)) if exclude_id is not None else None
+    q = select(Election).where(
         Election.status.in_(list(REPORTED_STATUSES)),
         Election.election_date >= election_date,
     )
     if exclude_id is not None:
         q = q.where(Election.id != int(exclude_id))
-    return session.scalars(q.order_by(Election.election_date, Election.id).limit(1)).first()
+    for other in session.scalars(q.order_by(Election.election_date, Election.id)):
+        if (
+            other.election_date == election_date
+            and asking is not None
+            and asking.election_type == ElectionType.LOCAL.value
+            and other.election_type == ElectionType.LOCAL.value
+            and asking.province_id != other.province_id
+        ):
+            continue
+        return int(other.id)
+    return None
 
 
 def require_certifiable(session: Session, election_date: date, *, exclude_id: int | None = None) -> None:
@@ -536,6 +561,53 @@ def require_certifiable(session: Session, election_date: date, *, exclude_id: in
         raise ElectionError(
             f"election {later} on or after {election_date} is already final; elections are finalized "
             "in chronological order, so an election of that date can no longer be certified"
+        )
+
+
+def earlier_unfinished(session: Session, election_id: int) -> dict[str, Any]:
+    """What must be finished before ``election_id`` can be certified (strict date order): the
+    unreported elections held before it and — once local elections are in use — the planned
+    local elections before it that have not been created yet."""
+    from app.services import local as local_service
+
+    el = get_election(session, election_id)
+    pending = local_service.unreported_before(session, el.election_date, exclude_id=el.id)
+    missing = (
+        local_service.missing_local_before(session, el.election_date)
+        if local_service.local_elections_enabled(session)
+        else []
+    )
+    first = pending[0] if pending else None
+    return {
+        "election_id": el.id,
+        "count": len(pending) + len(missing),
+        "unreported": [
+            {"id": e.id, "name": e.name, "date": e.election_date.isoformat(), "status": e.status}
+            for e in pending[:50]
+        ],
+        "unreported_count": len(pending),
+        "not_created_count": len(missing),
+        "first": None
+        if first is None and not missing
+        else (
+            {"id": first.id, "name": first.name, "date": first.election_date.isoformat()}
+            if first is not None
+            else {"id": None, "name": missing[0].name, "date": missing[0].day.date.isoformat()}
+        ),
+    }
+
+
+def require_earlier_finished(session: Session, election_id: int) -> None:
+    """Strict date order: refuse to certify (or to start the night of) an election while an
+    earlier election is still unfinished."""
+    info = earlier_unfinished(session, election_id)
+    if info["count"]:
+        f = info["first"] or {}
+        raise ElectionError(
+            f"{info['count']} earlier election(s) must be finished first (elections are certified in "
+            f"date order; the first is {f.get('name')} on {f.get('date')}). Finish them with "
+            "`finish earlier` (POST /api/elections/{id}/finish-earlier or "
+            "`python -m app finish-earlier`)"
         )
 
 
@@ -563,6 +635,7 @@ def finalize_election(
     if el.status == ElectionStatus.SCHEDULED.value:
         raise ElectionError(f"election {el.id} has not been simulated")
     require_certifiable(session, el.election_date, exclude_id=el.id)
+    require_earlier_finished(session, el.id)
     if inputs is None or votes is None:
         inputs = election_inputs(session, el.id)
         race_votes = load_final_race_votes(session, el.id, inputs, with_expectation=False)
@@ -651,7 +724,10 @@ def _contents(session: Session, el: Election) -> dict[str, Any]:
         "municipal": types.get(RaceType.MAYOR.value, 0) > 0
         or types.get(RaceType.MUNICIPAL_COUNCIL.value, 0) > 0,
         "race_counts": {k: int(v) for k, v in sorted(types.items())},
-        "founding": cyc.is_founding,
+        "founding": cyc.is_founding and el.election_type != ElectionType.LOCAL.value,
+        # in-between local election: school boards, water boards, measures, specials, recalls
+        "local": el.election_type == ElectionType.LOCAL.value,
+        "province_code": el.province.code if el.province_id is not None and el.province is not None else None,
     }
 
 

@@ -30,18 +30,20 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.constitution import ElectionStatus
+from app.core.constitution import ElectionStatus, ElectionType
 from app.core.errors import ValidationError
 from app.core.logging import get_logger, log_ctx
 from app.core.rng import derive_seed
 from app.core.settings import get_settings
-from app.models import Election, Scenario, SimulationRun
+from app.elections.calendar import ElectionCalendar
+from app.models import Election, Province, Scenario, SimulationRun
 from app.scenarios.loader import load_scenario
 from app.services._common import REPORTED_STATUSES, set_meta
 
@@ -212,6 +214,7 @@ def build_demo(
     synthetic: bool = False,
     election_seed: int | None = None,
     workers: int = 0,
+    local_elections: bool = True,
 ) -> DemoSummary:
     """Build (or complete) the demo world; returns a :class:`DemoSummary` with per-step timings.
 
@@ -224,6 +227,9 @@ def build_demo(
         synthetic: use the synthetic toy country instead of the REAL geography (offline tests).
         election_seed: derive every election's seed from this value (default: scenario seeds).
         workers: worker processes of districting and forecasting (0 = automatic).
+        local_elections: hold every in-between local election from the founding election up
+            to the demo election (each through an instant election night), and schedule the
+            local elections up to the next regular election day after it.
 
     Raises:
         ValidationError: the finished system fails :func:`validate_system`.
@@ -314,8 +320,63 @@ def build_demo(
             )
         return "done", f"election {eid}: " + ", ".join(parts)
 
-    for slug in HISTORY_SCENARIOS:
+    # ---- in-between local elections (docs/LOCAL_ELECTIONS.md), held in date order
+    def local_until(until: date) -> tuple[str, str]:
+        from app.services import local as local_service
+
+        with b.session() as s:
+            lo = local_service.latest_reported_date(s) or date(1900, 1, 1)
+            cal = local_service.get_local_calendar(s)
+            days = cal.days(lo, until - timedelta(days=1))
+        held = skipped = 0
+        name = f"local elections before {until.isoformat()}"
+        for i, day in enumerate(days):
+            with b.session() as s:
+                eid = s.scalar(
+                    select(Election.id)
+                    .join(Province, Province.id == Election.province_id)
+                    .where(
+                        Election.election_type == ElectionType.LOCAL.value,
+                        Election.election_date == day.date,
+                        Province.code == day.province_code,
+                    )
+                )
+                if eid is None:
+                    plan = local_service.plan_for(s, day.province_code, day.date)
+                    if not plan.contests:
+                        continue
+                    eid = local_service.create_local_election(s, day.province_code, day.date, plan=plan).id
+                el = s.get(Election, eid)
+                assert el is not None
+                if el.status in REPORTED_STATUSES:
+                    skipped += 1
+                    continue
+                if el.status == ElectionStatus.SCHEDULED.value:
+                    simulate_election(s, eid)
+            with b.session() as s:
+                run_instant_night(s, eid)
+            held += 1
+            if (i + 1) % 10 == 0 or i + 1 == len(days):
+                b.notify(name, "progress", f"{i + 1}/{len(days)} local days ({day.date.isoformat()})")
+        if not held:
+            return (
+                "skipped",
+                f"{skipped} local elections already held" if skipped else "no local elections due",
+            )
+        return "done", f"{held} local elections held ({skipped} already held)"
+
+    def regular_date(slug: str) -> date:
+        doc = load_scenario(slug)
+        return doc.scenario.election_date or ElectionCalendar.from_config().election_date(doc.scenario.year)
+
+    for k, slug in enumerate(HISTORY_SCENARIOS):
+        if local_elections and k > 0:
+            until = regular_date(slug)
+            b.run(f"local elections before {slug}", lambda until=until: local_until(until))
         b.run(f"election {slug}", lambda slug=slug: history(slug))
+    if local_elections and HISTORY_SCENARIOS:
+        until = regular_date(LIVE_SCENARIO)
+        b.run(f"local elections before {LIVE_SCENARIO}", lambda until=until: local_until(until))
 
     # ---- 5. the live demo election, simulated and ready at polls closing
     def live() -> tuple[str, str]:
@@ -380,6 +441,22 @@ def build_demo(
         return "done", detail
 
     b.run("forecast", forecast)
+
+    # ---- the local elections after the demo election, scheduled (not simulated)
+    def scheduled_locals() -> tuple[str, str]:
+        from app.services import local as local_service
+
+        cal = ElectionCalendar.from_config()
+        start = regular_date(LIVE_SCENARIO)
+        nxt = cal.election_date(cal.next_election_year(start.year))
+        with b.session() as s:
+            ids = local_service.ensure_local_elections(s, nxt - timedelta(days=1), after=start)
+        if not ids:
+            return "skipped", "the local elections up to the next regular election exist"
+        return "done", f"{len(ids)} local elections scheduled up to {nxt.isoformat()}"
+
+    if local_elections:
+        b.run("scheduled local elections", scheduled_locals)
 
     # ---- 7. demo election id + validation
     def finish() -> tuple[str, str]:

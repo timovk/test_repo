@@ -76,11 +76,15 @@ def check_levels(levels: Mapping[str, pd.DataFrame], n_lines: int) -> list[str]:
     if problems:
         return problems
     arrays = {name: _level_arrays(df, n_lines) for name, df in levels.items()}
+    marks = max(int(df.attrs.get("marks_per_ballot", 1) or 1) for df in levels.values())
     for name, (votes, counts, _geos) in arrays.items():
         if (votes < 0).any() or any((v < 0).any() for v in counts.values()):
             problems.append(f"{name}: negative counts")
-        if not np.array_equal(votes.sum(axis=1), counts["valid_votes"]):
+        line_sum, valid = votes.sum(axis=1), counts["valid_votes"]
+        if marks <= 1 and not np.array_equal(line_sum, valid):
             problems.append(f"{name}: line votes do not sum to valid_votes")
+        if marks > 1 and ((line_sum < valid) | (line_sum > valid * marks)).any():
+            problems.append(f"{name}: marks do not fit the valid ballots (vote for up to {marks})")
         if not np.array_equal(
             counts["valid_votes"] + counts["blank"] + counts["invalid"], counts["ballots_cast"]
         ):
@@ -361,10 +365,11 @@ def replace_race_results(
     f = inputs.frame
     res_updates = []
     turn_updates = []
+    multi = after.marks_per_ballot > 1
     for r in changed.tolist():
         u = int(after.unit_index[r])
         gk = f"U:{int(f.unit_ids[u])}"
-        valid = int(after.votes[r].sum())
+        valid = int(after.votes[r].sum())  # line votes (marks in a vote-for-N race): share base
         for j, bid in enumerate(line_ids):
             v = int(after.votes[r, j])
             res_updates.append(
@@ -377,7 +382,7 @@ def replace_race_results(
                 "r": race_id,
                 "g": gk,
                 "c": cast,
-                "va": valid,
+                "va": int(after.valid_ballots[r]) if multi else valid,
                 "bl": int(after.blank[r]),
                 "iv": int(after.invalid[r]),
                 "tp": 100.0 * cast / el if el > 0 else 0.0,

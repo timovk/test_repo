@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session
 from app.core.constitution import ElectionStatus, RaceStatus, RaceType
 from app.core.errors import ElectionError, NotFoundError
 from app.core.logging import Timer, get_logger, log_ctx
-from app.elections.types import RaceVotes
 from app.models import (
     ContingentElection,
     Election,
@@ -182,6 +181,7 @@ def _uncertify(session: Session, el: Election) -> dict[str, int]:
         ),
     )
     out.update(_undo_office_terms(session, el))
+    out.update(_undo_local_outcomes(session, el))
     _run(
         session,
         update(Race)
@@ -234,6 +234,30 @@ def _undo_office_terms(session: Session, el: Election) -> dict[str, int]:
     return {"office_terms_removed": len(ids), "office_terms_reopened": reopened}
 
 
+def _undo_local_outcomes(session: Session, el: Election) -> dict[str, int]:
+    """Local elections: reopen the term ended at a vacancy (special elections) and drop the
+    certification results stored in ``race.details_json`` (winners, passed, …)."""
+    from app.services._common import dumps, loads
+    from app.services._local_finalize import CERTIFICATION_KEYS
+
+    reopened = 0
+    for race in session.scalars(
+        select(Race).where(Race.election_id == el.id, Race.details_json.is_not(None))
+    ):
+        d = loads(race.details_json) or {}
+        ended = d.get("ended_holder_id")
+        if ended is not None:
+            h = session.get(OfficeHolder, int(ended))
+            if h is not None and h.ended_on is not None:
+                h.ended_on = None
+                h.end_reason = None
+                reopened += 1
+        if any(k in d for k in CERTIFICATION_KEYS):
+            race.details_json = dumps({k: v for k, v in d.items() if k not in CERTIFICATION_KEYS}) or None
+    session.flush()
+    return {"vacated_terms_reopened": reopened}
+
+
 def _reverse_recounts(session: Session, el: Election) -> int:
     """Put the stored results back to the count before the automatic recounts, from the audit
     rows (votes and the invalid pile minus each adjustment's delta, ballots cast minus the net
@@ -274,9 +298,7 @@ def _reverse_recounts(session: Session, el: Election) -> int:
             else:
                 v[r, col_of[int(a.ballot_candidate_id)]] -= d
             cast[r] -= d
-        original = RaceVotes(
-            race_key=rv.race_key,
-            line_keys=list(rv.line_keys),
+        original = rv.like(
             unit_index=np.array(rv.unit_index, copy=True),
             votes=v,
             ballots_cast=cast,

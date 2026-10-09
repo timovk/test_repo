@@ -96,6 +96,19 @@ In the web UI, go to **Election Night** and press ▶. You can also watch the ni
 python -m app election-night --election demo --speed 25
 ```
 
+### Local elections in between
+
+Between the big November elections every province holds about four **local election days** a
+year: school boards, water boards (the REAL water authorities), ballot measures, special elections
+for vacant offices and mayor recalls. That's about 50 local elections a year, each holding one
+province's races on one day. The demo holds every one of them from 2024 up to the 2028 general
+election. In the app, see **Local results** and **Local calendar**; on the command line, see
+`python -m app local calendar` and `python -m app local list`.
+
+Elections are finished in strict date order. To run a later election, first finish the earlier
+ones with the **Finish earlier elections** button or `python -m app finish-earlier --election 2030`.
+Details are in [docs/LOCAL_ELECTIONS.md](docs/LOCAL_ELECTIONS.md).
+
 ### Replaying a night
 
 Once a night has finished, the election is FINAL. To watch it again, press **↺ Replay** in the top bar
@@ -120,7 +133,7 @@ python -m app election-night --election 2028         # or run it live in the UI
 python -m app run
 ```
 
-Other useful commands: `reset`, `validate`, `history`, `polls`, `export`, `scenario list|show|duplicate|import|export`,
+Other useful commands: `local calendar|list|create|schedule`, `finish-earlier`, `reset`, `validate`, `history`, `polls`, `export`, `scenario list|show|duplicate|import|export`,
 and `db upgrade|current|revision`. The complete reference is in [docs/CLI.md](docs/CLI.md).
 
 ### Apportionment with the canonical data (CBS 2025)
@@ -233,6 +246,7 @@ legacy_web/      an unrelated static site that previously lived in this reposito
 | [SIMULATION.md](docs/SIMULATION.md) | the political model and demo calibration |
 | [FORECASTING.md](docs/FORECASTING.md) | Monte Carlo methodology |
 | [RACE_CALLING.md](docs/RACE_CALLING.md) | election-night reporting and race-calling methodology |
+| [LOCAL_ELECTIONS.md](docs/LOCAL_ELECTIONS.md) | in-between local elections: calendar, contests, strict date order |
 | [POLLING.md](docs/POLLING.md), [CAMPAIGNS.md](docs/CAMPAIGNS.md) | polls, aggregation and campaigns |
 | [ANALYTICS.md](docs/ANALYTICS.md) | metric definitions and export schemas |
 | [DATABASE.md](docs/DATABASE.md) | schema and migrations |
@@ -241,7 +255,8 @@ legacy_web/      an unrelated static site that previously lived in this reposito
 ## Data licences and attribution
 
 Geographic and demographic data: © Centraal Bureau voor de Statistiek (CBS) and PDOK, used under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Details are in
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Water authority (waterschap) boundaries:
+Het Waterschapshuis via PDOK, [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/). Details are in
 [docs/DATA_PROVENANCE.md](docs/DATA_PROVENANCE.md). All parties, candidates and pollsters are
 invented; any resemblance to real persons or organisations is coincidental. The vendored
 Leaflet library (BSD-2-Clause) and the Inter and JetBrains Mono fonts (SIL OFL 1.1) keep their licence files

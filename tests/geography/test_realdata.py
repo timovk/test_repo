@@ -155,3 +155,32 @@ def test_load_real_store_into_db(db_session) -> None:  # type: ignore[no-untyped
     t0 = time.perf_counter()
     assert load_into_db(db_session).id == vintage.id  # idempotent and fast
     assert time.perf_counter() - t0 < 5.0
+
+
+def test_water_boards() -> None:
+    """The 21 REAL water boards: every buurt assigned, totals consistent, boards crossing provinces."""
+    if not store.has_water_boards():
+        pytest.skip("store predates water boards (schema 3): rebuild with build_geography")
+    import shapely
+
+    boards = store.load_water_boards()
+    units = store.load_units_attrs(columns=["code", "province_code", "population", "water_board_code"])
+    assert len(boards) == 21 and boards["code"].str.fullmatch(r"WS\d{2}").all()
+    assert (
+        boards["code"].is_unique
+        and boards["province_code"].isin(load_geography_config().province_codes).all()
+    )
+    assert units["water_board_code"].isin(set(boards["code"])).mean() > 0.999
+    assert int(boards["population"].sum()) == int(
+        units.loc[units["water_board_code"].notna(), "population"].sum()
+    )
+    assert (units.groupby("water_board_code")["province_code"].nunique() > 1).any()
+    counts = store.manifest()["counts"]
+    assert counts["units_water_board_none"] <= 10
+    assert counts["units_water_board_within"] + counts["units_water_board_nearest"] >= len(units) - 10
+    frame = store.load_frame()
+    assert frame.n_water_boards == 21 and frame.unit_water_board is not None
+    assert frame.validate() == []
+    web = pyogrio.read_dataframe(store.web_geojson_path(None, "water_boards"))
+    geoms = np.asarray(web.geometry.values, dtype=object)
+    assert len(web) == 21 and shapely.is_valid(geoms).all() and not shapely.is_empty(geoms).any()

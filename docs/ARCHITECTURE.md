@@ -76,7 +76,8 @@ Directory `data/processed/geo_<year>/` produced by `app.geography.build.build_ge
 |---|---|
 | `provinces.parquet` | GeoParquet EPSG:28992: `code, cbs_code, name, population, area_km2, land_area_km2, geometry` |
 | `municipalities.parquet` | GeoParquet EPSG:28992: `code, name, province_code, population, eligible_voters_est, area_km2, land_area_km2, density, urbanity_class, address_density, centroid_x, centroid_y, centroid_lon, centroid_lat, <demographics…>, imputed_fields, geometry` |
-| `units.parquet` | GeoParquet EPSG:28992, one row per **land** CBS buurt (including zero-population buurten so districts cover all territory): `code, name, wijk_code, municipality_code, province_code, population, eligible_voters_est, area_km2, land_area_km2, density, urbanity_class, address_density, centroid_x, centroid_y, centroid_lon, centroid_lat, <DEMOGRAPHIC_VARIABLES…>, imputed_fields, geometry` |
+| `units.parquet` | GeoParquet EPSG:28992, one row per **land** CBS buurt (including zero-population buurten so districts cover all territory): `code, name, wijk_code, municipality_code, province_code, population, eligible_voters_est, area_km2, land_area_km2, density, urbanity_class, address_density, centroid_x, centroid_y, centroid_lon, centroid_lat, <DEMOGRAPHIC_VARIABLES…>, imputed_fields, water_board_code, geometry` |
+| `water_boards.parquet` | GeoParquet EPSG:28992, one row per REAL water authority (Het Waterschapshuis, CC0): code, name, totals of its assigned buurten, `province_code` (the province holding most of its voters, which holds its election), geometry; web layer `web/water_boards.geojson` (union of the assigned buurten). See docs/LOCAL_ELECTIONS.md |
 | `units_attrs.parquet` | same as units without geometry (fast frame loading) |
 | `unit_adjacency.parquet` | `a, b, shared_border_m, kind` (`border` or `water_link`), a < b by code |
 | `municipality_adjacency.parquet` | same for municipalities |

@@ -30,11 +30,11 @@ from typing import Any
 
 import numpy as np
 
-from app.core.constitution import ElectoralSystem, RaceType
+from app.core.constitution import QUESTION_RACE_TYPES, ElectoralSystem, RaceType
 from app.core.errors import ElectionError
 from app.core.logging import Timer, get_logger
 from app.core.rng import make_rng
-from app.elections.types import BallotLine, ElectionDraw, RaceSpec, RaceVotes, UnitTurnout
+from app.elections.types import BallotLine, ElectionDraw, RaceSpec, RaceVotes, UnitTurnout, contest_rules
 from app.scenarios.schema import CandidateSpec, ScenarioDocument
 from app.simulation.spatial import gp_cholesky
 from app.simulation.structural import (
@@ -256,6 +256,10 @@ _INCUMBENCY_FIELD = {
     RaceType.SENATE: "senate",
     RaceType.GOVERNOR: "governor",
     RaceType.MAYOR: "mayor",
+    # local offices: the same local-incumbency advantage as mayors
+    RaceType.SCHOOL_BOARD: "mayor",
+    RaceType.WATER_BOARD: "mayor",
+    RaceType.COUNCIL_SEAT: "mayor",
 }
 
 
@@ -303,6 +307,11 @@ class RacePlan:
 
 
 def _line_ideology(model: StructuralModel, line: BallotLine, pidx: int, ctx: ElectionContext) -> np.ndarray:
+    if line.ideology is not None:  # nonpartisan candidates, YES / NO sides
+        vec = np.zeros(len(IDEOLOGY_DIMS))
+        vals = np.asarray(line.ideology, dtype=float)[: len(IDEOLOGY_DIMS)]
+        vec[: len(vals)] = vals
+        return vec
     cand = ctx.candidates.get(line.candidate_key or "") if line.candidate_key else None
     if cand is not None and cand.ideology is not None:
         return np.array([getattr(cand.ideology, d) for d in IDEOLOGY_DIMS], dtype=float)
@@ -360,6 +369,11 @@ def _race_effects(
     )
     race_campaign = ctx.campaign_effects.get(race.key, {})
     e = model.elasticity[units]
+    if rt in QUESTION_RACE_TYPES:
+        # Yes/No: a side's "quality" is its appeal (logit), e.g. tax measures start behind
+        for j, line in enumerate(race.lines):
+            delta[:, j] += float(line.quality)
+        return delta
     for j, line in enumerate(race.lines):
         col = delta[:, j]
         independent = line_party[j] < 0
@@ -546,7 +560,8 @@ def prepare_race(
     delta = _race_effects(model, race, ctx, units, line_party)
     env = model.scenario.environment
     invalid_p = np.clip(env.invalid_rate * model.invalid_multiplier[units], 0.0, 0.2)
-    blank_base = np.clip(env.blank_rate * model.blank_multiplier[units], 0.0, 0.2)
+    extra_blank = float(cc.undervote_by_race.get(RaceType(race.race_type).value, 0.0))
+    blank_base = np.clip(env.blank_rate * model.blank_multiplier[units] + extra_blank, 0.0, 0.3)
     plan = RacePlan(
         race=race,
         units=units,
@@ -760,8 +775,9 @@ def race_line_shocks(model: StructuralModel, race: RaceSpec, seed: int) -> np.nd
     (regional variation comes from the province / municipal / spatial shocks), so the province
     contests do not diverge through independent per-province candidate noise.
     """
-    lsd = model.config.candidates.race_line_sd
     rt = RaceType(race.race_type)
+    cc = model.config.candidates
+    lsd = float(cc.race_line_sd_by_race.get(rt.value, cc.race_line_sd))
     scope = PRESIDENTIAL_LINE_SCOPE if rt in (RaceType.PRESIDENT, RaceType.PRESIDENT_PROVINCE) else race.key
     return np.array(
         [make_rng(seed, "race", scope, "line", ln.key).standard_normal() * lsd for ln in race.lines],
@@ -908,7 +924,10 @@ def simulate_election(
             cond_blank = np.clip(blank_p / np.maximum(1.0 - plan.invalid_p, 1e-12), 0.0, 1.0)
             blank = rng.binomial(b - invalid, cond_blank).astype(np.int64)
             valid = b - invalid - blank
-            votes = _multinomial(rng, valid, shares)
+            if race.marks_per_ballot > 1:
+                votes = at_large_marks(rng, valid, shares, race.marks_per_ballot, model.config.candidates)
+            else:
+                votes = _multinomial(rng, valid, shares)
             rv = RaceVotes(
                 race_key=race.key,
                 line_keys=race.line_keys,
@@ -920,6 +939,7 @@ def simulate_election(
                 eligible=eligible[units].copy(),
                 expected_shares=plan.expected_shares,
                 expected_turnout=plan.expected_turnout,
+                **contest_rules(race),
             )
             draw.races[race.key] = rv
         for parent in parents:
@@ -951,6 +971,52 @@ def simulate_election(
             "strategic_defection": strategic_rec,
         }
     return draw
+
+
+def mark_shares(shares: np.ndarray, flatten: float) -> np.ndarray:
+    """Expected shares of the *marks* in a vote-for-N race from first-preference shares: voters
+    spread their extra marks, so marks are flatter than first preferences (∝ p^(1/flatten))."""
+    q = np.power(np.clip(shares, 1e-12, None), 1.0 / max(flatten, 1.0))
+    return q / q.sum(axis=1, keepdims=True)
+
+
+def at_large_marks(
+    rng: np.random.Generator, valid: np.ndarray, shares: np.ndarray, seats: int, cfg: Any
+) -> np.ndarray:
+    """Marks per line in a plurality-at-large race (vote for up to ``seats``).
+
+    Each valid ballot marks one to ``min(seats, L)`` candidates — on average
+    ``1 + fill × (k − 1)`` — and a candidate at most once per ballot, so no line gets more marks
+    than the unit's valid ballots (excess marks move to the other lines in proportion)."""
+    n, L = shares.shape
+    k = min(int(seats), L)
+    marks_per = 1.0 + float(cfg.at_large_mark_fill) * (k - 1)
+    total = np.minimum(np.round(valid * marks_per).astype(np.int64), valid * k)
+    total = np.maximum(total, valid)
+    q = mark_shares(shares, float(cfg.at_large_flatten))
+    votes = _multinomial(rng, total, q)
+    cap = valid.astype(np.int64)
+    for _ in range(L):
+        over = votes > cap[:, None]
+        if not over.any():
+            break
+        excess = np.where(over, votes - cap[:, None], 0).sum(axis=1)
+        votes = np.minimum(votes, cap[:, None])
+        room = np.maximum(cap[:, None] - votes, 0)
+        w = q * (room > 0)
+        wsum = w.sum(axis=1, keepdims=True)
+        add = np.floor(np.divide(w, wsum, out=np.zeros_like(w), where=wsum > 0) * excess[:, None]).astype(
+            np.int64
+        )
+        add = np.minimum(add, room)
+        votes += add
+        # whole marks lost to flooring go to the line with the most room (never above the cap)
+        rest = excess - add.sum(axis=1)
+        if (rest > 0).any():
+            j = np.argmax(np.maximum(cap[:, None] - votes, 0), axis=1)
+            r = np.arange(n)
+            votes[r, j] += np.minimum(rest, np.maximum(cap - votes[r, j], 0))
+    return votes
 
 
 def _multinomial(rng: np.random.Generator, n: np.ndarray, p: np.ndarray) -> np.ndarray:

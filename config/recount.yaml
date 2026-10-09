@@ -11,6 +11,13 @@ thresholds:
   SENATE:             {margin_pct: 0.25, exact_tie: true}
   GOVERNOR:           {margin_pct: 0.25, exact_tie: true}
   MAYOR:              {margin_pct: 0.5,  exact_tie: true}
+  # in-between local contests: the margin of a vote-for-N race is last seat vs first loser; of a
+  # Yes/No question the votes that would have to switch to flip the outcome
+  COUNCIL_SEAT:       {margin_pct: 0.5,  exact_tie: true}
+  SCHOOL_BOARD:       {margin_pct: 0.25, exact_tie: true}
+  WATER_BOARD:        {margin_pct: 0.25, exact_tie: true}
+  BALLOT_MEASURE:     {margin_pct: 0.5,  exact_tie: true}
+  RECALL:             {margin_pct: 0.5,  exact_tie: true}
 
 # How the ballots are re-examined.  A recount never re-simulates the election: a seeded sample of
 # units (polling places) is re-examined; most counts are confirmed and a few receive small,

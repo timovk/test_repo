@@ -100,7 +100,7 @@ from app.reporting.live import (
 )
 from app.services._common import REPORTED_STATUSES, bulk_insert, dumps, latest_run, loads
 from app.services._store import stitch_parent
-from app.services.elections import finalize_election, reported_on_or_after
+from app.services.elections import finalize_election, reported_on_or_after, require_earlier_finished
 from app.services.runtime import (
     ElectionInputs,
     election_inputs,
@@ -867,6 +867,10 @@ def _require_certifiable(session: Session, election_id: int) -> None:
             f"election {election_id} can no longer be certified: election {later} on or after "
             f"{election.election_date} is already final (elections are finalized in chronological order)"
         )
+    try:
+        require_earlier_finished(session, election.id)
+    except ElectionError as exc:
+        raise ElectionNightError(str(exc)) from exc
 
 
 def _lag(night: _Night, now: float) -> int:

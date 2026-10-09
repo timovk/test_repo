@@ -42,14 +42,24 @@ def run_migrations_online() -> None:
 
 
 def _run(connection) -> None:  # type: ignore[no-untyped-def]
+    sqlite = connection.dialect.name == "sqlite"
+    if sqlite:
+        # Batch migrations rebuild tables (copy, drop, rename); with foreign keys enforced, dropping
+        # a table that other rows reference fails.  The PRAGMA only works outside a transaction,
+        # so it is issued before the migration transaction starts and restored afterwards.
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
-        render_as_batch=connection.dialect.name == "sqlite",
+        render_as_batch=sqlite,
         compare_type=True,
     )
-    with context.begin_transaction():
-        context.run_migrations()
+    try:
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        if sqlite:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
 
 
 if context.is_offline_mode():

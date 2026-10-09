@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +73,11 @@ def test_build_demo_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(demo_service, "_forecast_runner", lambda: runner)
     events: list[tuple[str, str]] = []
     summary = build_demo(
-        url=url, synthetic=True, forecast_simulations=500, progress=lambda n, st, d: events.append((n, st))
+        url=url,
+        synthetic=True,
+        forecast_simulations=500,
+        progress=lambda n, st, d: events.append((n, st)),
+        local_elections=False,  # the local steps have their own tests (tests/services/test_local.py)
     )
     names = [s.name for s in summary.steps]
     assert names == [
@@ -132,7 +137,7 @@ def test_build_demo_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert (p["ev_decided_total"], p["ev_uncalled"], p["ev_total"], p["ev_needed"]) == (0, 174, 174, 88)
 
     # a second run completes nothing new
-    again = build_demo(url=url, synthetic=True, forecast_simulations=500)
+    again = build_demo(url=url, synthetic=True, forecast_simulations=500, local_elections=False)
     status = {s.name: s.status for s in again.steps}
     assert status["election founding-2024"] == "skipped"
     assert status["election demo-2028"] == "skipped"
@@ -144,13 +149,13 @@ def test_build_demo_force_and_missing_forecast(tmp_path: Path, monkeypatch: pyte
     url = f"sqlite:///{tmp_path / 'force.db'}"
     monkeypatch.setattr(demo_service, "HISTORY_SCENARIOS", ())
     monkeypatch.setattr(demo_service, "_forecast_runner", lambda: None)
-    first = build_demo(url=url, synthetic=True, forecast_simulations=100)
+    first = build_demo(url=url, synthetic=True, forecast_simulations=100, local_elections=False)
     assert {s.name: s.status for s in first.steps}["forecast"] == "warning"
     assert first.warnings and first.validation_ok
     live = first.demo_election_id
     with _scope(url) as s:
         s.get(Election, live).name = "changed by hand"
-    rebuilt = build_demo(url=url, synthetic=True, forecast_simulations=0, force=True)
+    rebuilt = build_demo(url=url, synthetic=True, forecast_simulations=0, force=True, local_elections=False)
     assert {s.name: s.status for s in rebuilt.steps}["forecast"] == "skipped"
     assert rebuilt.demo_election_id == live and rebuilt.validation_ok
     with _scope(url) as s:
@@ -169,17 +174,27 @@ def test_build_demo_real(real_frame, tmp_path: Path) -> None:  # type: ignore[no
     )
     print("database bytes:", summary.database_bytes, "nights:", summary.nights)
     assert summary.validation_ok, summary.validation_errors
-    assert seconds < 600.0  # target < 300 s on an unloaded machine
+    assert seconds < 1500.0  # target < 900 s on an unloaded machine (≈ 190 local elections included)
+    regular = Election.election_type != "local"
     with _scope(url) as s:
         counts = dict(
-            s.execute(select(Election.year, func.count(Race.id)).join(Race).group_by(Election.year))
+            s.execute(
+                select(Election.year, func.count(Race.id)).join(Race).where(regular).group_by(Election.year)
+            )
             .tuples()
             .all()
         )
         assert counts[2024] == 211 and counts[2028] == 195 and counts[2026] > 700
-        statuses = dict(s.execute(select(Election.year, Election.status)).tuples().all())
+        statuses = dict(s.execute(select(Election.year, Election.status).where(regular)).tuples().all())
         assert statuses == {2024: "final", 2026: "final", 2028: "simulated"}
-        assert s.scalar(select(func.count()).select_from(NightSession)) == 2
+        assert s.scalar(select(func.count()).select_from(NightSession).join(Election).where(regular)) == 2
+        # every local election before the 2028 general is held; later ones are scheduled
+        local = s.execute(
+            select(Election.election_date, Election.status).where(Election.election_type == "local")
+        ).all()
+        held = [st for d, st in local if d < date(2028, 11, 8)]
+        assert len(held) > 150 and set(held) == {"final"}
+        assert {st for d, st in local if d > date(2028, 11, 8)} == {"scheduled"}
     st = _night_state(url, summary.demo_election_id)
     p = st["snapshot"]["president"]
     assert (p["ev_decided_total"], p["ev_uncalled"], p["ev_total"], p["ev_needed"]) == (0, 174, 174, 88)

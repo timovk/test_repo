@@ -3,8 +3,9 @@
 Pipeline (each step timed and logged):
 
 1. **read** — land neighbourhoods (``water == 'NEE'``) of the CBS Wijk- en Buurtkaart, the
-   ``wijken``/``gemeenten`` attribute layers, the PDOK generalised province/municipality polygons and
-   the StatLine supplement (education, income, housing);
+   ``wijken``/``gemeenten`` attribute layers, the PDOK generalised province/municipality polygons,
+   the StatLine supplement (education, income, housing) and the water board areas (Het
+   Waterschapshuis GML, see :mod:`app.geography.water_boards`);
 2. **coverage repair** — sub-millimetre overlaps between a few neighbourhoods are snapped away so
    the units form a valid polygon coverage (see :mod:`app.geography.topology`);
 3. **units** — population (missing figures: municipal residual distributed and flagged),
@@ -14,6 +15,9 @@ Pipeline (each step timed and logged):
 4. **municipalities / provinces** — dissolve of the units (coverage union); each municipality is
    assigned to the generalised province polygon it overlaps most; official CBS municipal figures
    are kept alongside the canonical sums;
+   **water boards** — every unit is assigned to the water board containing its representative
+   point (nearest board within ``water_boards.nearest_max_m`` otherwise; column
+   ``water_board_code``), and the board table sums the assigned units;
 5. **adjacency** — rook adjacency of units, water links making every province graph connected,
    municipality adjacency lifted from the unit graph;
 6. **validation** — hard invariants (12 provinces, unique assignment, consistent hierarchy,
@@ -73,12 +77,22 @@ from app.geography.download import DownloadRecord, download_all
 from app.geography.frame import DEMOGRAPHIC_VARIABLES
 from app.geography.simplify import coverage_simplify, write_web_geojson
 from app.geography.topology import dissolve_coverage, repair_coverage
+from app.geography.water_boards import (
+    NEAREST,
+    NONE,
+    assign_units,
+    assignment_counts,
+    boundary_overlap,
+    read_water_boards_gml,
+    summarize_water_boards,
+)
 
 log = get_logger(__name__)
 
 #: Bump whenever the store schema or an algorithm changes (forces a rebuild).
 #: 2: joint (compositional) imputation of age bands / migration background; valid web geometry.
-SCHEMA_VERSION = 2
+#: 3: water boards (``water_boards.parquet``, ``units.water_board_code``, web layer).
+SCHEMA_VERSION = 3
 
 #: Additional REAL indicators stored next to the model variables (used by the DB loader).
 EXTRA_DEMOGRAPHICS: tuple[str, ...] = (
@@ -98,6 +112,7 @@ UNIT_BASE_COLUMNS: tuple[str, ...] = (
     "wijk_code",
     "municipality_code",
     "province_code",
+    "water_board_code",  # None when the store has no water boards or the unit lies outside all
     "population",
     "eligible_voters_est",
     "area_km2",
@@ -164,6 +179,9 @@ class RawInputs:
     supplement: pd.DataFrame
     supplement_year: int | None = None
     core_year: int | None = None
+    #: REAL water board areas (``code, name, national_code, geometry``, EPSG:28992); None when
+    #: the water board source is not configured.
+    water_boards: gpd.GeoDataFrame | None = None
 
 
 @dataclass
@@ -176,6 +194,9 @@ class GeoTables:
     unit_adjacency: pd.DataFrame
     municipality_adjacency: pd.DataFrame
     info: dict[str, Any] = field(default_factory=dict)
+    #: Board table (``app.geography.water_boards.BOARD_COLUMNS`` + REAL board polygon); None
+    #: when the water board source is not configured.
+    water_boards: gpd.GeoDataFrame | None = None
 
 
 @dataclass
@@ -406,6 +427,9 @@ def assemble_tables(
     info["imputed_units"] = {k: int(np.count_nonzero(flags[k])) for k in FLAG_ORDER if k in flags}
     info["population_imputed_units"] = int(np.count_nonzero(pop_imputed))
 
+    with _step("water board assignment", timings):
+        units, water_boards = _assign_water_boards(units, raw.water_boards, cfg, info)
+
     with _step("municipality attributes", timings):
         fallback_names = b.groupby("municipality_code")["municipality_name"].first()
         munis = _municipality_table(units, muni_codes, muni_geoms, muni_prov, gem, sup, fallback_names)
@@ -426,7 +450,48 @@ def assemble_tables(
         )
     info["unit_water_links"] = unit_adj[unit_adj["kind"] == WATER_LINK].to_dict("records")
     info["municipality_water_links"] = muni_adj[muni_adj["kind"] == WATER_LINK].to_dict("records")
-    return GeoTables(units, munis, provinces, unit_adj, muni_adj, info)
+    return GeoTables(units, munis, provinces, unit_adj, muni_adj, info, water_boards)
+
+
+def _assign_water_boards(
+    units: gpd.GeoDataFrame,
+    boards: gpd.GeoDataFrame | None,
+    cfg: GeographyConfig,
+    info: dict[str, Any],
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame | None]:
+    """Insert ``water_board_code`` into the units (after ``province_code``) and build the board
+    table; diagnostics go to ``info``.  Without water board areas the column is all None."""
+    position = int(units.columns.get_loc("province_code")) + 1
+    if boards is None:
+        units.insert(position, "water_board_code", np.full(len(units), None, dtype=object))
+        return units, None
+    assignment = assign_units(units, boards, cfg.water_boards.nearest_max_m)
+    board_codes = assignment["water_board_code"].to_numpy(dtype=object)
+    units.insert(position, "water_board_code", board_codes)
+    method = assignment["water_board_method"].to_numpy(dtype=object)
+    distance = assignment["water_board_distance_m"].to_numpy(dtype=float)
+    codes = units["code"].to_numpy(dtype=object)
+    info["water_board_counts"] = assignment_counts(assignment)
+    info["water_board_nearest"] = [
+        {
+            "code": str(codes[i]),
+            "water_board_code": str(board_codes[i]),
+            "distance_m": round(float(distance[i]), 1),
+        }
+        for i in np.flatnonzero(method == NEAREST)
+    ]
+    info["water_board_none"] = [str(codes[i]) for i in np.flatnonzero(method == NONE)]
+    outside = np.nan_to_num(
+        boundary_overlap(np.asarray(units.geometry.values, dtype=object), boards, board_codes), nan=0.0
+    )
+    population = units["population"].to_numpy(dtype=np.int64)
+    info["water_board_boundary"] = {
+        "units_crossed_by_a_board_boundary": int(np.count_nonzero(outside > 0)),
+        "units_area_outside_board_ge_10pct": int(np.count_nonzero(outside >= 0.10)),
+        "units_area_outside_board_ge_50pct": int(np.count_nonzero(outside >= 0.50)),
+        "population_area_outside_board_ge_50pct": int(population[outside >= 0.50].sum()),
+    }
+    return units, summarize_water_boards(boards, units, cfg.province_codes)
 
 
 def _municipality_table(
@@ -608,6 +673,8 @@ def validate_tables(
                 f"{int(bad_geom.sum())} units with missing, empty or invalid geometry "
                 f"(e.g. {units.loc[bad_geom, 'code'].tolist()[:5]})"
             )
+    if tables.water_boards is not None:
+        problems.extend(_validate_water_boards(tables.water_boards, units, cfg))
     if expected_municipalities is not None and set(munis["code"]) != set(expected_municipalities):
         extra = sorted(set(munis["code"]) - set(expected_municipalities))[:10]
         lacking = sorted(set(expected_municipalities) - set(munis["code"]))[:10]
@@ -626,6 +693,38 @@ def validate_tables(
         known = set(table["code"])
         if not (adj["a"].isin(known).all() and adj["b"].isin(known).all()):
             problems.append(f"{level} adjacency references unknown codes")
+    return problems
+
+
+def _validate_water_boards(
+    boards: gpd.GeoDataFrame, units: gpd.GeoDataFrame, cfg: GeographyConfig
+) -> list[str]:
+    """Invariants of the water board table.  Units outside every board are not an error here
+    (they are counted and reported as a build warning)."""
+    problems: list[str] = []
+    if boards["code"].duplicated().any():
+        problems.append("duplicate water board codes")
+    if "water_board_code" not in units.columns:
+        return [*problems, "units have no water_board_code column"]
+    assigned = units["water_board_code"].dropna().astype(str)
+    unknown = sorted(set(assigned) - set(boards["code"]))
+    if unknown:
+        problems.append(f"units reference unknown water boards {unknown[:5]}")
+    empty = boards.loc[boards["unit_count"] <= 0, "code"].tolist()
+    if empty:
+        problems.append(f"water boards without any unit: {empty}")
+    no_province = boards.loc[~boards["province_code"].isin(cfg.province_codes), "code"].tolist()
+    if no_province and not empty:
+        problems.append(f"water boards without a valid province: {no_province}")
+    in_board = units["water_board_code"].notna()
+    if int(boards["population"].sum()) != int(units.loc[in_board, "population"].sum()):
+        problems.append("water board populations do not add up to their units")
+    geoms = np.asarray(boards.geometry.values, dtype=object)
+    bad = shapely.is_missing(geoms) | shapely.is_empty(geoms) | ~shapely.is_valid(geoms)
+    if bad.any():
+        problems.append(
+            f"water boards with missing, empty or invalid geometry: {boards.loc[bad, 'code'].tolist()}"
+        )
     return problems
 
 
@@ -655,6 +754,9 @@ def read_raw_inputs(year: int, cfg: GeographyConfig, records: dict[str, Download
         supplement=cbs.read_supplement(path_of(supplement_key)),
         supplement_year=cfg.source(supplement_key).vintage_for(year),
         core_year=cfg.source("wijkenbuurten").vintage_for(year),
+        water_boards=(
+            read_water_boards_gml(path_of(cfg.water_boards.source)) if cfg.has_water_boards else None
+        ),
     )
 
 
@@ -669,6 +771,12 @@ def _parameters(cfg: GeographyConfig) -> dict[str, Any]:
         "cbs_missing_threshold": cbs.MISSING_THRESHOLD,
         "urbanity_thresholds": list(cbs.URBANITY_THRESHOLDS),
         "compositional_groups": {k: list(v) for k, v in cbs.CORE_COMPOSITIONS.items()},
+        "water_boards": {
+            **cfg.water_boards.model_dump(),
+            "enabled": cfg.has_water_boards,
+            "assignment": "representative point of the buurt (centroid if inside, else a point on its "
+            "surface) within a board polygon; else the nearest board within nearest_max_m",
+        },
     }
 
 
@@ -693,6 +801,8 @@ def store_files(cfg: GeographyConfig) -> list[str]:
         "web/provinces.geojson",
         "web/municipalities.geojson",
     ]
+    if cfg.has_water_boards:
+        files.extend(["water_boards.parquet", "web/water_boards.geojson"])
     files.extend(f"web/units/{code}.geojson" for code in cfg.province_codes)
     return files
 
@@ -749,6 +859,31 @@ def write_store(tables: GeoTables, out_dir: Path, cfg: GeographyConfig, timings:
             write_web_geojson(
                 simplified[simplified["province_code"] == code], web / "units" / f"{code}.geojson", props, 0.0
             )
+    if tables.water_boards is not None:
+        with _step("write water boards", timings):
+            tables.water_boards.to_parquet(out_dir / "water_boards.parquet", index=False, compression="zstd")
+            write_web_geojson(
+                water_board_web_table(tables.units, tables.water_boards),
+                web / "water_boards.geojson",
+                props,
+                cfg.simplify.water_boards_m,
+            )
+
+
+def water_board_web_table(units: gpd.GeoDataFrame, boards: pd.DataFrame) -> gpd.GeoDataFrame:
+    """Display geometry of the water boards: the coverage union of the buurten assigned to each
+    board (DERIVED; consistent with the unit, municipality and province layers) with the board
+    attributes.  Boards without units are left out."""
+    assigned = units[units["water_board_code"].notna()]
+    keys, geoms = dissolve_coverage(
+        np.asarray(assigned.geometry.values, dtype=object), assigned["water_board_code"].to_numpy(dtype=str)
+    )
+    shapes = gpd.GeoDataFrame(
+        {"code": keys.astype(str)}, geometry=gpd.GeoSeries(geoms, crs=units.crs), crs=units.crs
+    )
+    attrs = pd.DataFrame(boards.drop(columns="geometry", errors="ignore"))
+    merged = attrs.merge(shapes, on="code", how="inner").sort_values("code").reset_index(drop=True)
+    return gpd.GeoDataFrame(merged, geometry="geometry", crs=units.crs)
 
 
 def _library_versions() -> dict[str, str]:
@@ -878,6 +1013,21 @@ def build_geography(year: int | None = None, force: bool = False) -> BuildReport
                 "units_with_imputed_fields": int((units["imputed_fields"] != "").sum()),
                 "units_population_imputed": tables.info.get("population_imputed_units", 0),
             }
+            if tables.water_boards is not None:
+                wb_counts = tables.info.get("water_board_counts", {})
+                counts.update(
+                    {
+                        "water_boards": len(tables.water_boards),
+                        "units_water_board_within": int(wb_counts.get("within", 0)),
+                        "units_water_board_nearest": int(wb_counts.get("nearest", 0)),
+                        "units_water_board_none": int(wb_counts.get("none", 0)),
+                    }
+                )
+                if counts["units_water_board_none"]:
+                    warnings.append(
+                        f"{counts['units_water_board_none']} units lie outside every water board (more than "
+                        f"{cfg.water_boards.nearest_max_m:g} m away) and have no water board"
+                    )
             manifest: dict[str, Any] = {
                 "schema_version": SCHEMA_VERSION,
                 "year": year,
@@ -886,8 +1036,9 @@ def build_geography(year: int | None = None, force: bool = False) -> BuildReport
                 "crs": "EPSG:28992",
                 "web_crs": "EPSG:4326",
                 "data_category": {
-                    "REAL": "geometry, codes, names, population, CBS indicators",
-                    "DERIVED": "eligible_voters_est, log_density, urbanity, imputed fields, water links",
+                    "REAL": "geometry, codes, names, population, CBS indicators, water board areas",
+                    "DERIVED": "eligible_voters_est, log_density, urbanity, imputed fields, water links, "
+                    "water board assignment of units and board totals",
                 },
                 "sources": {k: records[k].to_json() for k in sorted(records)},
                 "source_years": {"core": raw.core_year, "supplement": raw.supplement_year},
@@ -910,6 +1061,8 @@ def build_geography(year: int | None = None, force: bool = False) -> BuildReport
                 "warnings": warnings,
                 "library_versions": _library_versions(),
             }
+            if tables.water_boards is not None:
+                manifest["water_boards"] = _water_board_manifest(tables, cfg)
             files = {f: _file_digest(tmp_dir / f) for f in store_files(cfg)}
             manifest["files"] = files
             timings["total"] = round(time.perf_counter() - t_start, 3)
@@ -925,16 +1078,38 @@ def build_geography(year: int | None = None, force: bool = False) -> BuildReport
 
     store.clear_cache()
     log.info(
-        "geography %d built: %d provinces, %d municipalities, %d units, population %d, %d water links",
+        "geography %d built: %d provinces, %d municipalities, %d units, population %d, %d water links, "
+        "%d water boards",
         year,
         counts["provinces"],
         counts["municipalities"],
         counts["units"],
         counts["population"],
         counts["water_links"],
+        counts.get("water_boards", 0),
         extra=log_ctx(seconds=round(total.elapsed, 1)),
     )
     return _report_from_manifest(manifest, out_dir, skipped=False)
+
+
+def _water_board_manifest(tables: GeoTables, cfg: GeographyConfig) -> dict[str, Any]:
+    """Provenance of the water board assignment (method, counts, exceptions, board totals)."""
+    boards = tables.water_boards
+    assert boards is not None
+    info = tables.info
+    return {
+        "source": cfg.water_boards.source,
+        "method": "representative point (centroid if inside the buurt, else a point on its surface) "
+        "within a REAL board polygon; else the nearest board within nearest_max_m; else none",
+        "nearest_max_m": cfg.water_boards.nearest_max_m,
+        "counts": info.get("water_board_counts", {}),
+        "nearest": info.get("water_board_nearest", []),
+        "unassigned": info.get("water_board_none", []),
+        "boundary": info.get("water_board_boundary", {}),
+        "boards": _records(
+            pd.DataFrame(boards.drop(columns="geometry")).round({"area_km2": 3}).to_dict("records")
+        ),
+    }
 
 
 def _flag_counts(flags: pd.Series) -> dict[str, int]:

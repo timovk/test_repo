@@ -1,5 +1,6 @@
 # REAL geographic data sources and the canonical province list.
-# All data below is official Dutch open data (CBS via PDOK), license CC BY 4.0.
+# All data below is official Dutch open data: CBS via PDOK (CC BY 4.0) and the water authority
+# areas of Het Waterschapshuis via PDOK (CC0 1.0).
 year: 2025
 sources:
   wijkenbuurten:
@@ -30,6 +31,17 @@ sources:
     license: "CC BY 4.0"
     filename: "kerncijfers_wijken_buurten_2022.json"
     year: 2022
+  water_boards:
+    # REAL water authority (waterschap) areas: the INSPIRE-harmonised administrative units of the 21
+    # water boards (GML, EPSG:4258 in lat/lon/height axis order).  The file holds the current
+    # boundaries (no {year} in the URL); every buurt is assigned to the board that contains its
+    # representative point (see `water_boards` below and app.geography.water_boards).
+    name: "Waterschappen Administratieve eenheden (INSPIRE geharmoniseerd)"
+    publisher: "Het Waterschapshuis via PDOK"
+    url: "https://service.pdok.nl/hwh/waterschappen-administratieve-eenheden/atom/downloads/administrativeunit.gml"
+    license: "CC0 1.0"
+    filename: "waterschappen_administratieve_eenheden.gml"
+    data_category: REAL
 
 # Eligible-voter estimate (DERIVED, documented assumption): adults (18+) approximated from the CBS
 # age bands as pct_age_25_plus + 0.7 × pct_age_15_25, times a flat citizenship/registration factor.
@@ -45,6 +57,16 @@ simplify:
   municipalities_m: 80
   districts_m: 80
   units_m: 20
+  # web layer of the water boards (the union of the buurten assigned to each board)
+  water_boards_m: 150
+
+# Water boards (waterschappen): a buurt belongs to the board whose (REAL) area contains its
+# representative point (its centroid, or a point on its surface when the centroid lies outside).
+# A point outside every board polygon (gaps between the published polygons, coastline slivers)
+# falls back to the nearest board within `nearest_max_m`; beyond that it stays unassigned.
+water_boards:
+  source: water_boards
+  nearest_max_m: 2000.0
 
 # Adjacency: units whose (slightly buffered) polygons share a border of at least `min_shared_border_m`
 # are neighbours.  Disconnected pieces (Wadden islands, Zeeland islands) are linked to the nearest

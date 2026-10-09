@@ -846,6 +846,8 @@ def store_races(
         inc_line = next((pl for pl in pr.lines if pl.line.incumbent), None)
         if inc_party is None and inc_line is not None:
             inc_party = inc_line.line.party_code
+        if inc_party is None and holder is None and spec.is_special:
+            inc_party = spec.incumbent_party  # the party of a vacated seat (special elections)
         inc_cand = (
             holder.candidate_id
             if holder is not None
@@ -907,7 +909,10 @@ def store_races(
                     "ballot_order": order,
                     "ballot_name": (ln.label or ln.key)[:200],
                     "line_key": ln.key,
-                    "quality_snapshot": float(ln.quality) if ln.candidate_key else None,
+                    # candidates' quality, or the appeal of a Yes/No side (lines with a position)
+                    "quality_snapshot": float(ln.quality)
+                    if ln.candidate_key or ln.ideology is not None
+                    else None,
                     "party_code_snapshot": party.code if party is not None else None,
                     "party_name_snapshot": ident[0] if ident else None,
                     "party_abbr_snapshot": ident[1] if ident else None,

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.constitution import (
     DECIDED_STATUSES,
     ContingentElectionMode,
+    ElectionType,
     EVAllocationMethod,
     OfficeType,
     RaceStatus,
@@ -58,6 +59,7 @@ from app.models import (
     utcnow,
 )
 from app.reporting.live import CallRecord
+from app.services import _local_finalize as _local
 from app.services._common import (
     PRESIDENT_OFFICE,
     VICE_PRESIDENT_OFFICE,
@@ -141,6 +143,8 @@ class Finalizer:
             ).where(BallotCandidate.race_id.in_(list(inputs.race_ids.values())))
         ).all()
         self.lines = {int(r[0]): _Line(int(r[0]), r[1], r[2], r[3]) for r in rows}
+        #: In-between local election (school boards, measures, specials …; _local_finalize)
+        self.local = inputs.election_type == ElectionType.LOCAL.value
 
     # ------------------------------------------------------------------ helpers
     def line(self, code: str, key: str | None) -> _Line | None:
@@ -452,6 +456,8 @@ class Finalizer:
             if row.decided_by is not None:
                 row.decided_by = row.decided_by[:24]
         self.session.flush()
+        if self.local:
+            _local.record_outcomes(self, races)
 
     # ------------------------------------------------------------------ 5 legislatures
     def legislature_seats(self) -> None:
@@ -518,6 +524,11 @@ class Finalizer:
             rid = race_rows[race_code].id if race_code else None
             installs.append((office_code, candidate_id, party_id, bounds[0], bounds[1], reason, rid))
 
+        if self.local:
+            _local.collect_installs(self, race_rows, offices, add)
+            self._install(installs, offices)
+            _local.after_install(self, race_rows)
+            return
         for code, spec in inputs.races.items():
             rt = RaceType(spec.race_type)
             winner = self.winners.get(code)

@@ -665,6 +665,7 @@ def setup_synthetic_system(
         geo.municipalities,
         geo.units,
         label=f"Synthetic test geography (seed {seed})",
+        water_boards=geo.water_boards,
     )
     register_geography_source(
         session,

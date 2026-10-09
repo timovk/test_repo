@@ -201,11 +201,32 @@ class GeoUnit(Base):
     centroid_lat: Mapped[float] = mapped_column(Float)
     centroid_x: Mapped[float] = mapped_column(Float)
     centroid_y: Mapped[float] = mapped_column(Float)
+    #: Water authority (waterschap) whose area holds the unit's representative point (REAL).
+    water_board_id: Mapped[int | None] = mapped_column(ForeignKey("water_board.id"), index=True)
 
     municipality: Mapped[Municipality] = relationship()
     demographics: Mapped[GeoUnitDemographics | None] = relationship(
         back_populates="unit", uselist=False, cascade="all, delete-orphan"
     )
+
+
+class WaterBoard(Base):
+    """A Dutch water authority (waterschap) — REAL boundaries from Het Waterschapshuis (PDOK,
+    CC0).  Its elected board is FICTIONAL (docs/LOCAL_ELECTIONS.md).  Water boards cross
+    municipal and provincial borders; ``province_id`` is the province with most of its voters,
+    which holds its election."""
+
+    __tablename__ = "water_board"
+    __table_args__ = (UniqueConstraint("vintage_id", "code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    vintage_id: Mapped[int] = mapped_column(ForeignKey("geo_vintage.id"), index=True)
+    code: Mapped[str] = mapped_column(String(8))  # national water board code, e.g. 'WS33'
+    name: Mapped[str] = mapped_column(String(120))
+    province_id: Mapped[int] = mapped_column(ForeignKey("province.id"))
+    population: Mapped[int] = mapped_column(Integer, default=0)
+    area_km2: Mapped[float] = mapped_column(Float, default=0.0)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("data_source.id"))
 
 
 class GeoUnitDemographics(DemographicsMixin, Base):
