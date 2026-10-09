@@ -11,7 +11,7 @@ with its category.
 
 ```bash
 source .venv/bin/activate
-python -m app demo                              # the reproducible demo world (≈ 2 min)
+python -m app demo                              # the reproducible demo world (≈ 15 min; --no-local-elections ≈ 2 min)
 python -m app run                               # web UI and API on http://127.0.0.1:8000
 python -m app election-night --election demo    # the 2028 election night in the terminal
 ```

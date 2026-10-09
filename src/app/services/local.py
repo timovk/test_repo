@@ -1063,12 +1063,20 @@ def latest_reported_date(session: Session) -> date | None:
     )
 
 
+def open_after(session: Session) -> date:
+    """Local days *after* this date may still have to be created or held: the day before the
+    latest reported election, so the same-day local elections of other provinces count too
+    (an interrupted run may have certified only some of a day's provinces)."""
+    lo = latest_reported_date(session)
+    return lo - timedelta(days=1) if lo is not None else date(1900, 1, 1)
+
+
 def ensure_local_elections(
     session: Session, until: date, *, after: date | None = None, progress: Callable[[str], None] | None = None
 ) -> list[int]:
     """Create (SCHEDULED) every planned local election with ``after < date ≤ until`` that does
-    not exist yet (default ``after``: the latest reported election).  Returns the new ids."""
-    lo = after or latest_reported_date(session) or date(1900, 1, 1)
+    not exist yet (default ``after``: :func:`open_after`).  Returns the new ids."""
+    lo = after or open_after(session)
     have = existing_local_days(session)
     created: list[int] = []
     for plan in plan_local_elections(session, lo, until):
@@ -1094,7 +1102,7 @@ def missing_local_before(session: Session, on: date) -> list[LocalPlan]:
     """Planned local elections before a date that have not been created yet (they must be held
     before an election of that date can be certified).  Cheap when nothing is missing: only local
     days without a stored election are planned in full."""
-    lo = latest_reported_date(session) or date(1900, 1, 1)
+    lo = open_after(session)
     if lo >= on:
         return []
     frame = get_frame(session)
@@ -1183,6 +1191,7 @@ __all__ = [
     "finish_earlier",
     "get_local_calendar",
     "missing_local_before",
+    "open_after",
     "plan_for",
     "plan_local_elections",
     "resolve_office_events",

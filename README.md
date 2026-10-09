@@ -74,7 +74,7 @@ git clone <this repository> && cd <repository>
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"            # or: uv pip install -e ".[dev]"
 
-python -m app demo                 # ≈ 2 min: data → database → districts → 2024 + 2026 history → 2028 ready
+python -m app demo                 # ≈ 15 min: data → database → districts → 2024 + 2026 history + local elections → 2028 ready
 python -m app run                  # open http://127.0.0.1:8000
 ```
 

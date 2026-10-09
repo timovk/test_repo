@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import date
+from datetime import date, timedelta
 from itertools import pairwise
 
 import numpy as np
@@ -23,7 +23,7 @@ from app.services._create import holders_at
 from app.services.elections import finalize_election, simulate_election
 from app.services.reset import reset_election
 from app.services.runtime import election_inputs, get_frame, load_final_race_votes
-from app.services.validation import validate_system
+from app.services.validation import validate_election, validate_system
 
 FOUNDING = date(2024, 11, 6)
 
@@ -161,27 +161,32 @@ def test_strict_date_order_and_same_day_independence(world) -> None:  # type: ig
         by_day.setdefault(p.day.date, []).append(p)
     day, same = next((d, ps) for d, ps in sorted(by_day.items()) if len(ps) >= 2)
     first_day = min(by_day)
-    ids = []
+    # every local election before ``day``, and only one province's election on ``day``
     for p in plans:
-        if p.day.date <= day:
-            ids.append(local_service.create_local_election(s, p.day.province_code, p.day.date, plan=p).id)
-    later = [i for i in ids if s.get(Election, i).election_date == day]
+        if p.day.date < day:
+            local_service.create_local_election(s, p.day.province_code, p.day.date, plan=p)
+    a = local_service.create_local_election(s, same[0].day.province_code, day, plan=same[0]).id
     # a later election cannot be certified while an earlier one is unfinished
     if day > first_day:
-        simulate_election(s, later[0])
+        simulate_election(s, a)
         with pytest.raises(ElectionError, match="must be finished first"):
-            finalize_election(s, later[0])
+            finalize_election(s, a)
     done = local_service.finish_earlier(s, day)
     assert all(s.get(Election, i).status == "final" for i in done)
-    # the same day's local elections of two provinces are independent of each other
-    a, b = later[0], later[1]
-    for eid in (a, b):
-        if s.get(Election, eid).status == ElectionStatus.SCHEDULED.value:
-            simulate_election(s, eid)
-    finalize_election(s, b)
+    if s.get(Election, a).status == ElectionStatus.SCHEDULED.value:
+        simulate_election(s, a)
     finalize_election(s, a)
+    # the other provinces' elections of that day are still open once ``a`` is certified
+    # (an interrupted run resumes them) ...
+    missing = {p.day.province_code for p in local_service.missing_local_before(s, day + timedelta(days=1))}
+    assert missing == {p.day.province_code for p in same[1:]}
+    created = local_service.ensure_local_elections(s, day)
+    assert len(created) == len(same) - 1
+    # ... and independent of it: certified after it, on the same day
+    b = created[0]
+    simulate_election(s, b)
+    finalize_election(s, b)
     assert s.get(Election, a).status == s.get(Election, b).status == "final"
-    del same
 
 
 def test_the_big_election_waits_for_the_local_ones(world) -> None:  # type: ignore[no-untyped-def]
@@ -190,6 +195,25 @@ def test_the_big_election_waits_for_the_local_ones(world) -> None:  # type: igno
     local_service.create_local_election(s, plan.day.province_code, plan.day.date, plan=plan)
     with pytest.raises(ElectionError, match="must be finished first"):
         finalize_election(s, world.second)
+
+
+def test_validation_of_local_elections(world) -> None:  # type: ignore[no-untyped-def]
+    """A local election in a House year holds no House races; a moot recall replacement elects
+    nobody.  Neither is a validation failure."""
+    s = world.session
+    plan = _first_plans(s, 1)[0]
+    el = local_service.create_local_election(s, plan.day.province_code, plan.day.date, plan=plan)
+    simulate_election(s, el.id)
+    finalize_election(s, el.id)
+    el.year = 2026  # a midterm year: the calendar's House and presidential checks do not apply
+    race = s.scalars(select(Race).where(Race.election_id == el.id)).first()
+    race.winner_ballot_candidate_id = None
+    s.flush()
+    failed = [c.name for c in validate_election(s, el.id).checks if not c.ok]
+    assert failed == [f"election {el.id} (2026): every race has a winner"]
+    race.details_json = json.dumps({**_details(race), "moot": True}, separators=(",", ":"))
+    s.flush()
+    assert validate_election(s, el.id).ok
 
 
 # ============================================================================ specials and recalls

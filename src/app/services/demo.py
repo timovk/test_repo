@@ -34,7 +34,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.constitution import ElectionStatus, ElectionType
@@ -321,14 +321,27 @@ def build_demo(
         return "done", f"election {eid}: " + ", ".join(parts)
 
     # ---- in-between local elections (docs/LOCAL_ELECTIONS.md), held in date order
-    def local_until(until: date) -> tuple[str, str]:
+    def local_until(since: date, until: date) -> tuple[str, str]:
         from app.services import local as local_service
 
         with b.session() as s:
-            lo = local_service.latest_reported_date(s) or date(1900, 1, 1)
+            lo = local_service.open_after(s)
+            last = until - timedelta(days=1)
             cal = local_service.get_local_calendar(s)
-            days = cal.days(lo, until - timedelta(days=1))
-        held = skipped = 0
+            days = cal.days(lo, last)
+            # the local elections of this period an earlier run held (the loop counts the rest)
+            skipped = s.scalar(
+                select(func.count())
+                .select_from(Election)
+                .where(
+                    Election.election_type == ElectionType.LOCAL.value,
+                    Election.election_date > since,
+                    Election.election_date <= min(lo, last),
+                    Election.status.in_(REPORTED_STATUSES),
+                )
+            )
+            skipped = int(skipped or 0)
+        held = 0
         name = f"local elections before {until.isoformat()}"
         for i, day in enumerate(days):
             with b.session() as s:
@@ -371,12 +384,18 @@ def build_demo(
 
     for k, slug in enumerate(HISTORY_SCENARIOS):
         if local_elections and k > 0:
-            until = regular_date(slug)
-            b.run(f"local elections before {slug}", lambda until=until: local_until(until))
+            since, until = regular_date(HISTORY_SCENARIOS[k - 1]), regular_date(slug)
+            b.run(
+                f"local elections before {slug}",
+                lambda since=since, until=until: local_until(since, until),
+            )
         b.run(f"election {slug}", lambda slug=slug: history(slug))
     if local_elections and HISTORY_SCENARIOS:
-        until = regular_date(LIVE_SCENARIO)
-        b.run(f"local elections before {LIVE_SCENARIO}", lambda until=until: local_until(until))
+        since, until = regular_date(HISTORY_SCENARIOS[-1]), regular_date(LIVE_SCENARIO)
+        b.run(
+            f"local elections before {LIVE_SCENARIO}",
+            lambda since=since, until=until: local_until(since, until),
+        )
 
     # ---- 5. the live demo election, simulated and ready at polls closing
     def live() -> tuple[str, str]:

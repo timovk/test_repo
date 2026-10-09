@@ -173,7 +173,8 @@ general election in date order, each through an instant election night:
 4. the 2028 general election (simulated, ready at polls closing).
 
 Then it schedules (creates, without simulating) the local elections up to the next regular
-election day in 2030. The local elections add a few minutes to the build.
+election day in 2030. The roughly 190 local elections it holds add about 12 minutes to the build;
+`--no-local-elections` leaves them out.
 
 ## Interfaces
 
