@@ -22,7 +22,7 @@ from app.analytics.history import compare_elections, ec_pv_divergence
 from app.analytics.metrics import tipping_point_from_frame
 from app.analytics.results import ResultsFrameError
 from app.core.config import get_constitution
-from app.core.constitution import RaceStatus, RaceType
+from app.core.constitution import ElectionStatus, RaceStatus, RaceType
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.elections.seats import INDEPENDENT, chamber_control
@@ -325,7 +325,13 @@ def election_detail(session: Session, ref: ElectionRef) -> dict[str, Any]:
         .order_by(Election.election_date, Election.id)
         .limit(1)
     )
-    night: dict[str, Any] = {"available": night_available(), "live": ref.live, "clock": None}
+    night: dict[str, Any] = {
+        "available": night_available(),  # the night service is installed
+        "live": ref.live,
+        "clock": None,
+        # a SCHEDULED election has no night until it is simulated (POST /simulate)
+        "needs_simulation": ref.status == ElectionStatus.SCHEDULED.value,
+    }
     if ref.live:
         state = live_state(session, ref.id)
         night["clock"] = state.get("clock")
@@ -2099,6 +2105,14 @@ def race_list(
                     "passing": contest.get("passing"),
                     "yes_pct": None if yes is None else yes.get("pct"),
                     "moot": contest.get("moot", False),
+                    "kind": contest.get("kind"),
+                    "recall_passed": contest.get("recall_passed"),
+                    "target_name": contest.get("target_name"),
+                    "target_party": contest.get("target_party"),
+                    "parent": contest.get("parent"),
+                    "replacement_race": contest.get("replacement_race"),
+                    "water_board": contest.get("water_board"),
+                    "water_board_name": contest.get("water_board_name"),
                     "top": [
                         {
                             "key": x["key"],

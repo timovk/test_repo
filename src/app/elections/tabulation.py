@@ -348,11 +348,15 @@ def tabulate_totals(
     invalid: int = 0,
     tie_seed: int | None = None,
     resolve_ties: bool = True,
+    seats: int = 1,
+    threshold: float | None = None,
 ) -> TabulatedRaceResult:
     """Tabulate a race from already-aggregated line totals (single pseudo-unit).
 
     Convenience for callers that only hold totals (e.g. forecast draws or hand-built maps).
     ``ballots_cast`` defaults to valid + blank + invalid and ``eligible`` to ``ballots_cast``.
+    ``seats`` > 1 tabulates a vote-for-N race (``totals`` are marks) and ``threshold`` a Yes/No
+    question, as :func:`app.elections.types.contest_rules` describes them.
     """
     t = np.asarray(totals, dtype=np.int64).reshape(1, -1)
     valid = int(t.sum())
@@ -367,6 +371,9 @@ def tabulate_totals(
         blank=np.array([blank], dtype=np.int64),
         invalid=np.array([invalid], dtype=np.int64),
         eligible=np.array([elig], dtype=np.int64),
+        seats=int(seats),
+        marks_per_ballot=int(seats),
+        threshold=threshold,
     )
     return tabulate(rv, race_key, tie_seed=tie_seed, resolve_ties=resolve_ties)
 

@@ -15,6 +15,8 @@ export const ROUTES = [
   { path: "/house/:code", view: "district", title: "House district" },
   { path: "/senate", view: "senate", title: "Senate", nav: "Results", icon: "senate" },
   { path: "/governors", view: "governors", title: "Governors", nav: "Results", icon: "governors" },
+  { path: "/local", view: "local", title: "Local results", nav: "Results", icon: "ballot" },
+  { path: "/calendar", view: "calendar", title: "Local calendar", nav: "Results", icon: "calendar" },
   { path: "/races/:code", view: "race", title: "Race" },
   { path: "/forecast", view: "forecast", title: "Forecast", nav: "Analysis", icon: "forecast" },
   { path: "/polling", view: "polling", title: "Polling", nav: "Analysis", icon: "polling" },
@@ -27,3 +29,9 @@ export const ROUTES = [
 ];
 
 export const DEFAULT_ROUTE = "/night";
+
+/**
+ * Views that only make sense for regular (November) elections: for a local election they show a
+ * friendly "not part of this local election" state instead of requesting endpoints that 404.
+ */
+export const REGULAR_ONLY_VIEWS = new Set(["president", "electoral-college", "provinces", "municipalities", "house", "district", "senate", "governors", "forecast", "polling", "campaign"]);

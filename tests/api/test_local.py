@@ -25,6 +25,7 @@ def test_local_calendar_create_and_results(rw_client: TestClient) -> None:
     eid = detail["election"]["id"]
     assert detail["election"]["local"] is True and detail["election"]["province_code"] == day["province_code"]
     assert detail["contents"]["local"] is True
+    assert detail["night"]["needs_simulation"] is True  # SCHEDULED: no night before simulating
     again = rw_client.post(
         "/api/local/elections", json={"province_code": day["province_code"], "date": day["date"]}
     )
@@ -51,6 +52,10 @@ def test_local_calendar_create_and_results(rw_client: TestClient) -> None:
             assert isinstance(row["passed"], bool) and row["yes_pct"] is not None
         elif row["vote_for"] > 1:
             assert len(row["winners"]) == row["vote_for"]
+    for row in races["races"]:
+        assert {"kind", "target_name", "replacement_race", "water_board_name"} <= set(row)
+        if row["type"] == "WATER_BOARD":
+            assert row["water_board_name"] and row["water_board"]
     q = races["races"][0]["name"].split()[0]
     assert rw_client.get(f"/api/elections/{eid}/races?q={q}").json()["count"] >= 1
     if measures:

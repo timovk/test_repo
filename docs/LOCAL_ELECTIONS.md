@@ -179,12 +179,21 @@ election day in 2030. The roughly 190 local elections it holds add about 12 minu
 ## Interfaces
 
 - **UI**
-  - *Local results*: a searchable list of every race of a local election, with leaders, winners,
-    measure outcomes and live status.
-  - *Local calendar*: the upcoming local days.
-  - A local election night layout.
-  - Race pages for measures, vote-for-N boards, recalls and special elections.
-  - The election picker groups regular and local elections.
+  - *Local results* (`#/local`): every race of a local election as a searchable list with filter
+    chips (school boards, measures, water boards, specials and recalls) and a municipality
+    filter. Rows show the leader or winners ("+N candidates", "vote for N"), Yes % against the
+    threshold with Passed / Failed, the recalled mayor, and LIVE / Projected / Called / Final.
+  - *Local calendar* (`#/calendar`): the local days twelve months at a time, per province, with
+    what is on each ballot and a link to the results or the night.
+  - *Election night* of a local election: races called, measures passing, reporting, the live
+    race list and the call feed. A scheduled election shows "Prepare the night" (simulates it).
+    When earlier elections are unfinished, a banner offers "Finish earlier elections".
+  - *Race pages* for measures and recalls (the question, a Yes/No bar with the threshold
+    marker), vote-for-N boards (every elected candidate with a seat number) and special elections
+    (vacancy, term).
+  - The election picker (top left) filters All / Regular / Local and searches by province or
+    date. Pages that only exist for the November elections (President, House, Forecast …) say so
+    for a local election.
 - **API**
   - `GET /api/local/calendar`
   - `GET|POST /api/local/elections`

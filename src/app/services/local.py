@@ -364,6 +364,12 @@ def _plan_day(
                     details={"event_date": ev.event_date.isoformat(), "reason": ev.reason, **ev.details},
                 )
             )
+    # two vacant council seats of one municipality on one day: "vacant seat 1", "vacant seat 2"
+    seat_i: dict[str, int] = {}
+    for c in contests:
+        if c.kind == "council_seat" and c.municipality_code and seat_n[c.municipality_code] > 1:
+            seat_i[c.municipality_code] = seat_i.get(c.municipality_code, 0) + 1
+            c.name = c.name.replace("vacant seat", f"vacant seat {seat_i[c.municipality_code]}")
     for ws in cal.water_boards_on(day):
         w = frame.water_board_index(ws)
         cyc = cal.water_board_cycle(ws, day.date.year)

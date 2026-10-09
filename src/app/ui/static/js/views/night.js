@@ -8,6 +8,10 @@
  * the stored final night state; without a night the page falls back to /president, /house and
  * /senate.  No election mathematics: every EV total, status, winner, margin and control flag is
  * an API value.
+ *
+ * A LOCAL election (school boards, measures, specials, recalls) has its own layout
+ * (views/_local-night.js).  An unreported election whose earlier elections are not finished shows
+ * the strict date-order banner with the one-click "Finish earlier elections".
  */
 import { api } from "../api.js";
 import { h, mount } from "../dom.js";
@@ -20,6 +24,7 @@ import { ecMap } from "../components/live-ecmap.js";
 import { callFeed } from "../components/live-feed.js";
 import { keyRaces } from "../components/live-keyraces.js";
 import { ticketCard } from "../components/live-ticket.js";
+import { earlierBanner, scheduledBanner } from "../components/local-kit.js";
 import { colorFor, constitution, createLineIndex, decidedByLabel, isFinalElection, phaseChip, phaseOf, setText, throttledFetch, ticketHead } from "../components/live-util.js";
 import { getElection, nightFor, subscribe } from "../store.js";
 import { card, currentElectionId, errorState, fictionalNotice } from "./_shared.js";
@@ -30,6 +35,10 @@ export async function render(el, params, ctx) {
   if (!election) {
     mount(el, errorState({ message: "No election selected." }));
     return;
+  }
+  if (election.local) {
+    const { renderLocalNight } = await import("./_local-night.js");
+    return renderLocalNight(el, election, ctx);
   }
   const C = constitution();
   const S = {
@@ -55,6 +64,8 @@ export async function render(el, params, ctx) {
   const clockHost = h("span", { class: "lv-headclock mono" });
   const bannerHost = h("div", { class: "lv-banners" });
   const noticeHost = h("div", { class: "lv-notices" });
+  const earlier = earlierBanner(id);
+  const sched = scheduledBanner(id);
 
   const bigBar = evBar({ total: C.ev, majority: C.evMajority, tickets: [], large: true });
   const cardsGrid = h("div", { class: "lv-tickets" });
@@ -100,6 +111,8 @@ export async function render(el, params, ctx) {
       ),
       h("div", { class: "page-head__meta" }, phaseHost, clockHost, provBadge("SIMULATED"), provBadge("FICTIONAL", "Fictional system")),
     ),
+    earlier,
+    sched,
     bannerHost,
     noticeHost,
     grid,
@@ -257,6 +270,13 @@ export async function render(el, params, ctx) {
     const infoTickets = new Map((S.info?.tickets || []).map((t) => [t.key, t]));
     sorted.forEach((t, i) => {
       let c = S.cards.get(t.key);
+      // A card built from the snapshot alone (before /president answered) lacks the party name,
+      // portrait and incumbency: rebuild it once the ticket details are known.
+      if (c && !c.withInfo && infoTickets.get(t.key)) {
+        c.remove();
+        S.cards.delete(t.key);
+        c = null;
+      }
       if (!c) {
         const it = infoTickets.get(t.key);
         c = ticketCard(
@@ -272,6 +292,7 @@ export async function render(el, params, ctx) {
           },
           { total: pm.total, needed: pm.needed },
         );
+        c.withInfo = !!it;
         S.cards.set(t.key, c);
         cardsGrid.appendChild(c);
       }
@@ -570,6 +591,7 @@ export async function render(el, params, ctx) {
       presFetch.now();
       S.calls = [];
       callsFetch.now();
+      earlier.refresh();
     } else if (seqChanged && n.clock?.status === "running") {
       presFetch.request();
     }
@@ -596,6 +618,8 @@ export async function render(el, params, ctx) {
 
   return () => {
     S.destroyed = true;
+    earlier.destroy();
+    sched.destroy();
     clearTimeout(fallbackTimer);
     unsubNight();
     unsubSettings();

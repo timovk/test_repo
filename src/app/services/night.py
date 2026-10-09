@@ -161,7 +161,16 @@ def make_recount_check(config: RecountConfig | None = None) -> RecountCheck:
     def check(inp: RecountInput) -> tuple[bool, str]:
         if inp.race_type is None:
             return False, "race type unknown"
-        tab = tabulate_totals(inp.race_key, inp.line_keys, inp.totals, resolve_ties=False)
+        # with the contest rules: a vote-for-N race is decided at its last seat, a Yes/No
+        # question at its threshold (not by the top two lines)
+        tab = tabulate_totals(
+            inp.race_key,
+            inp.line_keys,
+            inp.totals,
+            resolve_ties=False,
+            seats=inp.seats,
+            threshold=inp.threshold,
+        )
         return needs_recount(tab, inp.race_type, cfg)
 
     return check

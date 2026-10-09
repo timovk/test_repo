@@ -70,6 +70,10 @@
   --cat-fictional: #c08cff;
   --cat-simulated: #ffb347;
 
+  /* Yes / No of ballot measures and recalls (always paired with a ✓ / ✗ icon and a label) */
+  --yes: #46b36b;
+  --no: #e0625a;
+
   /* Neutral data colours */
   --uncalled: #3a475f;
   --uncalled-soft: #2a3549;
@@ -138,6 +142,8 @@
   --text-muted: #6b7890;
   --text-inverse: #ffffff;
   --accent-soft: rgba(255, 122, 26, 0.12);
+  --yes: #23894a;
+  --no: #c9443c;
   --uncalled: #c4ccd8;
   --uncalled-soft: #dde3ec;
   --not-up: #e7ebf1;

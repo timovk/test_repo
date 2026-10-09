@@ -29,6 +29,15 @@ const PATHS = {
   download: "M12 3v12 M7 10l5 5 5-5 M4 21h16",
   sun: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z M12 1v2 M12 21v2 M4.2 4.2l1.4 1.4 M18.4 18.4l1.4 1.4 M1 12h2 M21 12h2 M4.2 19.8l1.4-1.4 M18.4 5.6l1.4-1.4",
   moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z",
+  ballot: "M4 13h16v8H4z M8 13V4h8v9 M10.5 8.5l1.5 1.5 3-3",
+  calendar: "M4 6h16v15H4z M4 10h16 M8 3v5 M16 3v5",
+  search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z M21 21l-5.2-5.2",
+  x: "M6 6l12 12 M18 6L6 18",
+  chevronLeft: "M15 5l-7 7 7 7",
+  chevronRight: "M9 5l7 7-7 7",
+  chevronDown: "M5 9l7 7 7-7",
+  chevronsLeft: "M12 5l-7 7 7 7 M19 5l-7 7 7 7",
+  chevronsRight: "M5 5l7 7-7 7 M12 5l7 7-7 7",
 };
 
 export function icon(name, { size = 16, className = "" } = {}) {

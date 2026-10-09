@@ -485,7 +485,8 @@ The envelope plus `seed, scenario, contents, apportionment_id, district_plan_id,
 polls, campaigns, simulated_at, finalized_at, runs` (`{"election-setup"|"election"|"election-final":
 {id, seed, duration_s}}`), `results` (reported only — President, EV, chambers, governors,
 legislature seats, turnout, flips, recounts), `next_election_id`, `night`
-(`{available, live, clock}`), `reset` (`{allowed, reason}`, see `POST …/reset`) and
+(`{available, live, clock, needs_simulation}`: `available` = the night service is installed;
+`needs_simulation` = a SCHEDULED election, whose night needs `POST …/simulate` first), `reset` (`{allowed, reason}`, see `POST …/reset`) and
 `constitution` (totals and majorities).
 
 ### `POST /api/elections/{id}/simulate`
@@ -520,7 +521,9 @@ for every election). `q` matches race names, places and candidate names; `type` 
 comma separated (`SCHOOL_BOARD,BALLOT_MEASURE`). Per race: `code, name, type, province_code,
 municipality_code, municipality_name, status, reporting_pct, is_special, vote_for, candidates,
 leader, leader_party, leader_color, leader_pct, winners` (names), `decided, question, label,
-title, threshold, passed, passing, yes_pct, moot` and `top` (the best lines). Results follow the
+title, threshold, passed, passing, yes_pct, moot`, the contest's `kind`, recall fields (`recall_passed,
+target_name, target_party, parent, replacement_race`), `water_board, water_board_name` and `top`
+(the best lines). Results follow the
 hidden-until-reported rule. Also `count` and `counts` (per race type).
 
 ### `GET /api/elections/{id}/earlier` · `POST /api/elections/{id}/finish-earlier`
@@ -549,8 +552,9 @@ oldest first, committing each one. It can take minutes; it returns the same shap
 Election briefs (`/api/meta`, every envelope) carry `local` and `province_code`. Race views
 (§2.4) of local contests add `contest`:
 - the contest data: `kind, label, title, summary, measure_kind, threshold, vote_for, body,
-  water_board, seats_total, seats_up, cycle, reason, event_date, target_name, target_party,
-  vacated_party, parent, replacement_race, term_start, term_end, nonpartisan`;
+  water_board, water_board_name` (REAL) `, seats_total, seats_up, cycle, reason, event_date,
+  target_name, target_party, vacated_party, parent, replacement_race, term_start, term_end,
+  nonpartisan`;
 - reported only: `passed, yes_share, moot, recall_passed, seat_assignment`;
 - live only: `passing`.
 

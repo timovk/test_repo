@@ -9,7 +9,7 @@
 import { api } from "../api.js";
 import { h, mount } from "../dom.js";
 import { applyTheme, canResetElection, resetElection } from "../app.js";
-import { card, pageHeader } from "./_shared.js";
+import { card, electionOptions, pageHeader } from "./_shared.js";
 import { callout, humanize, statusBadge } from "../components/ana-ui.js";
 import { getState, setState } from "../store.js";
 
@@ -155,7 +155,7 @@ export async function render(el) {
                 onchange: (e) => save({ default_election_id: e.target.value ? Number(e.target.value) : null }, "Default election"),
               },
               h("option", { value: "", selected: settings.default_election_id === null }, "Automatic (the demo election)"),
-              elections.map((e) => h("option", { value: e.id, selected: e.id === settings.default_election_id }, `${e.year} · ${e.name}`)),
+              electionOptions(elections, settings.default_election_id, { status: false }),
             ),
           ),
         ),
@@ -252,7 +252,7 @@ export async function render(el) {
           describe();
         },
       },
-      byDate.map((e) => h("option", { value: e.id, selected: e.id === pick.id }, `${e.year} · ${e.name} (${e.status})`)),
+      electionOptions(byDate, pick.id),
     );
     describe();
     return card(

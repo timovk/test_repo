@@ -32,6 +32,7 @@ from app.models import (
     OfficeHolder,
     Party,
     Race,
+    WaterBoard,
 )
 from app.services._common import REPORTED_STATUSES, loads
 from app.services.read._base import (
@@ -97,6 +98,7 @@ class RaceBook:
     live: dict[str, dict[str, Any]] = field(default_factory=dict)
     snapshot: dict[str, Any] = field(default_factory=dict)
     seats_won: dict[int, dict[str, int]] = field(default_factory=dict)
+    water_boards: dict[str, str] = field(default_factory=dict)  # code → REAL name
 
     # ------------------------------------------------------------------ loading
     @classmethod
@@ -136,6 +138,14 @@ class RaceBook:
             incumbents=_incumbent_people(session, races),
             previous_party={},
         )
+        if any(r.race_type == RaceType.WATER_BOARD.value for r in races):
+            book.water_boards = dict(
+                session.execute(
+                    select(WaterBoard.code, WaterBoard.name).where(WaterBoard.vintage_id == ref.vintage_id)
+                )
+                .tuples()
+                .all()
+            )
         if ref.reported:
             book.totals = stored_totals(session, ref, ids)
             book.turnout = stored_turnout(session, ref, ids)
@@ -353,6 +363,8 @@ class RaceBook:
             "nonpartisan",
         )
         out: dict[str, Any] = {k: d[k] for k in public if k in d}
+        if "water_board" in d:
+            out["water_board_name"] = self.water_boards.get(d["water_board"])
         out["threshold"] = None if race.threshold is None else float(race.threshold)
         out["vote_for"] = int(race.seats) if at_large else 1
         if self.ref.reported:

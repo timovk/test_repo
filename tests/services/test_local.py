@@ -253,6 +253,9 @@ def test_specials_and_recalls(world, monkeypatch: pytest.MonkeyPatch) -> None:  
     monkeypatch.setattr(local_service, "load_local_config", lambda: busy)
     local_service._calendars.clear()
     plans = local_service.plan_local_elections(s, FOUNDING, date(2025, 9, 30))
+    for p in plans:  # two vacant seats of one council on one day are numbered
+        names = [c.name for c in p.contests]
+        assert len(names) == len(set(names)), Counter(names).most_common(1)
     kinds = Counter(c.kind for p in plans for c in p.contests)
     assert kinds["mayor_special"] > 0 and kinds["recall"] > 0
     target = next(p for p in plans if any(c.kind in ("recall", "mayor_special") for c in p.contests))
