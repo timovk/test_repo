@@ -33,13 +33,13 @@
 
 people:
   - name: Aaron van Loon
-  - home: GM0785
-  - born: 2004-09-17
-  - gender: M
-  - party: PA
-  - chance: often
-  - quality: 1.2
-  - bio: Koning of Wagenvoort 10.
+    home: GM0785
+    born: 2004-09-17
+    gender: M
+    party: PA
+    chance: often
+    quality: 1.2
+    bio: Koning of Wagenvoort 10.
 
 # Examples — remove the "people: []" line above and the leading "# " of the lines below:
 #
