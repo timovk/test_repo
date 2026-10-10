@@ -27,6 +27,7 @@ import { ticketCard } from "../components/live-ticket.js";
 import { earlierBanner, scheduledBanner } from "../components/local-kit.js";
 import { colorFor, constitution, createLineIndex, decidedByLabel, isFinalElection, phaseChip, phaseOf, setText, throttledFetch, ticketHead } from "../components/live-util.js";
 import { getElection, nightFor, subscribe } from "../store.js";
+import { watchNight } from "../night-poller.js";
 import { card, currentElectionId, errorState, fictionalNotice } from "./_shared.js";
 
 export async function render(el, params, ctx) {
@@ -36,6 +37,9 @@ export async function render(el, params, ctx) {
     mount(el, errorState({ message: "No election selected." }));
     return;
   }
+  // Follow this election's night (no-op when the poller already does; after an instant count by
+  // the world clock the poller is stopped until the night is opened again).
+  watchNight(Number(id));
   if (election.local) {
     const { renderLocalNight } = await import("./_local-night.js");
     return renderLocalNight(el, election, ctx);

@@ -2,9 +2,11 @@
  * Election night of a LOCAL election (rendered by views/night.js when the selected election is
  * local): there is no President, House or Senate, so the broadcast shows
  *   * headline tiles: races called x / total, measures passing / passed, reporting %,
- *     municipalities reporting — plus a progress bar of the night (called · counting · awaiting),
+ *     municipalities reporting — plus a progress bar of the night (called · counting · awaiting)
+ *     and, for a combined night (every province voting that day), one chip per province with its
+ *     races called (a click filters the race list),
  *   * the live race list (the Local results row renderer, refetched from /races on every night
- *     update, throttled),
+ *     update, throttled) with a province filter,
  *   * the race-call feed (/calls),
  *   * the strict date-order banner when earlier elections must be finished first.
  * The playback controls stay in the national strip.  Live numbers come from the night snapshot
@@ -17,7 +19,7 @@ import { provBadge } from "../components/badges.js";
 import { icon } from "../components/icons.js";
 import { callFeed } from "../components/live-feed.js";
 import { isFinalElection, phaseChip, phaseOf, setText, throttledFetch } from "../components/live-util.js";
-import { earlierBanner, fmtDate, isDecidedStatus, loadProvinceNames, provinceName, raceBrowser, scheduledBanner, tally } from "../components/local-kit.js";
+import { earlierBanner, electionProvinces, fmtDate, isDecidedStatus, loadProvinceNames, provinceChips, provinceTags, provincesText, raceBrowser, scheduledBanner, tally } from "../components/local-kit.js";
 import { getElection, nightFor, subscribe } from "../store.js";
 import { card, fictionalNotice } from "./_shared.js";
 
@@ -44,7 +46,8 @@ function describeCall(c) {
 export async function renderLocalNight(el, election) {
   const id = election.id;
   await loadProvinceNames();
-  const prov = provinceName(election.province_code, election);
+  const codes = electionProvinces(election);
+  const provNames = codes.length > 3 ? `${codes.length} provinces` : provincesText(codes, { names: true });
   const S = { snapshot: null, clock: null, electionStatus: election.status, rows: null, payload: null, calls: [], lastSeq: null, lastCallSeq: null, destroyed: false };
 
   /* ---------------------------------------------------------------- layout */
@@ -61,12 +64,24 @@ export async function renderLocalNight(el, election) {
   const stMunis = statTile("Municipalities", "reporting");
   const progress = h("div", { class: "lc-progress", role: "img" });
   const progressLegend = h("div", { class: "lc-progress__legend" });
-  const board = h("div", { class: "lc-board" }, h("div", { class: "lc-board__bar" }, progress, progressLegend), h("div", { class: "lv-board__stats lc-board__stats" }, stCalled.el, stMeasures.el, stReporting.el, stMunis.el));
+  const provsHost = h("div", { class: "lc-board__provs" });
+  const board = h("div", { class: "lc-board" }, h("div", { class: "lc-board__bar" }, progress, progressLegend), provsHost, h("div", { class: "lv-board__stats lc-board__stats" }, stCalled.el, stMeasures.el, stReporting.el, stMunis.el));
 
-  const browser = raceBrowser({ electionId: id, local: true, pageSize: 80 });
+  let activeProv = "";
+  const browser = raceBrowser({
+    electionId: id,
+    local: true,
+    pageSize: 80,
+    onChange: ({ province }) => {
+      if ((province || "") !== activeProv) {
+        activeProv = province || "";
+        renderProvinces();
+      }
+    },
+  });
   const feed = callFeed({ typeOptions: FEED_TYPES, describe: describeCall, colorOf: callColor });
 
-  const heroCard = card(`Tonight in ${prov}`, board, { className: "lc-area-hero", categories: ["SIMULATED"], actions: h("a", { class: "btn btn--sm btn--ghost", href: `#/local?e=${id}` }, "Local results page →") });
+  const heroCard = card(codes.length ? `Tonight in ${provNames}` : "Tonight", board, { className: "lc-area-hero", categories: ["SIMULATED"], actions: h("a", { class: "btn btn--sm btn--ghost", href: `#/local?e=${id}` }, "Local results page →") });
   const racesCard = card("Races", browser.el, { className: "lc-area-races lc-night-races", flush: true });
   const feedCard = card("Race calls", feed.el, { className: "lc-area-feed lv-feedcard", actions: feed.toolbar, flush: true });
 
@@ -75,7 +90,20 @@ export async function renderLocalNight(el, election) {
     h(
       "header",
       { class: "page-head lv-head" },
-      h("div", null, h("div", { class: "page-head__eyebrow" }, `Local election night · ${prov} · ${fmtDate(election.election_date, "long")}`), h("h1", { class: "page-head__title" }, election.name)),
+      h(
+        "div",
+        null,
+        h("div", { class: "page-head__eyebrow" }, `Local election night · ${provincesText(codes) || "local"} · ${fmtDate(election.election_date, "long")}`),
+        h("h1", { class: "page-head__title" }, election.name),
+        codes.length
+          ? h(
+              "p",
+              { class: "lc-night__provs" },
+              provinceTags(codes),
+              h("span", null, codes.length > 1 ? `${provincesText(codes, { names: true })} — ${codes.length} provinces, one combined night` : `${provincesText(codes, { names: true })} is the only province voting on this date`),
+            )
+          : null,
+      ),
       h("div", { class: "page-head__meta" }, phaseHost, clockHost, provBadge("SIMULATED"), provBadge("FICTIONAL", "Fictional system")),
     ),
     earlier,
@@ -134,6 +162,17 @@ export async function renderLocalNight(el, election) {
   }
 
   /* ---------------------------------------------------------------- renderers */
+  /** One chip per province (races decided / on the ballot, API flags); a click filters the list. */
+  function renderProvinces() {
+    const rows = S.rows || [];
+    const ph = phase();
+    const hidden = ph === "hidden" || ph === "ready";
+    const key = JSON.stringify([activeProv, hidden, rows.map((r) => [r.province_code, r.decided || r.moot ? 1 : 0])]);
+    if (provsHost.dataset.key === key) return;
+    provsHost.dataset.key = key;
+    mount(provsHost, provinceChips(rows, { order: codes, active: activeProv, showDecided: !hidden, onPick: (code) => browser.setProvince(code) }));
+  }
+
   function renderHeader() {
     const ph = phase();
     if (phaseHost.dataset.key !== ph) {
@@ -249,6 +288,7 @@ export async function renderLocalNight(el, election) {
     renderHeader();
     const c = counts();
     renderBoard(c);
+    renderProvinces();
     renderBanners(c);
     renderNotices();
     const ph = phase();

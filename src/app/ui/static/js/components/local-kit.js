@@ -1,9 +1,11 @@
 /**
- * Local elections kit (prefix `lc-`): race kinds and labels, the results-listing row used by the
- * Local results page and the local election night, the Yes/No bar of ballot measures and recalls,
- * the race browser (filter chips, search, municipality filter, two-column grid) and the strict
- * date-order helpers (the "earlier elections must be finished first" banner and the one-click
- * finish-earlier flow).
+ * Local elections kit (prefix `lc-`): race kinds and labels, the provinces of a local election
+ * (one local election holds every province voting on its date: `election.provinces`), what a
+ * ballot holds (ballot chips), the results-listing row used by the Local results page and the
+ * local election night, the Yes/No bar of ballot measures and recalls, the race browser (filter
+ * chips, search, province and municipality filters, two-column grid), the per-province chips and
+ * the strict date-order helpers (the "earlier elections must be finished first" banner and the
+ * one-click finish-earlier flow, both pointing to the Today page as the recommended flow).
  *
  * Nothing here decides a result: winners, passed / passing flags, Yes shares, thresholds and
  * statuses are API values.  The kit only filters, counts flags and formats them.
@@ -93,6 +95,77 @@ export function provinceName(code, election) {
   return m ? m[1] : code;
 }
 
+/**
+ * Province codes of an election brief: a local election holds every province voting on its date
+ * (`provinces`, canonical order); regular elections have none.
+ */
+export function electionProvinces(e) {
+  if (!e) return [];
+  if (Array.isArray(e.provinces) && e.provinces.length) return e.provinces.filter(Boolean);
+  return e.province_code ? [e.province_code] : [];
+}
+
+/**
+ * "OV, ZE, NB" (codes, the compact label) or "Overijssel, Zeeland and Noord-Brabant" (names).
+ * `max` shortens long name lists to "Overijssel, Zeeland +2".
+ */
+export function provincesText(codes, { names = false, max = 0 } = {}) {
+  const list = (codes || []).filter(Boolean);
+  if (!list.length) return "";
+  if (!names) return list.join(", ");
+  const n = list.map((c) => provinceName(c));
+  if (max && n.length > max) return `${n.slice(0, max).join(", ")} +${n.length - max}`;
+  return n.length < 2 ? n[0] : `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
+}
+
+/**
+ * Per-province summary chips of a combined local election ("OV Overijssel 12/42" + a called bar)
+ * from /races rows (counts the API's `decided` / `moot` flags; nothing is computed).  Clicking a
+ * chip calls `onPick(code)` ("" when the active chip is clicked again).  Null for < 2 provinces.
+ */
+export function provinceChips(rows, { order = [], active = "", onPick, showDecided = true } = {}) {
+  const by = new Map();
+  for (const r of rows || []) {
+    if (!r.province_code) continue;
+    const t = by.get(r.province_code) || { n: 0, d: 0 };
+    t.n += 1;
+    if (r.decided || r.moot) t.d += 1;
+    by.set(r.province_code, t);
+  }
+  if (by.size < 2) return null;
+  const idx = (c) => (order.indexOf(c) < 0 ? 99 : order.indexOf(c));
+  const list = [...by.entries()].sort((a, b) => idx(a[0]) - idx(b[0]) || provinceName(a[0]).localeCompare(provinceName(b[0]), "nl"));
+  return h(
+    "div",
+    { class: "lc-provsum", role: "group", "aria-label": "Filter by province" },
+    list.map(([code, t]) =>
+      h(
+        "button",
+        {
+          type: "button",
+          class: ["lc-provchip", active === code && "is-active"],
+          "aria-pressed": String(active === code),
+          title: `${provinceName(code)}: ${fmtInt(t.n)} races${showDecided ? `, ${fmtInt(t.d)} decided` : ""} — ${active === code ? "show every province" : "show only this province"}`,
+          onclick: () => onPick?.(active === code ? "" : code),
+        },
+        h("span", { class: "lc-provtag" }, code),
+        h("span", null, provinceName(code)),
+        h("span", { class: "lc-provchip__n num" }, showDecided ? `${fmtInt(t.d)}/${fmtInt(t.n)}` : `${fmtInt(t.n)} race${t.n === 1 ? "" : "s"}`),
+        showDecided ? h("span", { class: "lc-provchip__bar", "aria-hidden": "true" }, h("span", { style: { width: `${t.n ? (t.d / t.n) * 100 : 0}%` } })) : null,
+      ),
+    ),
+  );
+}
+
+/** Small province code tags ("OV" "ZE" "NB"), full names in the tooltip. */
+export function provinceTags(codes, { className } = {}) {
+  return h(
+    "span",
+    { class: ["lc-provtags", className], title: provincesText(codes, { names: true }) },
+    (codes || []).map((c) => h("span", { class: "lc-provtag", "aria-label": provinceName(c) }, c)),
+  );
+}
+
 const DF = {
   short: new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }),
   long: new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }),
@@ -112,6 +185,57 @@ export function fmtDate(iso, style = "short") {
   const d = parseDate(iso);
   if (!d) return iso || "–";
   return (DF[style] || DF.short).format(d);
+}
+
+/* ------------------------------------------------------------------ ballot contents */
+/** Local contest kinds of the calendar and the clock: [key, singular, plural, short tag]. */
+export const LOCAL_KINDS = [
+  ["school_board", "school board", "school boards", "Board"],
+  ["water_board", "water board", "water boards", "Water"],
+  ["measure", "measure", "measures", "Measure"],
+  ["mayor_special", "special mayoral race", "special mayoral races", "Mayor"],
+  ["council_seat", "council seat", "council seats", "Seat"],
+  ["recall", "recall", "recalls", "Recall"],
+];
+const KIND_OF_TYPE = { SCHOOL_BOARD: "school_board", WATER_BOARD: "water_board", BALLOT_MEASURE: "measure", MAYOR: "mayor_special", COUNCIL_SEAT: "council_seat", RECALL: "recall" };
+const REGULAR_PARTS = [
+  ["PRESIDENT", "President", "President"],
+  ["HOUSE", "House seat", "House seats"],
+  ["SENATE", "Senate seat", "Senate seats"],
+  ["GOVERNOR", "governor", "governors"],
+  ["PROVINCIAL_LEGISLATURE", "legislature", "legislatures"],
+  ["MAYOR", "mayor", "mayors"],
+  ["MUNICIPAL_COUNCIL", "council", "councils"],
+];
+
+/**
+ * What a ballot holds as [{key, n, label}] from a counts map.  Planned days count local kinds
+ * (`measure`, `school_board` …); stored elections count race types (`BALLOT_MEASURE` …), which
+ * map onto the same kinds for a local election.  Regular elections list their offices.
+ */
+export function ballotParts(counts = {}, { local = true } = {}) {
+  const c = counts || {};
+  if (local) {
+    const k = {};
+    for (const [key, n] of Object.entries(c)) {
+      const kind = KIND_OF_TYPE[key] || key;
+      k[kind] = (k[kind] || 0) + (Number(n) || 0);
+    }
+    return LOCAL_KINDS.filter(([key]) => k[key]).map(([key, one, many]) => ({ key, n: k[key], label: k[key] === 1 ? one : many }));
+  }
+  return REGULAR_PARTS.filter(([key]) => c[key]).map(([key, one, many]) => ({ key, n: key === "PRESIDENT" ? null : c[key], label: c[key] === 1 ? one : many }));
+}
+
+/** Ballot-content chips ("34 measures", "5 school boards" …); `max` folds the rest into "+n". */
+export function ballotChips(parts, { max = 0, className } = {}) {
+  const shown = max && parts.length > max ? parts.slice(0, max) : parts;
+  const rest = parts.length - shown.length;
+  return h(
+    "span",
+    { class: ["lc-kinds", className] },
+    shown.map((p) => h("span", { class: "lc-kind" }, p.n !== null && p.n !== undefined ? h("b", { class: "num" }, fmtInt(p.n)) : null, p.n !== null && p.n !== undefined ? ` ${p.label}` : p.label)),
+    rest > 0 ? h("span", { class: "lc-kind lc-kind--more", title: parts.slice(shown.length).map((p) => `${p.n ?? ""} ${p.label}`.trim()).join(", ") }, `+${rest}`) : null,
+  );
 }
 
 /* ------------------------------------------------------------------ names & thresholds */
@@ -374,11 +498,14 @@ export function tally(rows = [], source = "hidden") {
 
 /* ------------------------------------------------------------------ race browser */
 /**
- * Filter chips + search + municipality filter + the two-column listing.
+ * Filter chips + search + province and municipality filters + the two-column listing.
  * `update(payload)` takes a /races payload; the browser keeps its filters across updates.
+ * The province filter appears when the races span two or more provinces (a combined local
+ * election day); `setProvince(code)` drives it from outside (e.g. the province chips of a page
+ * header) and `onChange` reports the chosen `province`.
  */
-export function raceBrowser({ electionId, local = true, pageSize = 120, municipalityFilter = true, onChange } = {}) {
-  const st = { group: "", q: "", muni: "", rows: [], counts: {}, source: "hidden", limit: pageSize };
+export function raceBrowser({ electionId, local = true, pageSize = 120, municipalityFilter = true, provinceFilter = true, onChange } = {}) {
+  const st = { group: "", q: "", prov: "", muni: "", rows: [], counts: {}, source: "hidden", limit: pageSize };
   const chips = h("div", { class: "lc-chips", role: "group", "aria-label": "Race type" });
   let searchTimer = null;
   const search = h("input", {
@@ -406,7 +533,13 @@ export function raceBrowser({ electionId, local = true, pageSize = 120, municipa
       paint();
     },
   });
-  const toolbar = h("div", { class: "lc-toolbar" }, chips, h("div", { class: "lc-toolbar__right" }, municipalityFilter ? muniSel : null, searchBox));
+  const provSel = h("select", {
+    class: "select lc-muni lc-prov",
+    "aria-label": "Province",
+    hidden: true,
+    onchange: (e) => setProvince(e.target.value),
+  });
+  const toolbar = h("div", { class: "lc-toolbar" }, chips, h("div", { class: "lc-toolbar__right" }, provinceFilter ? provSel : null, municipalityFilter ? muniSel : null, searchBox));
   const grid = h("div", { class: "lc-grid", role: "list" });
   const more = h("div", { class: "lc-more" });
   const empty = h("div", { class: "state lc-empty" });
@@ -414,13 +547,21 @@ export function raceBrowser({ electionId, local = true, pageSize = 120, municipa
 
   function groupTypes() {
     if (!st.group) return null;
-    const g = raceGroups(st.counts, local).find((x) => x.key === st.group);
+    const g = raceGroups(typeCounts(), local).find((x) => x.key === st.group);
     return g ? g.types : null;
   }
 
+  /** Race-type counts of the chips: the payload's, or the chosen province's own. */
+  function typeCounts() {
+    if (!st.prov) return st.counts;
+    const c = {};
+    for (const r of st.rows) if (r.province_code === st.prov) c[r.type] = (c[r.type] || 0) + 1;
+    return c;
+  }
+
   function paintChips() {
-    const groups = raceGroups(st.counts, local);
-    const total = st.rows.length;
+    const groups = raceGroups(typeCounts(), local);
+    const total = st.prov ? st.rows.filter((r) => r.province_code === st.prov).length : st.rows.length;
     const key = JSON.stringify([st.group, total, groups.map((g) => [g.key, g.count])]);
     if (chips.dataset.key === key) return;
     chips.dataset.key = key;
@@ -445,9 +586,34 @@ export function raceBrowser({ electionId, local = true, pageSize = 120, municipa
     mount(chips, chip("", "All", total), groups.map((g) => chip(g.key, g.label, g.count)));
   }
 
+  /** Province code → number of races (rows without a province are not counted). */
+  function provinceCounts() {
+    const m = new Map();
+    for (const r of st.rows) if (r.province_code) m.set(r.province_code, (m.get(r.province_code) || 0) + 1);
+    return m;
+  }
+
+  function paintProvs() {
+    const counts = provinceCounts();
+    // Canonical order of the election (the API lists provinces in calendar order), else by name.
+    const order = electionProvinces(getElection(electionId));
+    const idx = (c) => (order.indexOf(c) < 0 ? 99 : order.indexOf(c));
+    const list = [...counts.entries()].sort((a, b) => idx(a[0]) - idx(b[0]) || provinceName(a[0]).localeCompare(provinceName(b[0]), "nl"));
+    const key = JSON.stringify([st.prov, list]);
+    if (provSel.dataset.key === key) return;
+    provSel.dataset.key = key;
+    if (st.prov && !counts.has(st.prov)) st.prov = "";
+    provSel.hidden = list.length < 2;
+    mount(
+      provSel,
+      h("option", { value: "" }, `All provinces (${list.length})`),
+      list.map(([code, n]) => h("option", { value: code, selected: code === st.prov }, `${provinceName(code)} · ${fmtInt(n)}`)),
+    );
+  }
+
   function paintMunis() {
     const m = new Map();
-    for (const r of st.rows) if (r.municipality_code) m.set(r.municipality_code, r.municipality_name || r.municipality_code);
+    for (const r of st.rows) if (r.municipality_code && (!st.prov || r.province_code === st.prov)) m.set(r.municipality_code, r.municipality_name || r.municipality_code);
     const list = [...m.entries()].sort((a, b) => a[1].localeCompare(b[1], "nl"));
     const key = JSON.stringify([st.muni, list.map((x) => x[0])]);
     if (muniSel.dataset.key === key) return;
@@ -457,13 +623,31 @@ export function raceBrowser({ electionId, local = true, pageSize = 120, municipa
     mount(muniSel, h("option", { value: "" }, `All municipalities (${list.length})`), list.map(([code, name]) => h("option", { value: code, selected: code === st.muni }, name)));
   }
 
+  /** Filter the listing to one province ("" = all); keeps the other filters. */
+  function setProvince(code) {
+    const next = code || "";
+    if (next === st.prov) return;
+    st.prov = next;
+    st.limit = pageSize;
+    provSel.value = next;
+    paintProvs();
+    paintChips();
+    paintMunis();
+    paint();
+  }
+
   function haystack(r) {
-    return [r.name, r.code, r.municipality_name, r.label, r.title, ...(r.top || []).map((t) => t.name), ...(r.winners || [])].filter(Boolean).join(" ").toLowerCase();
+    return [r.name, r.code, r.municipality_name, r.water_board_name, r.province_code ? provinceName(r.province_code) : null, r.label, r.title, ...(r.top || []).map((t) => t.name), ...(r.winners || [])]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
   }
 
   function filtered() {
     const types = groupTypes();
-    return st.rows.filter((r) => (!types || types.includes(r.type)) && (!st.muni || r.municipality_code === st.muni) && (!st.q || haystack(r).includes(st.q)));
+    return st.rows.filter(
+      (r) => (!types || types.includes(r.type)) && (!st.prov || r.province_code === st.prov) && (!st.muni || r.municipality_code === st.muni) && (!st.q || haystack(r).includes(st.q)),
+    );
   }
 
   let lastSig = "";
@@ -504,16 +688,19 @@ export function raceBrowser({ electionId, local = true, pageSize = 120, municipa
         : null,
     );
     more.hidden = rest <= 0;
-    onChange?.({ shown: shown.length, matching: rows.length, total: st.rows.length });
+    onChange?.({ shown: shown.length, matching: rows.length, total: st.rows.length, province: st.prov });
   }
 
   function reset() {
     st.group = "";
     st.q = "";
+    st.prov = "";
     st.muni = "";
     search.value = "";
+    provSel.value = "";
     muniSel.value = "";
     st.limit = pageSize;
+    paintProvs();
     paintChips();
     paintMunis();
     paint();
@@ -523,12 +710,13 @@ export function raceBrowser({ electionId, local = true, pageSize = 120, municipa
     st.rows = payload?.races || [];
     st.counts = payload?.counts || {};
     st.source = payload?.results_source || "hidden";
+    paintProvs();
     paintChips();
     paintMunis();
     paint();
   }
 
-  return { el, toolbar, update, reset };
+  return { el, toolbar, update, reset, setProvince, province: () => st.prov };
 }
 
 /* ------------------------------------------------------------------ strict date order */
@@ -643,11 +831,17 @@ export function earlierBanner(electionId) {
             detail.length ? `${detail.join(" · ")}. ` : "",
             busy ? h("span", { class: "lc-earlier__busy" }, h("span", { class: "lc-spinner", "aria-hidden": "true" }), "Finishing them now — this can take a few minutes.") : "Finishing them certifies each one instantly, in date order.",
           ),
+          todayHint(),
         ),
         h(
-          "button",
-          { class: "btn btn--primary lv-banner__link", type: "button", disabled: busy, onclick: () => finishEarlier(electionId).catch(() => null) },
-          busy ? [h("span", { class: "lc-spinner lc-spinner--ink", "aria-hidden": "true" }), "Finishing…"] : "Finish earlier elections",
+          "div",
+          { class: "lc-banner__actions" },
+          h(
+            "button",
+            { class: "btn btn--primary lv-banner__link", type: "button", disabled: busy, onclick: () => finishEarlier(electionId).catch(() => null) },
+            busy ? [h("span", { class: "lc-spinner lc-spinner--ink", "aria-hidden": "true" }), "Finishing…"] : "Finish earlier elections",
+          ),
+          todayLink(),
         ),
       ),
     );
@@ -660,6 +854,21 @@ export function earlierBanner(electionId) {
     unsub();
   };
   return el;
+}
+
+/* ------------------------------------------------------------------ the Today page (world clock) */
+/** One line pointing to the recommended flow: the Today page moves the world clock. */
+function todayHint() {
+  return h(
+    "div",
+    { class: "lc-banner__hint" },
+    icon("clock", { size: 12 }),
+    h("span", null, h("b", null, "Recommended: "), "the ", h("a", { href: "#/today", class: "res-link" }, "Today page"), " takes the world from election day to election day — watch each night or count it instantly."),
+  );
+}
+
+function todayLink() {
+  return h("a", { class: "btn btn--ghost btn--sm lc-banner__today", href: "#/today" }, icon("clock", { size: 12 }), "Open Today");
 }
 
 /* ------------------------------------------------------------------ scheduled → ready */
@@ -719,11 +928,17 @@ export function scheduledBanner(electionId) {
           { class: "lv-banner__text" },
           h("div", { class: "banner__title" }, "Scheduled — not simulated yet"),
           h("div", { class: "lv-banner__sub" }, "The ballot is set, but the hidden result and the election-night timeline have not been generated. Preparing the night simulates them; every result stays hidden until the count runs."),
+          todayHint(),
         ),
         h(
-          "button",
-          { class: "btn lv-banner__link", type: "button", disabled: busy, onclick: () => prepareNight(electionId) },
-          busy ? [h("span", { class: "lc-spinner", "aria-hidden": "true" }), "Preparing…"] : [icon("play", { size: 13 }), "Prepare the night"],
+          "div",
+          { class: "lc-banner__actions" },
+          h(
+            "button",
+            { class: "btn lv-banner__link", type: "button", disabled: busy, onclick: () => prepareNight(electionId) },
+            busy ? [h("span", { class: "lc-spinner", "aria-hidden": "true" }), "Preparing…"] : [icon("play", { size: 13 }), "Prepare the night"],
+          ),
+          todayLink(),
         ),
       ),
     );

@@ -2,10 +2,13 @@
  * #/local — Local results: every race on one local election's ballot, modelled on a U.S. results
  * listing ("October 6th, 2026 Alaska Election Results … for 48 races").
  *
- *   title = election name · subtitle "N races in <province> · <status>" · summary tiles ·
- *   filter chips (All / School boards / Measures / Water boards / Specials & recalls, with counts)
- *   · client-side search · municipality filter · a two-column grid of race rows linking to
- *   #/races/{code}?e={id}.
+ *   title = election name · subtitle "N races in <provinces> · <status>" · per-province chips
+ *   (races decided / on the ballot in each province voting that day; a click filters the list) ·
+ *   summary tiles · filter chips (All / School boards / Measures / Water boards / Specials &
+ *   recalls, with counts) · client-side search · province and municipality filters · a two-column
+ *   grid of race rows linking to #/races/{code}?e={id}.
+ *
+ * One local election holds every province voting on its date (election.provinces).
  *
  * Data: GET /api/elections/{id}/races (refetched while the night runs).  A regular election works
  * the same (one chip per race type).  Results follow the hidden / live / final rule; nothing is
@@ -16,7 +19,7 @@ import { h, keyed, mount } from "../dom.js";
 import { fmtInt, fmtPct } from "../format.js";
 import { provBadge } from "../components/badges.js";
 import { icon } from "../components/icons.js";
-import { fmtDate, provinceName, raceBrowser, tally, loadProvinceNames } from "../components/local-kit.js";
+import { electionProvinces, fmtDate, provinceChips, provincesText, raceBrowser, tally, loadProvinceNames } from "../components/local-kit.js";
 import { liveRefresh, tile } from "../components/res-kit.js";
 import { pageFrame } from "../components/res-page.js";
 import { getElection, getState } from "../store.js";
@@ -34,10 +37,11 @@ export async function render(el) {
   const local = !!election?.local;
   const ctrl = new AbortController();
   await loadProvinceNames();
-  const prov = local ? provinceName(election.province_code, election) : null;
+  const codes = local ? electionProvinces(election) : [];
+  const prov = local ? provincesText(codes, { names: true }) || "every province voting" : null;
 
   const frame = pageFrame(el, {
-    eyebrow: local ? `Local results · ${prov} · ${fmtDate(election.election_date, "long")}` : "Results · every race",
+    eyebrow: local ? `Local results · ${provincesText(codes) || "local"} · ${fmtDate(election.election_date, "long")}` : "Results · every race",
     title: election?.name || "Local results",
     categories: ["FICTIONAL", "SIMULATED"],
     electionId: id,
@@ -45,16 +49,21 @@ export async function render(el) {
   });
   frame.header.classList.add("lc-head");
   const sub = h("p", { class: "lc-sub" });
-  frame.header.firstChild.append(sub);
+  const provHost = h("div", { class: "lc-provhost" });
+  frame.header.firstChild.append(sub, provHost);
 
   const tiles = h("div", { class: "res-tiles lc-tiles" });
   const countNote = h("span", { class: "lc-count muted" });
   const browser = raceBrowser({
     electionId: id,
     local,
-    onChange: ({ shown, matching, total }) => {
+    onChange: ({ shown, matching, total, province }) => {
       countNote.textContent = matching === total ? `${fmtInt(total)} races` : `${fmtInt(matching)} of ${fmtInt(total)} races`;
       void shown;
+      if (province !== activeProv) {
+        activeProv = province || "";
+        if (data) paintProvinces();
+      }
     },
   });
   const listCard = h(
@@ -97,6 +106,16 @@ export async function render(el) {
       );
 
   let data = null;
+  let activeProv = "";
+
+  /** Per-province chips (local elections spanning several provinces); a click filters the list. */
+  function paintProvinces() {
+    if (!local) return;
+    const src = data.results_source;
+    const rows = data.races || [];
+    const key = JSON.stringify([activeProv, src, rows.map((r) => [r.province_code, r.decided || r.moot ? 1 : 0])]);
+    keyed(provHost, key, () => provinceChips(rows, { order: codes, active: activeProv, showDecided: src !== "hidden", onPick: (code) => browser.setProvince(code) }));
+  }
 
   function paintHead() {
     const src = data.results_source;
@@ -121,7 +140,7 @@ export async function render(el) {
       src === "live" && rep
         ? tile("Reporting", fmtPct(rep.pct_expected_ballots), `${fmtInt(rep.municipalities_reporting)} of ${fmtInt(rep.municipalities_total)} municipalities`)
         : local || t.municipalityCount
-          ? tile("Municipalities", fmtInt(t.municipalityCount), local ? `with a contest in ${prov}` : "with a municipal race")
+          ? tile("Municipalities", fmtInt(t.municipalityCount), local ? (codes.length > 1 ? `with a contest in ${fmtInt(codes.length)} provinces` : `with a contest in ${prov}`) : "with a municipal race")
           : null,
     ].filter(Boolean);
     keyed(tiles, JSON.stringify([src, t.decided, t.total, t.measuresYes, t.measuresNo, t.seatsFilled, rep?.pct_expected_ballots]), () => items);
@@ -131,6 +150,7 @@ export async function render(el) {
     frame.setSource(data);
     paintHead();
     browser.update(data);
+    paintProvinces();
   }
 
   const fetchData = () => api.get(`/api/elections/${id}/races`, { signal: ctrl.signal });

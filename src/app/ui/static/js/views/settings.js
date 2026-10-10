@@ -146,7 +146,7 @@ export async function render(el) {
           ),
           row(
             "Default election",
-            "Election opened when no election is chosen in the address bar.",
+            "Election opened when no election is chosen in the address bar. Automatic: the election you viewed last, else the world clock's election of today, else the demo election.",
             h(
               "select",
               {
@@ -154,7 +154,7 @@ export async function render(el) {
                 "aria-label": "Default election",
                 onchange: (e) => save({ default_election_id: e.target.value ? Number(e.target.value) : null }, "Default election"),
               },
-              h("option", { value: "", selected: settings.default_election_id === null }, "Automatic (the demo election)"),
+              h("option", { value: "", selected: settings.default_election_id === null }, "Automatic (last viewed · today's election)"),
               electionOptions(elections, settings.default_election_id, { status: false }),
             ),
           ),

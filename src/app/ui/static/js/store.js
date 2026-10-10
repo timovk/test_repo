@@ -1,6 +1,7 @@
 /**
  * Minimal global state with subscriptions: meta (constitution, elections), the selected
- * election, UI settings, and the live election-night state (polled while a night runs).
+ * election, UI settings, the live election-night state (polled while a night runs) and the world
+ * clock (today, its running job and the action in flight).
  */
 
 const listeners = new Map();
@@ -9,6 +10,9 @@ const state = {
   electionId: null,
   settings: { theme: "dark", partyColors: {} },
   night: null, // latest NightManager.state() payload for state.electionId
+  clock: null, // GET /api/clock payload (the world's "today"), see clock.js
+  clockJob: null, // running / last count-or-skip job of the world clock
+  clockBusy: null, // clock action in flight: "next" | "watch" | "count" | "skip" | null
 };
 
 export function getState() {

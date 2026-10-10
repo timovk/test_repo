@@ -145,6 +145,64 @@ def holders_at(session: Session, when: date) -> dict[str, Holder]:
     return out
 
 
+HolderTimeline = dict[str, list[tuple[date, date | None, Holder]]]
+
+
+def holder_timeline(session: Session, prefix: str) -> HolderTimeline:
+    """Every term of the offices whose code starts with ``prefix`` (one query): office code →
+    ``(term_start, ended_on, holder)`` oldest first.  :func:`holder_on` answers who served on a
+    date like :func:`holders_at`, without loading every office of the system per date."""
+    party_code = dict(session.execute(select(Party.id, Party.code)).tuples().all())
+    rows = session.execute(
+        select(
+            OfficeHolder.id,
+            OfficeHolder.office_id,
+            OfficeHolder.candidate_id,
+            OfficeHolder.party_id,
+            OfficeHolder.term_start,
+            OfficeHolder.term_end,
+            OfficeHolder.ended_on,
+            Office.code,
+            Candidate.key,
+            Candidate.party_id,
+        )
+        .join(Office, Office.id == OfficeHolder.office_id)
+        .join(Candidate, Candidate.id == OfficeHolder.candidate_id)
+        .where(Office.code.like(f"{prefix}%"))
+        .order_by(OfficeHolder.term_start, OfficeHolder.id)
+    ).all()
+    out: HolderTimeline = {}
+    for hid, office_id, cand_id, seat_pid, start, end, ended, code, key, cur_pid in rows:
+        out.setdefault(code, []).append(
+            (
+                start,
+                ended,
+                Holder(
+                    office_code=code,
+                    office_id=office_id,
+                    holder_id=hid,
+                    candidate_id=cand_id,
+                    candidate_key=key,
+                    seat_party=party_code.get(seat_pid) if seat_pid is not None else None,
+                    current_party=party_code.get(cur_pid) if cur_pid is not None else None,
+                    term_start=start,
+                    term_end=end,
+                ),
+            )
+        )
+    return out
+
+
+def holder_on(timeline: HolderTimeline, office_code: str, when: date) -> Holder | None:
+    """The holder of an office on a date in a :func:`holder_timeline` (term started, not ended;
+    the latest such term, as :func:`holders_at`)."""
+    found = None
+    for start, ended, h in timeline.get(office_code, ()):
+        if start <= when and (ended is None or ended > when):
+            found = h
+    return found
+
+
 # =========================================================================== parties
 def upsert_parties(
     session: Session, doc: ScenarioDocument, year: int, *, historical: bool = False

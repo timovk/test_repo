@@ -6,7 +6,7 @@ import { api } from "../api.js";
 import { h, mount } from "../dom.js";
 import { provBadge } from "../components/badges.js";
 import { groupElections, statusInfo } from "../components/election-picker.js";
-import { fmtDate, provinceName } from "../components/local-kit.js";
+import { electionProvinces, fmtDate, provincesText } from "../components/local-kit.js";
 import { getState, partyColor } from "../store.js";
 
 /** Page header: eyebrow, title, optional meta nodes (badges, pickers, buttons). */
@@ -48,7 +48,7 @@ export function currentElectionId() {
 
 /**
  * <optgroup>s of elections for a <select>: "Regular elections" first, then "Local elections ·
- * <year>" (newest year first).  Local ones are labelled by date and province.
+ * <year>" (newest year first).  Local ones are labelled by date and the provinces voting.
  */
 export function electionOptions(elections, selectedId, { status = true } = {}) {
   return groupElections(elections || []).map((g) =>
@@ -57,8 +57,9 @@ export function electionOptions(elections, selectedId, { status = true } = {}) {
       { label: g.label },
       g.items.map((e) => {
         const word = status ? ` (${statusInfo(e)[1].toLowerCase()})` : "";
-        const text = e.local ? `${fmtDate(e.election_date)} · ${provinceName(e.province_code, e)}${word}` : `${e.year} · ${e.name}${word}`;
-        return h("option", { value: e.id, selected: e.id === selectedId }, text);
+        const codes = electionProvinces(e);
+        const text = e.local ? `${fmtDate(e.election_date)} · ${codes.length ? provincesText(codes) : "local"}${word}` : `${e.year} · ${e.name}${word}`;
+        return h("option", { value: e.id, selected: e.id === selectedId, title: e.local ? `${e.name} — ${provincesText(codes, { names: true })}` : undefined }, text);
       }),
     ),
   );

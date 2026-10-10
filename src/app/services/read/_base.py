@@ -285,8 +285,20 @@ def _latest_id(session: Session) -> int | None:
 
 
 def demo_election_id(session: Session) -> int | None:
-    """The demo election: ``app_meta.demo_election_id`` when set and valid, else the most recent
-    election that is not reported yet (ready for an election night), else the latest one."""
+    """The election the app opens on.  With the world clock set (docs/CLOCK.md): today's
+    election, else the latest regular election on or before today.  Otherwise
+    ``app_meta.demo_election_id`` when set and valid, else the most recent election that is not
+    reported yet (ready for an election night), else the latest one."""
+    clock_row = session.get(AppMeta, "world_date")
+    if clock_row is not None and clock_row.value:
+        today = date.fromisoformat(clock_row.value)
+        for q in (
+            select(Election.id).where(Election.election_date == today),
+            select(Election.id).where(Election.election_date <= today, Election.election_type != "local"),
+        ):
+            eid = session.scalar(q.order_by(Election.election_date.desc(), Election.id.desc()).limit(1))
+            if eid is not None:
+                return int(eid)
     row = session.get(AppMeta, DEMO_ELECTION_KEY)
     if row is not None:
         try:

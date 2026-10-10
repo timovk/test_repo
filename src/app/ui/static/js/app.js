@@ -9,7 +9,9 @@
  * Live numbers come from the night snapshot (store.night); final numbers from
  * /api/elections/{id}/president, /house and /senate.  The strip performs no election mathematics.
  * For a local election (election_type "local") the EV bar and the House / Senate counters give
- * way to the province and date, "Races called x/y" and "Measures passed x/y" (counted API flags).
+ * way to the provinces voting and the date, "Races called x/y" and "Measures passed x/y" (counted
+ * API flags).  Next to the brand, the world clock's "Today" (docs/CLOCK.md) links to #/today on
+ * every page and shows a running count / skip job.
  */
 import { api } from "./api.js";
 import { $, h, keyed, mount } from "./dom.js";
@@ -19,7 +21,8 @@ import { evBar } from "./components/evbar.js";
 import { provBadge } from "./components/badges.js";
 import { toast } from "./components/live-toast.js";
 import { electionPickerButton } from "./components/election-picker.js";
-import { finishEarlier, fmtDate, isDecidedStatus, isEarlierRefusal, latestRegular, loadProvinceNames, prepareNight, provinceName, tally } from "./components/local-kit.js";
+import { electionProvinces, finishEarlier, fmtDate, isDecidedStatus, isEarlierRefusal, latestRegular, loadProvinceNames, prepareNight, provincesText, tally } from "./components/local-kit.js";
+import { clockIsBusy, clockIsFresh, refreshClock } from "./clock.js";
 import { REGULAR_ONLY_VIEWS, ROUTES } from "./routes.js";
 import { parseHash, startRouter } from "./router.js";
 import { getElection, getState, nightFor, partyColor, setState, subscribe } from "./store.js";
@@ -89,9 +92,10 @@ function renderStrip() {
     h(
       "div",
       { class: "brand" },
-      h("a", { class: "brand__mark", href: "#/night", "aria-label": "Election Night home" }, "NL"),
+      h("a", { class: "brand__mark", href: "#/today", "aria-label": "Today (home)" }, "NL"),
       h("div", { class: "lv-brand__text" }, h("div", { class: "brand__sub", id: "strip-kind" }, "NL Federal Election"), h("div", { id: "strip-picker", class: "lv-strip-picker" })),
     ),
+    h("a", { class: "strip__counter lv-counter lv-today", id: "strip-today", href: "#/today", "aria-label": "Today — the world clock" }),
     h("div", { class: "strip__slot strip__ev", id: "strip-ev" }),
     h("div", { class: "strip__counter lv-counter", id: "strip-house" }),
     h("div", { class: "strip__counter lv-counter", id: "strip-senate" }),
@@ -310,7 +314,7 @@ function renderLocalEv(m) {
       h(
         "div",
         { class: "lv-strip-ev__head" },
-        h("span", { class: "strip__label" }, `Local · ${provinceName(e.province_code, e)}`),
+        h("span", { class: "strip__label", title: provincesText(electionProvinces(e), { names: true }) }, `Local · ${provincesText(electionProvinces(e)) || "all provinces"}`),
         h("span", { class: "lv-strip-ev__status" }, status),
         h("span", { class: "lv-strip-ev__towin" }, c ? `${fmtInt(c.total)} RACES` : "LOCAL"),
       ),
@@ -580,7 +584,7 @@ function renderControls(m) {
             m.local
               ? resettable
                 ? "Replay resets it to polls closing"
-                : `Local elections · ${provinceName(m.election?.province_code, m.election)}`
+                : `Local elections · ${provincesText(electionProvinces(m.election))}`
               : m.ev?.decidedBy === "contingent"
                 ? "President chosen by contingent election"
                 : m.noPresident
@@ -712,6 +716,62 @@ function highlightNav(path) {
     const p = a.dataset.path;
     a.classList.toggle("is-active", path === p || (p !== "/night" && path.startsWith(`${p}/`)));
   });
+  $("#strip-today")?.classList.toggle("is-active", path === "/today");
+}
+
+/* ------------------------------------------------------------------ world clock ("Today") */
+const DAY_FMT = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const dayShort = (iso) => (iso ? DAY_FMT.format(new Date(`${iso}T00:00:00Z`)) : "–");
+
+/** Strip block "TODAY · 8 Nov 2028" + what the day holds (or the running count / skip job). */
+function renderToday() {
+  const el = $("#strip-today");
+  if (!el) return;
+  const { clock, clockJob } = getState();
+  const busy = clockIsBusy();
+  const job = clockJob?.running ? clockJob : null;
+  const today = clock?.today || null;
+  const unfinished = (clock?.pending || []).length > 0;
+  const todays = clock?.elections_today || [];
+  let sub;
+  let subKind = "";
+  if (job) {
+    sub = [h("span", { class: "lc-spinner", "aria-hidden": "true" }), job.kind === "skip" ? `Skipping ${job.total ? `${job.done}/${job.total}` : "…"}` : `Counting${job.total > 1 ? ` ${job.done}/${job.total}` : "…"}`];
+    subKind = "busy";
+  } else if (busy) {
+    sub = [h("span", { class: "lc-spinner", "aria-hidden": "true" }), { next: "Moving on…", watch: "Preparing…", count: "Counting…", skip: "Skipping…", refresh: "Updating…" }[busy] || "Working…"];
+    subKind = "busy";
+  } else if (unfinished && todays.length) {
+    sub = "Election day";
+    subKind = "day";
+  } else if (unfinished) {
+    sub = "Unfinished election";
+    subKind = "day";
+  } else if (clock?.next) {
+    sub = `Next · ${dayShort(clock.next.date)}`;
+  } else sub = clock ? "No election ahead" : "";
+  const key = JSON.stringify([today, subKind, job ? [job.kind, job.done, job.total] : null, busy, clock?.next?.date, unfinished, todays.length]);
+  keyed(el, key, () => [
+    h("span", { class: "strip__label" }, icon("clock", { size: 10 }), " Today"),
+    h("span", { class: "strip__value lv-today__date" }, today ? dayShort(today) : "–"),
+    h("span", { class: ["strip__label", "lv-today__sub", subKind && `lv-today__sub--${subKind}`] }, subKind === "day" ? h("span", { class: "lv-today__dot", "aria-hidden": "true" }) : null, sub),
+  ]);
+  el.title = clock ? `${clock.today_label} — the world clock (open the Today page)` : "The world clock (open the Today page)";
+}
+
+/** Refresh the clock when election statuses change (a night finished, an election was reset …). */
+let statusSig = null;
+let clockRefreshTimer = null;
+function watchStatuses(meta) {
+  const sig = (meta?.elections || []).map((e) => `${e.id}:${e.status}`).join(",");
+  if (statusSig !== null && sig !== statusSig) {
+    clearTimeout(clockRefreshTimer);
+    // Clock actions publish the fresh clock themselves: re-read it only when it is not fresh.
+    clockRefreshTimer = setTimeout(() => {
+      if (!clockIsFresh()) refreshClock().catch(() => null);
+    }, 400);
+  }
+  statusSig = sig;
 }
 
 /* ------------------------------------------------------------------ routing */
@@ -731,7 +791,7 @@ async function onRoute({ route, params, query, path }) {
   highlightNav(path);
   if (query.e && Number(query.e) !== getState().electionId) selectElection(Number(query.e));
   if (!route) {
-    mount(main, h("div", { class: "state" }, h("h2", null, "Page not found"), h("a", { class: "btn", href: "#/night" }, "Go to Election Night")));
+    mount(main, h("div", { class: "state" }, h("h2", null, "Page not found"), h("a", { class: "btn", href: "#/today" }, "Go to Today")));
     return;
   }
   document.title = `${route.title} · NL Federal Election Simulator`;
@@ -818,7 +878,13 @@ async function boot() {
   });
   subscribe("electionId", updateStrip);
   subscribe("settings", updateStrip);
+  subscribe("clock", renderToday);
+  subscribe("clockJob", renderToday);
+  subscribe("clockBusy", renderToday);
+  subscribe("meta", watchStatuses);
+  renderToday();
   loadProvinceNames().then(() => updateStrip());
+  const clockLoad = refreshClock().catch(() => null);
   try {
     const [meta, settings] = await Promise.all([api.get("/api/meta"), api.get("/api/settings").catch(() => null)]);
     if (settings)
@@ -835,8 +901,13 @@ async function boot() {
     const stored = Number(safeStorage(() => localStorage.getItem(ELECTION_KEY)));
     const ids = (meta.elections || []).map((e) => e.id);
     const preferred = Number(settings?.default_election_id);
-    const initial =
-      Number(parseHash().query.e) || (ids.includes(preferred) ? preferred : null) || (ids.includes(stored) ? stored : null) || meta.demo_election_id || ids[ids.length - 1] || null;
+    let initial = Number(parseHash().query.e) || (ids.includes(preferred) ? preferred : null) || (ids.includes(stored) ? stored : null) || null;
+    if (!initial) {
+      // First visit: start on the world clock's election of today (wait for it a little only).
+      const clock = await Promise.race([clockLoad, new Promise((r) => setTimeout(() => r(null), 3000))]);
+      const todayId = Number((clock?.elections_today || [])[0]?.id);
+      initial = (ids.includes(todayId) ? todayId : null) || meta.demo_election_id || ids[ids.length - 1] || null;
+    }
     if (initial) selectElection(initial);
   } catch (err) {
     console.error(err);

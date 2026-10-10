@@ -129,6 +129,8 @@ def _stored_days(session: Session, start: date, end: date) -> dict[date, Electio
     out: dict[date, ElectionDay] = {}
     for e in rows:
         c = counts.get(int(e.id), {})
+        if e.election_type == ElectionType.LOCAL.value:
+            c = _local_kinds(c)
         out.setdefault(
             e.election_date,
             ElectionDay(
@@ -142,6 +144,29 @@ def _stored_days(session: Session, start: date, end: date) -> dict[date, Electio
                 counts=c,
             ),
         )
+    return out
+
+
+_KIND_OF_RACE = {
+    RaceType.SCHOOL_BOARD.value: "school_board",
+    RaceType.WATER_BOARD.value: "water_board",
+    RaceType.BALLOT_MEASURE.value: "measure",
+    RaceType.COUNCIL_SEAT.value: "council_seat",
+    RaceType.RECALL.value: "recall",
+}
+
+
+def _local_kinds(by_race_type: dict[str, int]) -> dict[str, int]:
+    """Race counts of a stored local election in the contest kinds of a planned one (a recall's
+    replacement race is part of the recall)."""
+    out: dict[str, int] = {}
+    for rt, n in by_race_type.items():
+        kind = _KIND_OF_RACE.get(rt)
+        if kind is not None:
+            out[kind] = out.get(kind, 0) + n
+    specials = by_race_type.get(RaceType.MAYOR.value, 0) - by_race_type.get(RaceType.RECALL.value, 0)
+    if specials > 0:
+        out["mayor_special"] = specials
     return out
 
 
@@ -335,25 +360,33 @@ def skip_to(
     start = today(session)
     if target <= start:
         raise ElectionError(f"the clock only moves forward (today is {start.isoformat()})")
-    planned = [d for d in agenda(session, start, target - timedelta(days=1))]
-    total = len(planned) + len(unfinished_through(session, start))
+    pending = unfinished_through(session, start)
+    planned = [d for d in agenda(session, start, target - timedelta(days=1)) if not d.finished]
+    total = len(pending) + len(planned)
     counted: list[int] = []
 
-    def step(name: str, _i: int, _n: int) -> None:
+    def report(name: str) -> None:
         if progress is not None:
             progress(name, len(counted), total)
 
-    counted += count_today(session, manager=manager, commit=commit, progress=step)
+    def done(eid: int) -> None:
+        if commit is not None:
+            commit()
+        counted.append(int(eid))
+
+    for el in pending:
+        report(el.name)
+        count_election(session, el.id, manager=manager)
+        done(el.id)
     for day in planned:
         el = ensure_election_on(session, day.date)
         set_today(session, day.date)
         if commit is not None:
             commit()
-        step(el.name, 0, 0)
+        report(el.name)
         count_election(session, el.id, manager=manager)
-        if commit is not None:
-            commit()
-        counted.append(int(el.id))
+        done(el.id)
+    report("")
     election_id = None
     nxt = agenda(session, target - timedelta(days=1), target)
     if nxt:
@@ -428,7 +461,7 @@ def _result_items(session: Session, start: date, end: date) -> list[dict[str, An
     for el in session.scalars(
         select(Election)
         .where(
-            Election.election_date > start,
+            Election.election_date >= start,
             Election.election_date <= end,
             Election.status.in_(list(REPORTED_STATUSES)),
         )
@@ -491,7 +524,7 @@ def _people_items(session: Session, start: date, end: date) -> list[dict[str, An
         .join(Candidate, Candidate.id == BallotCandidate.candidate_id)
         .where(
             Candidate.key.in_(keys),
-            Election.election_date > start,
+            Election.election_date >= start,
             Election.election_date <= end,
             Election.status.in_(list(REPORTED_STATUSES)),
         )
@@ -519,8 +552,9 @@ def _people_items(session: Session, start: date, end: date) -> list[dict[str, An
 
 
 def news(session: Session, start: date, end: date) -> list[dict[str, Any]]:
-    """What happened with ``start < date ≤ end`` (oldest first): office events, results and your
-    own people's races."""
+    """What happened between two dates (oldest first): office events with ``start < date ≤ end``
+    and the results — elections and your own people's races — with ``start ≤ date ≤ end`` (an
+    election held on ``start`` is finished after the clock arrived there)."""
     items = (
         _event_items(session, start, end)
         + _result_items(session, start, end)

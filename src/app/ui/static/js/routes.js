@@ -4,6 +4,7 @@
  * `nav` entries define the sidebar; the order mirrors the product navigation (spec §36).
  */
 export const ROUTES = [
+  { path: "/today", view: "today", title: "Today", nav: "Live", icon: "clock" },
   { path: "/night", view: "night", title: "Election Night", nav: "Live", icon: "night" },
   { path: "/president", view: "president", title: "President", nav: "Live", icon: "president" },
   { path: "/electoral-college", view: "electoral-college", title: "Electoral College", nav: "Live", icon: "college" },
@@ -28,7 +29,8 @@ export const ROUTES = [
   { path: "/settings", view: "settings", title: "Settings", nav: "System", icon: "settings" },
 ];
 
-export const DEFAULT_ROUTE = "/night";
+/** Home: the world clock's Today page (watch or count each election day, then move on). */
+export const DEFAULT_ROUTE = "/today";
 
 /**
  * Views that only make sense for regular (November) elections: for a local election they show a

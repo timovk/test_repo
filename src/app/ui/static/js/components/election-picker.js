@@ -1,7 +1,7 @@
 /**
  * Searchable election picker for the national strip.  With hundreds of (mostly local) elections a
  * plain <select> is unusable, so this is a button + popover listbox:
- *   * search box (name, province, date, year, status),
+ *   * search box (name, province codes and names, date, year, status),
  *   * filter All / Regular / Local,
  *   * groups: "Regular elections" first, then "Local elections · <year>" (newest year first),
  *   * keyboard: ↑/↓/Home/End move, Enter selects, Esc closes.
@@ -10,7 +10,7 @@
 import { h, mount } from "../dom.js";
 import { fmtInt } from "../format.js";
 import { icon } from "./icons.js";
-import { fmtDate, provinceName } from "./local-kit.js";
+import { electionProvinces, fmtDate, provinceName, provincesText } from "./local-kit.js";
 
 const STATUS = {
   live: ["live", "Live"],
@@ -22,13 +22,22 @@ const STATUS = {
 
 export const statusInfo = (e) => STATUS[e?.status] || ["scheduled", e?.status || "–"];
 
-/** Display label of an election brief: {title, sub}. */
+/**
+ * Display label of an election brief: {title, sub, tip}.  A local election (every province voting
+ * on its date) reads "7 Feb 2029 · OV, ZE, NB" with the province names in `sub` / `tip`.
+ */
 export function electionLabel(e) {
-  if (!e) return { title: "–", sub: "" };
+  if (!e) return { title: "–", sub: "", tip: "" };
   if (e.local) {
-    return { title: `${provinceName(e.province_code, e)} · ${fmtDate(e.election_date)}`, sub: `Local elections · ${e.province_code || ""}` };
+    const codes = electionProvinces(e);
+    const names = provincesText(codes, { names: true });
+    return {
+      title: codes.length ? `${fmtDate(e.election_date)} · ${provincesText(codes)}` : `${fmtDate(e.election_date)} · Local`,
+      sub: names ? `Local · ${names}` : "Local elections",
+      tip: `${e.name}${names ? ` — ${names}` : ""}`,
+    };
   }
-  return { title: e.name, sub: `${fmtDate(e.election_date, "long")} · ${e.election_type || "election"}` };
+  return { title: e.name, sub: `${fmtDate(e.election_date, "long")} · ${e.election_type || "election"}`, tip: e.name };
 }
 
 /** Grouped elections: [{key, label, items}] — regular first, then local by year (newest first). */
@@ -112,7 +121,7 @@ export function electionPickerButton({ onSelect } = {}) {
     btnText.textContent = cur ? lab.title : "Choose an election";
     const [cls, word] = statusInfo(cur);
     btnDot.className = `ep-dot ep-dot--${cls}`;
-    btn.title = cur ? `${cur.name} (${word}) — choose the election shown on every page` : "Choose the election shown on every page";
+    btn.title = cur ? `${lab.tip} (${word}) — choose the election shown on every page` : "Choose the election shown on every page";
     btn.setAttribute("aria-label", cur ? `Election: ${cur.name}, ${word}. Change election` : "Choose an election");
   }
 
@@ -121,7 +130,11 @@ export function electionPickerButton({ onSelect } = {}) {
     if (st.filter === "local" && !e.local) return false;
     if (!st.q) return true;
     const lab = electionLabel(e);
-    const hay = [e.name, lab.title, lab.sub, e.province_code, provinceName(e.province_code, e), e.election_date, fmtDate(e.election_date, "long"), String(e.year), e.status, statusInfo(e)[1], e.election_type].filter(Boolean).join(" ").toLowerCase();
+    const codes = electionProvinces(e);
+    const hay = [e.name, lab.title, lab.sub, ...codes, ...codes.map((c) => provinceName(c)), e.election_date, fmtDate(e.election_date, "long"), String(e.year), e.status, statusInfo(e)[1], e.election_type]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
     return st.q.split(/\s+/).every((w) => hay.includes(w));
   }
 
@@ -160,6 +173,7 @@ export function electionPickerButton({ onSelect } = {}) {
         id: `${listId}-${e.id}`,
         "aria-selected": String(cur),
         "data-idx": idx,
+        title: lab.tip,
         onmousemove: () => setActive(idx, false),
         onclick: () => choose(e.id),
       },

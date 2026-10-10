@@ -274,7 +274,7 @@ def resolve_office_events(session: Session, cal: LocalCalendar, until: date) -> 
     raw = cal.office_events(until)
     pending: dict[str, date] = {}
     out: list[OfficeEvent] = []
-    holder_cache: dict[date, dict[str, create_ops.Holder]] = {}
+    mayors = create_ops.holder_timeline(session, "MAYOR-")
     for ev in raw:
         if ev.election_date > until:
             continue
@@ -295,11 +295,7 @@ def resolve_office_events(session: Session, cal: LocalCalendar, until: date) -> 
         if ev.kind in (EVENT_MAYOR_VACANCY, EVENT_MAYOR_RECALL):
             # the holder serving the day before the event (a finished special election ends that
             # term on the vacancy date, so re-planning later still finds the same person)
-            day_before = ev.event_date - timedelta(days=1)
-            holders = holder_cache.get(day_before)
-            if holders is None:
-                holders = holder_cache[day_before] = create_ops.holders_at(session, day_before)
-            h = holders.get(office)
+            h = create_ops.holder_on(mayors, office, ev.event_date - timedelta(days=1))
             if h is None:
                 continue
             if ev.kind == EVENT_MAYOR_RECALL and (ev.event_date - h.term_start).days < min_days_in_office:
