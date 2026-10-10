@@ -38,7 +38,8 @@ src/app/
   scenarios/    scenario document schema, editor services, import/export
   analytics/    swing, lean, elasticity, efficiency gap, competitiveness, tipping point, history queries
   export/       CSV/JSON exporters with stable column schemas
-  services/     orchestration: election creation, simulation persistence, demo builder, history, validation
+  services/     orchestration: election creation, simulation persistence, demo builder, history, validation,
+                local elections, the world clock (clock.py) and the generated future elections (continuation.py)
   api/          FastAPI application and routers (JSON only; no election math)
   ui/static/    single-page broadcast-style frontend (vanilla ES modules + vendored Leaflet)
   cli/          Typer CLI (`python -m app …`)
@@ -119,6 +120,8 @@ Race codes: `PRES` (national parent), `PRES-<PV>` (province EV contest), `HOUSE-
 * `voting.simulate_election(model, races, seed, context) -> ElectionDraw`
 * `voting.expected_race_shares(model, race, context) -> (n, L) array` (no shocks; used by calling/forecast)
 * `candidates.generate_down_ballot(...)`, `candidates.fictional_name(rng, gender)`
+* `people.load_people(frame)`, `people.assign_people(config, slots, seed, on, parties)` — your own
+  people of `config/people.yaml` ([PEOPLE.md](PEOPLE.md))
 * `baselines.import_historical_csv(...)`, `baselines.province_lean(...)`, `baselines.elasticity(...)`
 
 ### elections

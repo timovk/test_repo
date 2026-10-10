@@ -19,14 +19,20 @@ contests in between.
 - **Each municipality has its own day.** Every municipality is dealt one of its province's days
   (its *slot*), balanced within the province, so it votes on the same day every year. The same
   applies to water boards.
-- **One local election = one province on one date**, e.g. *"Gelderland Local Elections ·
-  17 March 2027"*. A day with nothing on the ballot is skipped.
+- **One local election = one date.** Every province voting that day is on the same ballot, with
+  one combined election night, e.g. *"Local Elections · 7 February 2029"* (Overijssel, Zeeland and
+  Noord-Brabant). A date with nothing on the ballot is skipped.
 - Everything is a pure function of the configuration, the geography and `seed`, using keyed
   random streams. Dates, ballots and candidates never depend on the order in which elections are
   created.
 
-At the default settings there are about 48 local elections a year, typically 5–40 races each.
-Big provinces (Zuid-Holland, Noord-Brabant) hold larger ballots than Flevoland or Zeeland.
+At the default settings the 48 province days of a year fall on about 17 dates, so there are
+about 17 local elections a year, with one to four provinces and typically 15–70 races each
+(median about 40). Big provinces (Zuid-Holland, Noord-Brabant) hold larger ballots than Flevoland
+or Zeeland.
+
+The world clock ([CLOCK.md](CLOCK.md)) moves from one election day to the next and creates each
+local election when it reaches its date.
 
 ## What is on the ballot
 
@@ -155,7 +161,8 @@ Elections are certified in date order, as with the regular elections. An electio
 finished (and its night only started) when every earlier election is finished.
 
 Once local elections are in use, the planned local elections before it must also have been
-created and held. Same-day local elections of different provinces are independent of each other.
+created and held. With the world clock this happens by itself: it only moves to the next election
+day once today's election is finished.
 
 "Finish earlier" holds every unfinished election before a given one, oldest first: it creates,
 simulates and runs an instant election night for each, so every race call is stored.
@@ -178,19 +185,21 @@ general election in date order, each through an instant election night:
 3. local elections between 2026 and 2028;
 4. the 2028 general election (simulated, ready at polls closing).
 
-Then it schedules (creates, without simulating) the local elections up to the next regular
-election day in 2030. The roughly 190 local elections it holds add about 12 minutes to the build;
+The world clock then waits on 8 November 2028; later local elections are created as the clock
+reaches them. The roughly 64 local elections it holds add several minutes to the build;
 `--no-local-elections` leaves them out.
 
 ## Interfaces
 
 - **UI**
+  - *Today* (`#/today`, [CLOCK.md](CLOCK.md)): today's election day with *Watch the night* /
+    *Count instantly*, the next election day, skip ahead, news and the agenda.
   - *Local results* (`#/local`): every race of a local election as a searchable list with filter
-    chips (school boards, measures, water boards, specials and recalls) and a municipality
-    filter. Rows show the leader or winners ("+N candidates", "vote for N"), Yes % against the
+    chips (school boards, measures, water boards, specials and recalls), a province and a
+    municipality filter. Rows show the leader or winners ("+N candidates", "vote for N"), Yes % against the
     threshold with Passed / Failed, the recalled mayor, and LIVE / Projected / Called / Final.
-  - *Local calendar* (`#/calendar`): the local days twelve months at a time, per province, with
-    what is on each ballot and a link to the results or the night.
+  - *Local calendar* (`#/calendar`): the local election dates twelve months at a time, with the
+    provinces voting, what is on each ballot and a link to the results or the night.
   - *Election night* of a local election: races called, measures passing, reporting, the live
     race list and the call feed. A scheduled election shows "Prepare the night" (simulates it).
     When earlier elections are unfinished, a banner offers "Finish earlier elections".
@@ -201,20 +210,22 @@ election day in 2030. The roughly 190 local elections it holds add about 12 minu
     date. Pages that only exist for the November elections (President, House, Forecast …) say so
     for a local election.
 - **API**
-  - `GET /api/local/calendar`
-  - `GET|POST /api/local/elections`
+  - `GET /api/local/calendar` (one entry per date)
+  - `GET|POST /api/local/elections` (create by `date`)
   - `GET /api/elections/{id}/races?q=&type=&municipality=`
   - `GET /api/elections/{id}/earlier`
   - `POST /api/elections/{id}/finish-earlier`
   - See [API.md](API.md).
 - **CLI**
-  - `python -m app local calendar | list | create | schedule`
+  - `python -m app local calendar | list | create -d DATE | schedule`
+  - `python -m app clock next` — the usual way: go to the next election day ([CLOCK.md](CLOCK.md))
   - `python -m app finish-earlier`
   - See [CLI.md](CLI.md).
 
 ## Database
 
-- `election.election_type = "local"` and `election.province_id`.
+- `election.election_type = "local"` and `election.provinces` (the provinces voting that day,
+  `"OV,ZE,NB"`; migration `9c1d2e3f4a5b`). `election.province_id` is no longer used.
 - `race.threshold` (Yes/No) and `race.details_json`:
   - contest data: measure title, summary and topic; board seats up and terms; recall target;
     vacancy reason; term end;

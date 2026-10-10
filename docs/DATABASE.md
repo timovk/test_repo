@@ -107,9 +107,11 @@ is FICTIONAL and lives in the election tables.
 
 ### Application
 
-`app_meta` holds key/value state: `active_vintage_year`, `geo_vintage_fingerprint_<year>`, and
+`app_meta` holds key/value state: `active_vintage_year`, `geo_vintage_fingerprint_<year>`,
 `geography_source`, which tells `services.runtime.get_frame` whether the frame of this database
-comes from the REAL store, from a registered synthetic test geography, or from the database rows.
+comes from the REAL store, from a registered synthetic test geography, or from the database rows,
+`world_date` (the world clock's today, [CLOCK.md](CLOCK.md)), `local_elections_enabled` and
+`demo_election_id`.
 `alembic_version` is the migration state.
 
 ---
@@ -118,7 +120,8 @@ comes from the REAL store, from a registered synthetic test geography, or from t
 
 In-between local elections ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)) reuse the election tables:
 
-- `election.election_type = 'local'` with `election.province_id` (one province, one date).
+- `election.election_type = 'local'`, one per date, with `election.provinces` (the provinces voting
+  that day, `"OV,ZE,NB"`; migration `9c1d2e3f4a5b`). `election.province_id` is no longer used.
 - `race.race_type`: `SCHOOL_BOARD`, `WATER_BOARD`, `BALLOT_MEASURE`, `RECALL`, `COUNCIL_SEAT`,
   plus special `MAYOR` races.
 - `race.threshold` is the YES share a question needs.

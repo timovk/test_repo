@@ -90,24 +90,47 @@ python -m app run                  # open http://127.0.0.1:8000
    waits at polls closing (21:00): **0 EV allocated, 174 EV available, 88 TO WIN**.
 6. Runs a 10,000-draw forecast and validates every constitutional invariant.
 
-In the web UI, go to **Election Night** and press ▶. You can also watch the night in the terminal:
+The web UI opens on **Today**: the world clock stands on 8 November 2028, the 2028 general election
+day. Choose **Watch the night** (or press ▶ on **Election Night**) or **Count instantly**. You can
+also watch the night in the terminal:
 
 ```bash
 python -m app election-night --election demo --speed 25
 ```
 
+### The world clock: roll through the calendar
+
+The world has one *today*. When today's election is finished, press **Next election day ▶**: the
+clock moves to the next date with anything on the ballot (a local election day or a November
+election) and asks whether to **watch** its night or **count** it instantly. **Skip ahead**
+counts everything up to a date. It never ends: after 2028 every November election is generated
+from the elections before it (the national mood follows the results, office holders run again,
+new presidential tickets), and the news feed tells you what happened in between. On the command
+line: `python -m app clock`, `clock next`, `clock skip --to 2031-01-01`. Details are in
+[docs/CLOCK.md](docs/CLOCK.md).
+
+### Your own people and parties
+
+Put friends and family in `config/people.yaml` with the municipality they live in: they will
+sometimes run for office there — the school board, a council seat, mayor, the House district,
+the Senate or the governorship of their province — and win or lose like anyone else
+([docs/PEOPLE.md](docs/PEOPLE.md); check the file with `python -m app people`). New parties go in
+`config/parties/fictional.yaml` ([docs/PARTIES.md](docs/PARTIES.md)).
+
 ### Local elections in between
 
 Between the big November elections every province holds about four **local election days** a
 year: school boards, water boards (the REAL water authorities), ballot measures, special elections
-for vacant offices and mayor recalls. That's about 50 local elections a year, each holding one
-province's races on one day. The demo holds every one of them from 2024 up to the 2028 general
-election. In the app, see **Local results** and **Local calendar**; on the command line, see
-`python -m app local calendar` and `python -m app local list`.
+for vacant offices and mayor recalls. All provinces voting on a date form one local election with
+one combined election night — about 17 a year. The demo holds every one of them from 2024 up to
+the 2028 general election; the world clock takes you through the later ones. In the app, see
+**Local results** and **Local calendar**; on the command line, see `python -m app local calendar`
+and `python -m app local list`.
 
-Elections are finished in strict date order. To run a later election, first finish the earlier
-ones with the **Finish earlier elections** button or `python -m app finish-earlier --election 2030`.
-Details are in [docs/LOCAL_ELECTIONS.md](docs/LOCAL_ELECTIONS.md).
+Elections are finished in strict date order; the world clock takes care of that. Outside the
+clock, finish the earlier ones with the **Finish earlier elections** button or
+`python -m app finish-earlier --election 2030`. Details are in
+[docs/LOCAL_ELECTIONS.md](docs/LOCAL_ELECTIONS.md).
 
 **Upgrading a demo built by an older version?** The election picker then lists only the big
 elections. Run `python -m app demo --force`: it rebuilds the geography with the water boards
@@ -137,7 +160,7 @@ python -m app election-night --election 2028         # or run it live in the UI
 python -m app run
 ```
 
-Other useful commands: `local calendar|list|create|schedule`, `finish-earlier`, `reset`, `validate`, `history`, `polls`, `export`, `scenario list|show|duplicate|import|export`,
+Other useful commands: `clock [next|watch|count|skip|agenda|news]`, `people`, `local calendar|list|create|schedule`, `finish-earlier`, `reset`, `validate`, `history`, `polls`, `export`, `scenario list|show|duplicate|import|export`,
 and `db upgrade|current|revision`. The complete reference is in [docs/CLI.md](docs/CLI.md).
 
 ### Apportionment with the canonical data (CBS 2025)
@@ -250,7 +273,9 @@ legacy_web/      an unrelated static site that previously lived in this reposito
 | [SIMULATION.md](docs/SIMULATION.md) | the political model and demo calibration |
 | [FORECASTING.md](docs/FORECASTING.md) | Monte Carlo methodology |
 | [RACE_CALLING.md](docs/RACE_CALLING.md) | election-night reporting and race-calling methodology |
+| [CLOCK.md](docs/CLOCK.md) | the world clock: election days, watch or count, skip, news, endless elections |
 | [LOCAL_ELECTIONS.md](docs/LOCAL_ELECTIONS.md) | in-between local elections: calendar, contests, strict date order |
+| [PEOPLE.md](docs/PEOPLE.md), [PARTIES.md](docs/PARTIES.md) | adding your own people and parties |
 | [POLLING.md](docs/POLLING.md), [CAMPAIGNS.md](docs/CAMPAIGNS.md) | polls, aggregation and campaigns |
 | [ANALYTICS.md](docs/ANALYTICS.md) | metric definitions and export schemas |
 | [DATABASE.md](docs/DATABASE.md) | schema and migrations |

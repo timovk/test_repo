@@ -70,9 +70,9 @@ are skipped when you run it again.
    ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). `--no-local-elections` skips them.
 6. **demo-2028:** created and simulated, then left **SIMULATED**. Its election night starts at
    polls closing: 0 EV allocated, 174 available, **88 TO WIN**.
-7. **scheduled local elections:** the local elections after 2028, up to the next regular
-   election day, are created (not simulated).
-8. **forecast:** a 2028 Monte Carlo forecast (`--forecast-simulations`, seed `--seed`).
+7. **forecast:** a 2028 Monte Carlo forecast (`--forecast-simulations`, seed `--seed`).
+8. **world clock:** today is set to the demo election's day, 8 November 2028
+   ([CLOCK.md](CLOCK.md)). Later elections are created as the clock reaches them.
 9. **validate:** `app_meta.demo_election_id` is set and `validate_system` must pass.
 
 ```bash
@@ -257,14 +257,15 @@ python -m app demo --force                   # start over completely: rebuild th
 ### `local calendar | list | create | schedule` and `finish-earlier`
 
 In-between local elections (school boards, water boards, ballot measures, special elections and
-mayor recalls; [LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). A local election is one province on
-one of its local election days.
+mayor recalls; [LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). A local election is one date: every
+province voting that day, with one combined election night. Usually the world clock creates them
+(`clock next`, below); these commands work on them directly.
 
 ```bash
-python -m app local calendar                      # the next 12 months of local election days
-python -m app local calendar --year 2029 -p GE    # one year, one province
+python -m app local calendar                      # the next 12 months of local election dates
+python -m app local calendar --year 2029 -p GE    # one year, the dates Gelderland votes
 python -m app local list --year 2027              # the stored local elections
-python -m app local create -p GE -d 2029-03-14 --simulate
+python -m app local create -d 2029-03-14 --simulate
 python -m app local schedule --until 2030-11-05   # create every planned local election up to a date
 python -m app finish-earlier --election 2030      # hold every unfinished election before 2030, oldest first
 ```
@@ -277,6 +278,35 @@ given one (`--limit N` stops after N).
 
 `--election latest` and `--election <year>` address the regular elections; local elections are
 addressed by id.
+
+### `clock` — the world clock
+
+One *today* for the whole world; roll from election day to election day ([CLOCK.md](CLOCK.md)).
+
+```bash
+python -m app clock                    # today, today's elections, the next election day
+python -m app clock next               # go to the next election day, then: watch (w), count (c) or later (l)?
+python -m app clock next --count       # … and count it instantly (or --watch, --speed 25)
+python -m app clock watch --speed 25   # watch today's election night in the terminal
+python -m app clock count              # count today's election instantly (every call stored)
+python -m app clock skip --to 2031-01-01   # count every election day before a date, move there
+python -m app clock agenda --months 12 # the coming election days
+python -m app clock news --days 365    # vacancies, recalls, results and your own people
+```
+
+`clock next` refuses (exit code 6) while today's election is unfinished. After the built-in
+scenarios, the clock generates each November election from the previous ones.
+
+### `people` — your own people
+
+```bash
+python -m app people                   # config/people.yaml: homes, parties, races run, offices held
+python -m app people --json
+```
+
+Checks `config/people.yaml` ([PEOPLE.md](PEOPLE.md)) against the geography and the parties (exit
+code 6 with the problem when it does not validate) and lists, per person, every race they ran in
+(won or lost) and the offices they hold.
 
 ### `election-night`
 
@@ -424,12 +454,17 @@ python -m app scenario validate demo-2028-b
 python -m app demo
 python -m app election-night --election demo --speed 25
 
-# a new election cycle
-python -m app election-night --election 2028 --instant                          # 2028 becomes history
-python -m app scenario duplicate midterm-2026 midterm-2030 --seed 20300001 --name "Midterm Election 2030"
-python -m app election create --year 2030 --scenario midterm-2030 --simulate    # the copy moved to 2030
-python -m app election-night --election 2030 --instant
+# roll on with the world clock
+python -m app clock count                    # the 2028 general election becomes history
+python -m app clock next --count             # the first local election day of 2029, counted
+python -m app clock next                     # the next one: watch or count?
+python -m app clock skip --to 2030-11-01     # count everything up to the 2030 midterm …
+python -m app clock watch --speed 25         # … and watch the generated midterm's night
 python -m app history
+
+# your own people
+$EDITOR config/people.yaml                   # see docs/PEOPLE.md
+python -m app people                         # check the file; later: their races and offices
 
 # analysis and data
 python -m app forecast --election 2028 -n 100000

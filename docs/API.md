@@ -537,19 +537,23 @@ oldest first, committing each one. It can take minutes; it returns the same shap
 
 ### Local elections: `GET /api/local/calendar` · `GET /api/local/elections` · `POST /api/local/elections` → 201
 
-- `GET /api/local/calendar?start=&end=&province=` returns the planned local election days
-  (default: the 12 months after the latest reported election, at most three years). Per day:
-  `province_code, date, slot, name, municipalities, races, counts` (school_board, water_board,
-  measure, mayor_special, council_seat, recall), `contests` (`[{kind, code, name,
-  municipality_code}]`), `election_id` and `status`. Also `province_days` (each province's
-  `{month, occurrence}` rules).
-- `GET /api/local/elections?year=&province=` lists the stored local elections, newest first,
-  with `races` and `race_counts`.
-- `POST /api/local/elections {province_code, date, simulate?}` creates the local election of a
-  province on one of its local days. It answers 409 when that election exists, when the province
-  holds no local election that day, or when a later election is already reported.
+A local election is one date: every province voting that day, with one combined election night.
 
-Election briefs (`/api/meta`, every envelope) carry `local` and `province_code`. Race views
+- `GET /api/local/calendar?start=&end=&province=` returns the planned local election dates
+  (default: the 12 months after the latest reported election, at most three years). Per date:
+  `date, name, provinces, province_slots, municipalities, races, counts` (school_board,
+  water_board, measure, mayor_special, council_seat, recall), `province_counts`
+  (`{province: {kind: n}}`), `contests` (`[{kind, code, name, municipality_code,
+  province_code}]`), `election_id` and `status`. `province` keeps the dates that province votes.
+  Also `province_days` (each province's `{month, occurrence}` rules).
+- `GET /api/local/elections?year=&province=` lists the stored local elections, newest first,
+  with `provinces`, `province_names`, `races` and `race_counts`.
+- `POST /api/local/elections {date, simulate?}` creates the local election of a date. It answers
+  409 when that election exists, when no province votes that day, or when a later election is
+  already reported.
+
+Election briefs (`/api/meta`, every envelope) carry `local` and `provinces` (the provinces voting;
+empty for regular elections). Race views
 (§2.4) of local contests add `contest`:
 - the contest data: `kind, label, title, summary, measure_kind, threshold, vote_for, body,
   water_board, water_board_name` (REAL) `, seats_total, seats_up, cycle, reason, event_date,
@@ -861,6 +865,53 @@ cumulative_ballots, national_fraction}]`. Live: only events up to the night's cu
 
 ---
 
+## 6a. The world clock (FICTIONAL)
+
+One *today* for the whole world; you roll from election day to election day
+([CLOCK.md](CLOCK.md)). State: `app_meta.world_date`.
+
+### `GET /api/clock`
+
+`{today, today_label, clock_set, elections_today: [brief + provinces], pending: [briefs of the
+unfinished elections on or before today], can_advance, next: {date, label, kind
+(local|general|midterm), name, election_id, status, planned, finished, races, provinces, counts},
+job}`. Future elections are planned (`election_id` null) until the clock reaches them.
+
+### `GET /api/clock/agenda?start=&end=`
+
+Election days from `start` (default 120 days before today) to `end` (default a year after):
+`days: [{date, label, kind, name, election_id, status, planned, finished, races, provinces, counts,
+when: past|today|upcoming}]`. At most three years at a time.
+
+### `GET /api/clock/news?since=&until=`
+
+What happened (newest first; default the last 180 days): `items: [{date, kind, text, …}]` with
+`kind` `vacancy` / `recall` (office events, with `municipality_code` and the `election_date` of
+the special election), `result` (an election's outcome, with `election_id`) and `person` (one of
+your own people ran: `candidate_id`, `election_id`, `won`).
+
+### `POST /api/clock/next`
+
+Go to the next election day and create its election (a regular one is generated after the
+built-in scenarios). 409 while today's election is unfinished or a job runs. Returns the
+`GET /api/clock` payload plus `arrived: {previous, today, election_id, election, news}` (the news
+since the previous day, oldest first).
+
+### `POST /api/clock/watch`
+
+Simulate today's election (its hidden result and night timeline) so its election night can start
+(`POST /api/night/{id}/control`). Returns the clock payload plus `election_id`.
+
+### `POST /api/clock/count` → 202 · `POST /api/clock/skip {date}` → 202 · `GET /api/clock/job`
+
+Background jobs, one at a time. `count` finishes today's election through an instant election
+night; `skip` counts every election day before `date` and moves the clock there (at most twelve
+years). `GET /api/clock/job` (and `job` in `GET /api/clock`): `{id, kind, status
+(running|done|error), running, done, total, current, seconds, result, error}`; `result` of a skip
+is `{previous, today, counted, election_id, news}`. While a job runs, the clock actions answer 409.
+
+---
+
 ## 7. Election night (SIMULATED)
 
 Served by the night service (`app.services.night.NightManager`, one per database, bound to the
@@ -1053,6 +1104,14 @@ Hidden / live elections: `{…envelope, "available": false}`.
               "record": [{"election_id": 1, "year": 2024, "president_pct": null, "electoral_votes": null,
                           "house_seats": 8, "senate_seats": 0, "governors": 0}, "…"]}, "…"]}
 ```
+
+### `GET /api/people`
+
+Your own people of `config/people.yaml` ([PEOPLE.md](PEOPLE.md)): `{file, error, count,
+people: [{key, name, home, home_name, province, born, party, party_known, chance, quality, offices,
+candidate_id, runs: [{election_id, election, date, race_code, race, race_type, party, incumbent,
+status, won}], holds: [{office, name}]}]}`. `won` is null until the election is reported; `error`
+explains a file that does not validate.
 
 ### `GET /api/candidates?search=&party=&office=&limit=50&offset=0`
 
