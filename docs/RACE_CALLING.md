@@ -201,6 +201,28 @@ real 2025 geography (182 races) made no wrong call. On the real geography with t
 structural model (`demo-2028`, 183 races, 12 simulated elections with the old and the new
 timing defaults) the engine made about 4,100 projections and calls, none wrong.
 
+### 4a. Vote-for-N races and Yes/No questions
+
+`RaceProgress` carries the contest rules (`seats`, `marks_per_ballot`, `threshold`).
+
+**Vote for up to N** (school boards, water boards):
+- Counted votes are marks. Counted ballots come from the ballots cast, and the valid-votes-per-
+  ballot ratio may reach N.
+- Each projection draw ranks the lines; a line's probability is its chance of being *elected*
+  (top N).
+- The race is LEAN / PROJECTED / CALLED when its *weakest* projected winner clears the threshold.
+  The call record names the projected leader, and `winner_keys` lists every projected winner.
+- Mathematical certainty: the counted gap between the last winner and the first loser exceeds
+  every ballot that could still be counted. Each ballot adds at most one mark per line.
+
+**Yes/No questions** with threshold *t*:
+- A draw passes when YES·(1−t) > NO·t (simple majority; ≥ for supermajorities).
+- Mathematical certainty: |YES·(1−t) − NO·t| exceeds max(t, 1−t) × the ballots still to count.
+- The displayed margin is the number of votes that would have to change sides.
+
+Automatic recounts compare the same margins with `config/recount.yaml`. A vote-for-N recount only
+corrects misread tallies and found ballots.
+
 ## 5. Evidence snapshots
 
 `CallDecision.evidence` is a JSON-serialisable dict, stored in `race_call.evidence_json` for

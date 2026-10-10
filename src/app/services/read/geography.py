@@ -100,7 +100,7 @@ GEO_PROVENANCE: dict[str, str] = {
 }
 
 #: GeoJSON layers served by ``/api/geo/{layer}.geojson``.
-GEO_LAYERS: tuple[str, ...] = ("provinces", "municipalities", "districts", "units/<PV>")
+GEO_LAYERS: tuple[str, ...] = ("provinces", "municipalities", "districts", "water_boards", "units/<PV>")
 
 
 def _vintage(session: Session) -> GeoVintage:
@@ -665,7 +665,8 @@ def _db_layer(session: Session, layer: str, v: GeoVintage) -> Path:
 def geojson_layer(session: Session, layer: str, *, plan_id: int | None = None) -> Path:
     """File of a GeoJSON layer: ``provinces``, ``municipalities`` (REAL; the processed store's
     web layer, else built from the database geometry), ``districts`` (FICTIONAL, active plan or
-    ``plan_id``) or ``units/<PV>`` (REAL neighbourhoods of a province; store only)."""
+    ``plan_id``), ``water_boards`` (REAL water authority areas; store only) or ``units/<PV>``
+    (REAL neighbourhoods of a province; store only)."""
     name = layer.strip().strip("/")
     if name.endswith(".geojson"):
         name = name[: -len(".geojson")]
@@ -680,6 +681,13 @@ def geojson_layer(session: Session, layer: str, *, plan_id: int | None = None) -
         if from_store and is_prepared(v.year):
             return web_geojson_path(v.year, name)
         return _db_layer(session, name, v)
+    if name == "water_boards":  # REAL water authority areas (union of their neighbourhoods)
+        if not (from_store and is_prepared(v.year)):
+            raise DataNotPreparedError("the water board layer needs the processed CBS geography store")
+        path = web_geojson_path(v.year, name)
+        if not Path(path).exists():
+            raise DataNotPreparedError("the geography store has no water board layer (rebuild it)")
+        return path
     if name.startswith("units/") or name == "units":
         if not (from_store and is_prepared(v.year)):
             raise DataNotPreparedError("neighbourhood layers need the processed CBS geography store")

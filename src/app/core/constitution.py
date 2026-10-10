@@ -70,6 +70,8 @@ class OfficeType(StrEnum):
     PROVINCIAL_LEGISLATOR = "PROVINCIAL_LEGISLATOR"
     MAYOR = "MAYOR"
     COUNCIL_MEMBER = "COUNCIL_MEMBER"
+    SCHOOL_BOARD_MEMBER = "SCHOOL_BOARD_MEMBER"
+    WATER_BOARD_MEMBER = "WATER_BOARD_MEMBER"
 
 
 class RaceType(StrEnum):
@@ -84,6 +86,30 @@ class RaceType(StrEnum):
     PROVINCIAL_LEGISLATURE = "PROVINCIAL_LEGISLATURE"
     MAYOR = "MAYOR"
     MUNICIPAL_COUNCIL = "MUNICIPAL_COUNCIL"
+    # In-between (local) elections — docs/LOCAL_ELECTIONS.md
+    SCHOOL_BOARD = "SCHOOL_BOARD"  # nonpartisan, several seats at once (vote for up to N)
+    WATER_BOARD = "WATER_BOARD"  # nonpartisan water authority board (waterschap), at-large
+    BALLOT_MEASURE = "BALLOT_MEASURE"  # local Yes/No proposition
+    RECALL = "RECALL"  # Yes/No: recall the mayor (replacement race on the same ballot)
+    COUNCIL_SEAT = "COUNCIL_SEAT"  # special election for one vacant municipal council seat
+
+
+#: Race types of the in-between local elections (``ElectionType.LOCAL``).
+LOCAL_RACE_TYPES: frozenset[RaceType] = frozenset(
+    {
+        RaceType.SCHOOL_BOARD,
+        RaceType.WATER_BOARD,
+        RaceType.BALLOT_MEASURE,
+        RaceType.RECALL,
+        RaceType.COUNCIL_SEAT,
+    }
+)
+#: Yes/No contests (lines ``YES`` / ``NO``).
+QUESTION_RACE_TYPES: frozenset[RaceType] = frozenset({RaceType.BALLOT_MEASURE, RaceType.RECALL})
+#: Contests without party labels on the ballot (candidates still have an ideology in the model).
+NONPARTISAN_RACE_TYPES: frozenset[RaceType] = frozenset({RaceType.SCHOOL_BOARD, RaceType.WATER_BOARD})
+YES_LINE = "YES"
+NO_LINE = "NO"
 
 
 class ElectionType(StrEnum):
@@ -92,6 +118,7 @@ class ElectionType(StrEnum):
     SPECIAL = "special"
     MUNICIPAL = "municipal"
     PROVINCIAL = "provincial"
+    LOCAL = "local"  # in-between local election day of one province (docs/LOCAL_ELECTIONS.md)
 
 
 class ElectionStatus(StrEnum):
@@ -128,6 +155,8 @@ class ElectoralSystem(StrEnum):
     PROPORTIONAL_DHONDT = "proportional_dhondt"
     PROPORTIONAL_SAINTE_LAGUE = "proportional_sainte_lague"
     DISTRICT_PLUS_STATEWIDE = "district_plus_statewide"  # Maine/Nebraska style EV split
+    PLURALITY_AT_LARGE = "plurality_at_large"  # vote for up to N candidates; the top N win
+    QUESTION = "question"  # Yes/No; passes when the Yes share reaches the race threshold
 
 
 class DataCategory(StrEnum):

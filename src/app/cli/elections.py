@@ -1,4 +1,4 @@
-"""Election commands: ``election create | list | show``, ``simulate``, ``finalize``,
+"""Election commands: ``election create | list | show``, ``simulate``, ``finalize``, ``reset``,
 ``forecast``, ``polls``, ``history`` and ``export``.
 
 Every election is a SIMULATED contest between FICTIONAL parties and candidates.  An election is
@@ -249,6 +249,44 @@ def finalize(
         return
     _print_summary(summary)
     _print_results(summary)
+
+
+@friendly
+def reset(
+    election: str = typer.Option(..., "--election", "-e", help=ELECTION_HELP),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Do not ask for confirmation."),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON."),
+) -> None:
+    """Reset an election to polls closing so its election night can be run again.
+
+    The election keeps its id and its hidden result (the replay reveals the same election).  A
+    reported election has its certification undone: recount corrections reversed, Electoral
+    College, seats, calls and summaries removed, office terms restored.  Only the most recent
+    reported election can be reset.
+    """
+    from app.core.errors import ElectionError
+    from app.models import Election
+    from app.services.reset import can_reset, reset_election
+
+    with session_scope() as s:
+        eid = resolve_election(s, election)
+        el = s.get(Election, eid)
+        label = f"{el.year} {el.name} (id {eid}, {el.status})"
+        allowed, why = can_reset(s, eid)
+    if not allowed:
+        raise ElectionError(f"{label} cannot be reset: {why}")
+    if not yes and not typer.confirm(f"Reset {label}? {why[0].upper()}{why[1:]}.", default=False):
+        raise typer.Exit(1)
+    with session_scope() as s, spinner(f"resetting election {eid} …"):
+        result = reset_election(s, eid)
+    if as_json:
+        print_json(result.to_dict())
+        return
+    console.print(
+        f"{data_badge('SIMULATED')} election {eid} ({result.year}) reset to polls closing "
+        f"(was {result.previous_status}) in {result.seconds:.1f}s — the result is hidden again"
+    )
+    console.print(f"[dim]replay it with `python -m app election-night --election {eid}` or in the app[/]")
 
 
 @friendly

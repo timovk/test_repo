@@ -20,7 +20,13 @@ const TYPES = [
   ["COUNCIL", "Council"],
 ];
 
-export function callFeed({ max = 60, types } = {}) {
+/**
+ * Options: `types` limits the default race-type filter, `typeOptions` ([[value, label]]) replaces
+ * it (local elections), `describe(call)` may return the text shown for the called line (e.g.
+ * "Yes · passes" for a ballot measure) and `decisive(call)` decides which calls the "Calls" mode
+ * shows; `colorOf(call)` may return the colour of a call without a party (nonpartisan races).
+ */
+export function callFeed({ max = 60, types, typeOptions, describe, decisive, colorOf } = {}) {
   let mode = "calls";
   let type = "";
   let calls = [];
@@ -31,7 +37,7 @@ export function callFeed({ max = 60, types } = {}) {
   const typeSel = h(
     "select",
     { class: "select lv-feed__type", "aria-label": "Race type", onchange: (e) => ((type = e.target.value), render(true)) },
-    TYPES.filter(([k]) => !types || !k || types.includes(k)).map(([k, l]) => h("option", { value: k }, l)),
+    (typeOptions || TYPES.filter(([k]) => !types || !k || types.includes(k))).map(([k, l]) => h("option", { value: k }, l)),
   );
   const bCalls = h("button", { type: "button", class: "is-active", "aria-pressed": "true", onclick: () => setMode("calls") }, "Calls");
   const bAll = h("button", { type: "button", "aria-pressed": "false", onclick: () => setMode("all") }, "All updates");
@@ -51,8 +57,10 @@ export function callFeed({ max = 60, types } = {}) {
     const out = [];
     for (let i = calls.length - 1; i >= 0 && out.length < max; i--) {
       const c = calls[i];
-      if (type && c.race_type !== type) continue;
-      if (mode === "calls") {
+      if (type && !type.split(",").includes(c.race_type)) continue;
+      if (mode === "calls" && decisive) {
+        if (!decisive(c)) continue;
+      } else if (mode === "calls") {
         const s = c.status;
         const presFinal = s === "FINAL" && (c.race_type === "PRESIDENT" || c.race_type === "PRESIDENT_PROVINCE");
         if (!DECISIVE.has(s) && !presFinal && !(c.race_type === "PRESIDENT" && s !== "POLLS_CLOSED")) continue;
@@ -63,7 +71,7 @@ export function callFeed({ max = 60, types } = {}) {
   }
 
   function item(c) {
-    const color = c.party ? colorFor(c.party, c.color) : null;
+    const color = c.party ? colorFor(c.party, c.color) : (colorOf && colorOf(c)) || null;
     const ev = ctx.evByRace?.[c.race_code];
     const pres = c.race_type === "PRESIDENT_PROVINCE" || c.race_type === "PRESIDENT";
     return h(
@@ -78,7 +86,7 @@ export function callFeed({ max = 60, types } = {}) {
           "span",
           { class: "lv-feed__who" },
           c.candidate ? h("span", { class: "chip__swatch", style: { "--party": color || "var(--uncalled)" } }) : null,
-          c.candidate ? `${c.candidate}${c.party ? ` (${c.party})` : ""}` : h("span", { class: "muted" }, "No projection"),
+          c.candidate ? (describe && describe(c)) || `${c.candidate}${c.party ? ` (${c.party})` : ""}` : h("span", { class: "muted" }, "No projection"),
           h("span", { class: "muted num" }, ` · ${fmtPct(c.reporting_pct, 0)} in`),
           c.is_manual ? h("span", { class: "lv-inc", title: "Manual call by the producer" }, "MANUAL") : null,
         ),

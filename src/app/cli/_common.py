@@ -149,8 +149,12 @@ def resolve_election(session: Session, ref: str | int | None) -> int:
         if row is not None and row.value.isdigit() and session.get(Election, int(row.value)) is not None:
             return int(row.value)
         text = "latest"
-    if text == "latest":
-        eid = session.scalar(select(Election.id).order_by(Election.election_date.desc(), Election.id.desc()))
+    if text == "latest":  # the most recent regular election (local elections: by id)
+        eid = session.scalar(
+            select(Election.id)
+            .where(Election.election_type != "local")
+            .order_by(Election.election_date.desc(), Election.id.desc())
+        ) or session.scalar(select(Election.id).order_by(Election.election_date.desc(), Election.id.desc()))
         if eid is None:
             raise NotFoundError("there are no elections yet (run `python -m app demo`)")
         return int(eid)
@@ -158,7 +162,12 @@ def resolve_election(session: Session, ref: str | int | None) -> int:
         raise NotFoundError(f"election {ref!r} not understood (use an id, a year, latest or demo)")
     value = int(text)
     if value >= 1000:
-        eid = session.scalar(select(Election.id).where(Election.year == value).order_by(Election.id.desc()))
+        # the year's regular election (local elections of that year are addressed by id)
+        eid = session.scalar(
+            select(Election.id)
+            .where(Election.year == value, Election.election_type != "local")
+            .order_by(Election.id.desc())
+        ) or session.scalar(select(Election.id).where(Election.year == value).order_by(Election.id.desc()))
         if eid is None:
             raise NotFoundError(f"no election in {value}")
         return int(eid)

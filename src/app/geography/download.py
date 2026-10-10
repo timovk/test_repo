@@ -2,12 +2,13 @@
 
 Every source configured in ``config/geography.yaml`` is fetched once (streaming, with retries and
 exponential backoff), hashed (SHA-256) and recorded in ``data/raw/sources_<year>.json`` together with
-its URL, size, retrieval time, publisher and license.  Files that are already present are *not*
+its URL, size, retrieval time, publisher, license and data category.  The sources are the CBS/PDOK
+datasets and the water authority areas of Het Waterschapshuis (GML, a plain ``file`` download).  Files that are already present are *not*
 downloaded again unless ``force=True`` (the 220 MB Wijk- en Buurtkaart GeoPackage in particular).
 
 Three fetch strategies exist (``SourceSpec.resolved_kind``):
 
-* ``file`` — plain streamed download (the GeoPackage);
+* ``file`` — plain streamed download (the GeoPackage, the water board GML);
 * ``wfs_geojson`` — a WFS ``GetFeature`` GeoJSON request, paged with ``startIndex``/``count`` when the
   server caps the number of returned features;
 * ``odata`` — a CBS StatLine ODataFeed; pages linked through ``odata.nextLink`` (10 000 rows each)
@@ -65,6 +66,7 @@ class DownloadRecord:
     vintage: int
     kind: str
     downloaded: bool  # False when an existing file was reused
+    data_category: str = "REAL"  # DataCategory of the dataset (all sources are REAL)
 
     def to_json(self) -> dict[str, Any]:
         out = asdict(self)
@@ -86,6 +88,7 @@ class DownloadRecord:
             vintage=int(data.get("vintage", 0) or 0),
             kind=str(data.get("kind", "file")),
             downloaded=bool(data.get("downloaded", False)),
+            data_category=str(data.get("data_category") or "REAL"),
         )
 
 
@@ -356,6 +359,7 @@ def download_source(
             vintage=source.vintage_for(year),
             kind=kind,
             downloaded=False,
+            data_category=source.data_category,
         )
 
     if not settings.allow_network:
@@ -396,6 +400,7 @@ def download_source(
         vintage=source.vintage_for(year),
         kind=kind,
         downloaded=True,
+        data_category=source.data_category,
     )
 
 

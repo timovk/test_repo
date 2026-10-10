@@ -30,17 +30,19 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.constitution import ElectionStatus
+from app.core.constitution import ElectionStatus, ElectionType
 from app.core.errors import ValidationError
 from app.core.logging import get_logger, log_ctx
 from app.core.rng import derive_seed
 from app.core.settings import get_settings
+from app.elections.calendar import ElectionCalendar
 from app.models import Election, Scenario, SimulationRun
 from app.scenarios.loader import load_scenario
 from app.services._common import REPORTED_STATUSES, set_meta
@@ -212,6 +214,7 @@ def build_demo(
     synthetic: bool = False,
     election_seed: int | None = None,
     workers: int = 0,
+    local_elections: bool = True,
 ) -> DemoSummary:
     """Build (or complete) the demo world; returns a :class:`DemoSummary` with per-step timings.
 
@@ -224,6 +227,9 @@ def build_demo(
         synthetic: use the synthetic toy country instead of the REAL geography (offline tests).
         election_seed: derive every election's seed from this value (default: scenario seeds).
         workers: worker processes of districting and forecasting (0 = automatic).
+        local_elections: hold every in-between local election from the founding election up
+            to the demo election, each through an instant election night.  The world clock
+            then waits on the demo election's day.
 
     Raises:
         ValidationError: the finished system fails :func:`validate_system`.
@@ -254,15 +260,18 @@ def build_demo(
     def geography() -> tuple[str, str]:
         if synthetic:
             return "skipped", "synthetic toy country (no REAL data needed)"
-        from app.geography.store import is_prepared, manifest
+        from app.geography.store import is_current, is_prepared, manifest
 
-        if is_prepared():
+        if is_current():
             m = manifest()
             return (
                 "skipped",
                 f"REAL CBS store {m.get('year')} present ({m.get('counts', {}).get('units', '?')} units)",
             )
+        outdated = is_prepared()  # built by an older version: no water boards yet
         prepare_geography(download=True)
+        if outdated:
+            return "done", "rebuilt the REAL CBS store with the water boards"
         return "done", "downloaded and built the REAL CBS store"
 
     b.run("geography", geography)
@@ -314,8 +323,78 @@ def build_demo(
             )
         return "done", f"election {eid}: " + ", ".join(parts)
 
-    for slug in HISTORY_SCENARIOS:
+    # ---- in-between local elections (docs/LOCAL_ELECTIONS.md), held in date order
+    def local_until(since: date, until: date) -> tuple[str, str]:
+        from app.services import local as local_service
+
+        with b.session() as s:
+            lo = local_service.open_after(s)
+            last = until - timedelta(days=1)
+            cal = local_service.get_local_calendar(s)
+            dates = list(cal.dates(lo, last))
+            # the local elections of this period an earlier run held (the loop counts the rest)
+            skipped = s.scalar(
+                select(func.count())
+                .select_from(Election)
+                .where(
+                    Election.election_type == ElectionType.LOCAL.value,
+                    Election.election_date > since,
+                    Election.election_date <= min(lo, last),
+                    Election.status.in_(REPORTED_STATUSES),
+                )
+            )
+            skipped = int(skipped or 0)
+        held = 0
+        name = f"local elections before {until.isoformat()}"
+        for i, on in enumerate(dates):
+            with b.session() as s:
+                eid = s.scalar(
+                    select(Election.id).where(
+                        Election.election_type == ElectionType.LOCAL.value, Election.election_date == on
+                    )
+                )
+                if eid is None:
+                    plan = local_service.plan_for(s, on)
+                    if not plan.contests:
+                        continue
+                    eid = local_service.create_local_election(s, on, plan=plan).id
+                el = s.get(Election, eid)
+                assert el is not None
+                if el.status in REPORTED_STATUSES:
+                    skipped += 1
+                    continue
+                if el.status == ElectionStatus.SCHEDULED.value:
+                    simulate_election(s, eid)
+            with b.session() as s:
+                run_instant_night(s, eid)
+            held += 1
+            if (i + 1) % 5 == 0 or i + 1 == len(dates):
+                b.notify(name, "progress", f"{i + 1}/{len(dates)} local election days ({on.isoformat()})")
+        if not held:
+            return (
+                "skipped",
+                f"{skipped} local elections already held" if skipped else "no local elections due",
+            )
+        return "done", f"{held} local elections held ({skipped} already held)"
+
+    def regular_date(slug: str) -> date:
+        doc = load_scenario(slug)
+        return doc.scenario.election_date or ElectionCalendar.from_config().election_date(doc.scenario.year)
+
+    for k, slug in enumerate(HISTORY_SCENARIOS):
+        if local_elections and k > 0:
+            since, until = regular_date(HISTORY_SCENARIOS[k - 1]), regular_date(slug)
+            b.run(
+                f"local elections before {slug}",
+                lambda since=since, until=until: local_until(since, until),
+            )
         b.run(f"election {slug}", lambda slug=slug: history(slug))
+    if local_elections and HISTORY_SCENARIOS:
+        since, until = regular_date(HISTORY_SCENARIOS[-1]), regular_date(LIVE_SCENARIO)
+        b.run(
+            f"local elections before {LIVE_SCENARIO}",
+            lambda since=since, until=until: local_until(since, until),
+        )
 
     # ---- 5. the live demo election, simulated and ready at polls closing
     def live() -> tuple[str, str]:
@@ -380,6 +459,20 @@ def build_demo(
         return "done", detail
 
     b.run("forecast", forecast)
+
+    # ---- the world clock (docs/CLOCK.md) waits on the demo election's day; later elections are
+    # created as the clock reaches them (so edits to config/people.yaml still apply to them)
+    def world_clock() -> tuple[str, str]:
+        from app.services import clock
+
+        on = regular_date(LIVE_SCENARIO)
+        with b.session() as s:
+            if clock.stored_today(s) == on:
+                return "skipped", f"the clock is at {on.isoformat()}"
+            clock.set_today(s, on)
+        return "done", f"today is {on.isoformat()} (the {LIVE_SCENARIO} election day)"
+
+    b.run("world clock", world_clock)
 
     # ---- 7. demo election id + validation
     def finish() -> tuple[str, str]:

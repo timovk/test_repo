@@ -100,7 +100,7 @@ from app.reporting.live import (
 )
 from app.services._common import REPORTED_STATUSES, bulk_insert, dumps, latest_run, loads
 from app.services._store import stitch_parent
-from app.services.elections import finalize_election, reported_on_or_after
+from app.services.elections import finalize_election, reported_on_or_after, require_earlier_finished
 from app.services.runtime import (
     ElectionInputs,
     election_inputs,
@@ -161,7 +161,16 @@ def make_recount_check(config: RecountConfig | None = None) -> RecountCheck:
     def check(inp: RecountInput) -> tuple[bool, str]:
         if inp.race_type is None:
             return False, "race type unknown"
-        tab = tabulate_totals(inp.race_key, inp.line_keys, inp.totals, resolve_ties=False)
+        # with the contest rules: a vote-for-N race is decided at its last seat, a Yes/No
+        # question at its threshold (not by the top two lines)
+        tab = tabulate_totals(
+            inp.race_key,
+            inp.line_keys,
+            inp.totals,
+            resolve_ties=False,
+            seats=inp.seats,
+            threshold=inp.threshold,
+        )
         return needs_recount(tab, inp.race_type, cfg)
 
     return check
@@ -867,6 +876,10 @@ def _require_certifiable(session: Session, election_id: int) -> None:
             f"election {election_id} can no longer be certified: election {later} on or after "
             f"{election.election_date} is already final (elections are finalized in chronological order)"
         )
+    try:
+        require_earlier_finished(session, election.id)
+    except ElectionError as exc:
+        raise ElectionNightError(str(exc)) from exc
 
 
 def _lag(night: _Night, now: float) -> int:
@@ -1216,6 +1229,11 @@ class NightManager:
             if lock is None:
                 lock = self._locks[election_id] = threading.RLock()
             return lock
+
+    def election_lock(self, election_id: int) -> threading.RLock:
+        """The per-election lock that serialises playback actions, reads and the background
+        driver; hold it while changing an election's stored rows from outside the manager."""
+        return self._election_lock(int(election_id))
 
     def _time(self, now: float | None) -> float:
         return float(self._clock() if now is None else now)

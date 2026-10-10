@@ -297,7 +297,9 @@ def election_night(
     speed: float = typer.Option(10.0, "--speed", help="Playback speed (1, 2, 5, 10 or 25; 1× ≈ 8.7 min)."),
     instant: bool = typer.Option(False, "--instant", help="Apply every reporting event at once."),
     headless: bool = typer.Option(False, "--headless", help="No live screen: print calls and a summary."),
-    reset: bool = typer.Option(False, "--reset", help="Reset the night to polls closing first."),
+    reset: bool = typer.Option(
+        False, "--reset", help="Reset the night to polls closing first (also the most recent FINAL election)."
+    ),
     until: str | None = typer.Option(None, "--until", help="Pause at this local clock time (HH:MM)."),
     as_json: bool = typer.Option(False, "--json", help="Print the final night state as JSON."),
 ) -> None:
@@ -308,7 +310,12 @@ def election_night(
         eid = resolve_election(s, election)
     manager = get_night_manager()
     if reset:
-        manager.control(eid, "reset", now=_now())
+        # also for the most recent reported election: its certification is undone (see `reset`)
+        from app.services.reset import reset_election
+
+        with manager.election_lock(eid), session_scope() as s:
+            reset_election(s, eid, night_manager=manager)
+        manager.forget(eid)
         console.print(f"election night {eid} reset to polls closing")
     state = manager.state(eid, detail="full", now=_now())
     labels = line_labels(state)

@@ -4,6 +4,7 @@
  * `nav` entries define the sidebar; the order mirrors the product navigation (spec §36).
  */
 export const ROUTES = [
+  { path: "/today", view: "today", title: "Today", nav: "Live", icon: "clock" },
   { path: "/night", view: "night", title: "Election Night", nav: "Live", icon: "night" },
   { path: "/president", view: "president", title: "President", nav: "Live", icon: "president" },
   { path: "/electoral-college", view: "electoral-college", title: "Electoral College", nav: "Live", icon: "college" },
@@ -15,6 +16,8 @@ export const ROUTES = [
   { path: "/house/:code", view: "district", title: "House district" },
   { path: "/senate", view: "senate", title: "Senate", nav: "Results", icon: "senate" },
   { path: "/governors", view: "governors", title: "Governors", nav: "Results", icon: "governors" },
+  { path: "/local", view: "local", title: "Local results", nav: "Results", icon: "ballot" },
+  { path: "/calendar", view: "calendar", title: "Local calendar", nav: "Results", icon: "calendar" },
   { path: "/races/:code", view: "race", title: "Race" },
   { path: "/forecast", view: "forecast", title: "Forecast", nav: "Analysis", icon: "forecast" },
   { path: "/polling", view: "polling", title: "Polling", nav: "Analysis", icon: "polling" },
@@ -26,4 +29,11 @@ export const ROUTES = [
   { path: "/settings", view: "settings", title: "Settings", nav: "System", icon: "settings" },
 ];
 
-export const DEFAULT_ROUTE = "/night";
+/** Home: the world clock's Today page (watch or count each election day, then move on). */
+export const DEFAULT_ROUTE = "/today";
+
+/**
+ * Views that only make sense for regular (November) elections: for a local election they show a
+ * friendly "not part of this local election" state instead of requesting endpoints that 404.
+ */
+export const REGULAR_ONLY_VIEWS = new Set(["president", "electoral-college", "provinces", "municipalities", "house", "district", "senate", "governors", "forecast", "polling", "campaign"]);

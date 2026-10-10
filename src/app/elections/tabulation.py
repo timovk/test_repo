@@ -227,6 +227,20 @@ def tabulate(
         margin_votes = int(totals[0])
     else:
         margin_votes = int(totals[ranking[0]] - totals[ranking[1]])
+    winners: tuple[int, ...] = () if winner is None else (winner,)
+    passed: bool | None = None
+    seats = max(int(getattr(race_votes, "seats", 1) or 1), 1)
+    threshold = getattr(race_votes, "threshold", None)
+    if threshold is not None and n_lines > 0:
+        winner, winners, ranking, margin_votes, passed, how, tied, tied_lines = _question(
+            race_votes.line_keys, totals, float(threshold), key
+        )
+    elif seats > 1 and n_lines > 0:
+        ranking, winners, margin_votes, tied, how = _at_large(
+            race_votes.line_keys, totals, seats, key, tie_seed, resolve_ties, how
+        )
+        winner = winners[0] if winners else None
+        tied_lines = ()
     margin_pct = 100.0 * margin_votes / valid if valid > 0 else 0.0
 
     return TabulatedRaceResult(
@@ -247,7 +261,80 @@ def tabulate(
         decided_by=how,
         tied_lines=tied_lines,
         lot_seed=lot_seed,
+        winners=winners,
+        seats=seats,
+        passed=passed,
+        threshold=None if threshold is None else float(threshold),
     )
+
+
+def question_passes(yes: float, no: float, threshold: float) -> bool:
+    """Whether a Yes/No question passes: a simple majority (threshold 0.5) needs *more* YES than
+    NO votes (a tie fails); a supermajority needs *at least* the threshold (e.g. two thirds).
+    A question nobody answered fails."""
+    if yes + no <= 0:
+        return False
+    lhs, rhs = yes * (1.0 - threshold), no * threshold
+    return lhs > rhs if abs(threshold - 0.5) < 1e-12 else lhs >= rhs
+
+
+def _question(
+    line_keys: Sequence[str], totals: np.ndarray, threshold: float, key: str
+) -> tuple[int, tuple[int, ...], list[int], int, bool, str, bool, tuple[int, ...]]:
+    """Winner, ranking and margin of a Yes/No question with a (super)majority threshold.
+
+    The margin is the number of votes that would have to change sides to flip the outcome
+    (``|YES − NO|`` for a simple majority)."""
+    if not 0.0 < threshold < 1.0:
+        raise ElectionError(f"{key}: threshold must be between 0 and 1 (got {threshold})")
+    try:
+        yi, ni = list(line_keys).index("YES"), list(line_keys).index("NO")
+    except ValueError as exc:
+        raise ElectionError(f"{key}: a Yes/No question needs lines YES and NO") from exc
+    yes, no = float(totals[yi]), float(totals[ni])
+    passed = question_passes(yes, no, threshold)
+    win, lose = (yi, ni) if passed else (ni, yi)
+    # votes that must switch from the winning to the losing side: YES·(1−t) − NO·t changes by 1
+    # per switched vote
+    gap = abs(yes * (1.0 - threshold) - no * threshold)
+    margin = int(np.ceil(gap)) if gap > 0 else 0
+    tied = gap == 0 and yes + no > 0
+    ranking = [win, lose] + [i for i in range(len(line_keys)) if i not in (win, lose)]
+    return win, (win,), ranking, margin, passed, DECIDED_POPULAR_VOTE, tied, ((yi, ni) if tied else ())
+
+
+def _at_large(
+    line_keys: Sequence[str],
+    totals: np.ndarray,
+    seats: int,
+    key: str,
+    tie_seed: int | None,
+    resolve_ties: bool,
+    how: str | None,
+) -> tuple[list[int], tuple[int, ...], int, bool, str | None]:
+    """Ranking, winners (top ``seats``), margin (last winner − first loser) and tie status of a
+    plurality-at-large race.  A tie across the last seat is resolved by seeded lot."""
+    ranking = rank_lines(totals)
+    n = len(ranking)
+    if n <= seats:
+        last = int(totals[ranking[-1]])
+        return ranking, tuple(ranking), last, False, how if how is not None else DECIDED_POPULAR_VOTE
+    cut = totals[ranking[seats - 1]]
+    boundary = [i for i in ranking if totals[i] == cut]
+    above = [i for i in ranking if totals[i] > cut]
+    tied = len(above) + len(boundary) > seats
+    if tied:
+        if not resolve_ties:
+            return ranking, tuple(above), 0, True, None
+        order = stable_choice_order(
+            [line_keys[i] for i in boundary], 0 if tie_seed is None else int(tie_seed), "tabulation-lot", key
+        )
+        by_key = {line_keys[i]: i for i in boundary}
+        ranked_boundary = [by_key[k] for k in order]
+        ranking = above + ranked_boundary + [i for i in ranking if totals[i] < cut]
+        return ranking, tuple(ranking[:seats]), 0, True, DECIDED_LOT
+    margin = int(totals[ranking[seats - 1]] - totals[ranking[seats]])
+    return ranking, tuple(ranking[:seats]), margin, False, DECIDED_POPULAR_VOTE
 
 
 def tabulate_totals(
@@ -261,11 +348,15 @@ def tabulate_totals(
     invalid: int = 0,
     tie_seed: int | None = None,
     resolve_ties: bool = True,
+    seats: int = 1,
+    threshold: float | None = None,
 ) -> TabulatedRaceResult:
     """Tabulate a race from already-aggregated line totals (single pseudo-unit).
 
     Convenience for callers that only hold totals (e.g. forecast draws or hand-built maps).
     ``ballots_cast`` defaults to valid + blank + invalid and ``eligible`` to ``ballots_cast``.
+    ``seats`` > 1 tabulates a vote-for-N race (``totals`` are marks) and ``threshold`` a Yes/No
+    question, as :func:`app.elections.types.contest_rules` describes them.
     """
     t = np.asarray(totals, dtype=np.int64).reshape(1, -1)
     valid = int(t.sum())
@@ -280,6 +371,9 @@ def tabulate_totals(
         blank=np.array([blank], dtype=np.int64),
         invalid=np.array([invalid], dtype=np.int64),
         eligible=np.array([elig], dtype=np.int64),
+        seats=int(seats),
+        marks_per_ballot=int(seats),
+        threshold=threshold,
     )
     return tabulate(rv, race_key, tie_seed=tie_seed, resolve_ties=resolve_ties)
 
@@ -306,9 +400,12 @@ def _level_frame(
     line_keys: Sequence[str],
     votes: np.ndarray,
     counts: Mapping[str, np.ndarray],
+    marks_per_ballot: int = 1,
 ) -> pd.DataFrame:
     G, L = votes.shape
-    valid = counts["valid_votes"]
+    # shares are of the valid votes; in a vote-for-N race of all marks (valid_votes then counts
+    # valid ballots, each carrying up to N marks)
+    valid = counts["valid_votes"] if marks_per_ballot <= 1 else votes.sum(axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         share = np.where(valid[:, None] > 0, votes / np.maximum(valid, 1)[:, None], 0.0)
     data: dict[str, object] = {
@@ -327,7 +424,9 @@ def _level_frame(
     for col in _COUNT_COLUMNS:
         data[col] = np.repeat(counts[col].astype(np.int64), L)
     data["winner"] = _unique_winner_mask(votes).reshape(-1)
-    return pd.DataFrame(data, columns=list(LEVEL_COLUMNS))
+    df = pd.DataFrame(data, columns=list(LEVEL_COLUMNS))
+    df.attrs["marks_per_ballot"] = int(marks_per_ballot)
+    return df
 
 
 def _resolve_unit_district(
@@ -417,8 +516,12 @@ def aggregate_levels(
         raise ElectionError(f"{code}: unit_index lists some units more than once")
     votes = _counts(race_votes.votes, "votes", code).reshape(len(uidx), len(race_votes.line_keys))
     line_keys = list(race_votes.line_keys)
+    marks = int(getattr(race_votes, "marks_per_ballot", 1) or 1)
     unit_counts = {
-        "valid_votes": votes.sum(axis=1),
+        # valid ballots: equal to the line votes, except in a vote-for-N race (marks)
+        "valid_votes": votes.sum(axis=1)
+        if marks <= 1
+        else _counts(race_votes.valid_ballots, "valid_ballots", code),
         "ballots_cast": _counts(race_votes.ballots_cast, "ballots_cast", code),
         "eligible": _counts(race_votes.eligible, "eligible", code),
         "blank": _counts(race_votes.blank, "blank", code),
@@ -449,6 +552,7 @@ def aggregate_levels(
         line_keys,
         votes,
         unit_counts,
+        marks_per_ballot=marks,
     )
 
     def grouped(index: np.ndarray, size: int) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
@@ -473,6 +577,7 @@ def aggregate_levels(
         line_keys,
         m_votes,
         m_counts,
+        marks_per_ballot=marks,
     )
 
     if district_idx is not None:
@@ -494,6 +599,7 @@ def aggregate_levels(
             line_keys,
             d_votes,
             d_counts,
+            marks_per_ballot=marks,
         )
 
     p_present, p_votes, p_counts = grouped(unit_prov, frame.n_provinces)
@@ -508,6 +614,7 @@ def aggregate_levels(
         line_keys,
         p_votes,
         p_counts,
+        marks_per_ballot=marks,
     )
 
     nat_votes = votes.sum(axis=0, keepdims=True)
@@ -523,6 +630,7 @@ def aggregate_levels(
         line_keys,
         nat_votes,
         nat_counts,
+        marks_per_ballot=marks,
     )
     return levels
 
@@ -539,7 +647,13 @@ def _check_rows(level: str, df: pd.DataFrame) -> list[str]:
         invalid=("invalid", "first"),
         eligible=("eligible", "first"),
     )
-    bad = per_geo.index[per_geo["votes"] != per_geo["valid"]]
+    marks = int(df.attrs.get("marks_per_ballot", 1) or 1)
+    if marks <= 1:
+        bad = per_geo.index[per_geo["votes"] != per_geo["valid"]]
+    else:  # vote for N: every valid ballot carries 1..N marks
+        bad = per_geo.index[
+            (per_geo["votes"] < per_geo["valid"]) | (per_geo["votes"] > per_geo["valid"] * marks)
+        ]
     if len(bad):
         problems.append(
             f"{level}: line votes do not sum to valid_votes in {len(bad)} geographies (e.g. {bad[0]})"

@@ -1,0 +1,65 @@
+# Your own people — friends, family … — who sometimes run for office where they live.
+# Schema: app.simulation.people.PeopleFile · guide: docs/PEOPLE.md
+#
+# Each person has a home municipality.  At every election a person decides (with their `chance`)
+# whether to run, and then picks ONE race on that ballot whose area contains their home: the
+# school board or water board, a council seat or the mayoralty of their municipality (special
+# elections and the mayoral elections of the midterms), the House district, the province's Senate
+# seat or its governorship.  Local offices are picked more often (see `settings.weights`).
+#
+#   * party: KP   → runs for that party (the party then fields a line in that race)
+#   * no party    → runs in the nonpartisan board races, or as an independent
+#
+# A person keeps the same identity in every election: a winner runs again as the incumbent.
+# Changes to this file apply to elections created afterwards (the world clock creates each
+# election when it reaches its date).  Check the file with:  python -m app people
+#
+# Fields
+#   name        first and last name ("Sanne de Vries"); or first_name + last_name
+#   home        municipality name ("Tilburg", "'s-Hertogenbosch", "Bergen (NH.)") or CBS code (GM0855)
+#   born        birth year (1990) or date (1990-05-17); offices have minimum ages (settings.min_age)
+#   gender      F, M or X (optional)
+#   party       party code from config/parties/fictional.yaml (optional)
+#   chance      never | rarely | sometimes | often | always, or a number 0–1 (default: sometimes)
+#               = how likely they run at an election that has a race for them
+#   quality     -3 … 3, how strong a candidate they are (default 0 = average; 1 = strong)
+#   offices     only these kinds of office (optional):
+#               school_board, water_board, council, mayor, house, senate, governor
+#   ideology    their own positions {economic: -1…1, social: -1…1, europe: -1…1}
+#               (default: their party's, with a small personal twist)
+#   bio         one line shown on their candidate page (optional)
+#   key         stable id (optional; default person-<name>) — only needed when two people
+#               share a name
+
+people: []
+
+# Examples — remove the "people: []" line above and the leading "# " of the lines below:
+#
+# people:
+#   - name: Sanne de Vries
+#     home: Tilburg
+#     born: 1990
+#     gender: F
+#     party: PA
+#     chance: often
+#     quality: 0.5
+#
+#   - name: Tom Jansen
+#     home: Eindhoven
+#     born: 1984
+#     gender: M
+#     chance: sometimes          # no party: school/water boards, or an independent candidacy
+#     offices: [school_board, water_board, mayor]
+#
+#   - name: Riet van den Berg
+#     home: GM0855               # Tilburg, by its CBS code
+#     born: 1952-03-08
+#     party: CVU
+#     chance: rarely
+#     offices: [council, mayor]
+#     bio: Retired teacher and the family's best baker.
+
+# Optional tuning (defaults shown):
+# settings:
+#   min_age: {school_board: 18, water_board: 18, council: 18, mayor: 21, house: 25, senate: 30, governor: 30}
+#   weights: {school_board: 3, council: 2, water_board: 1, mayor: 1.5, house: 1.5, senate: 0.6, governor: 0.5}

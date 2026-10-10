@@ -11,7 +11,7 @@ with its category.
 
 ```bash
 source .venv/bin/activate
-python -m app demo                              # the reproducible demo world (≈ 2 min)
+python -m app demo                              # the reproducible demo world (≈ 15 min; --no-local-elections ≈ 2 min)
 python -m app run                               # web UI and API on http://127.0.0.1:8000
 python -m app election-night --election demo    # the 2028 election night in the terminal
 ```
@@ -65,10 +65,15 @@ are skipped when you run it again.
    (generated from `--seed`), Senate seats, offices and legislatures.
 4. **history:** `founding-2024` and `midterm-2026` are each created, simulated, run through a
    complete election night at once and finalized, so every race call is stored.
-5. **demo-2028:** created and simulated, then left **SIMULATED**. Its election night starts at
+5. **local elections:** every in-between local election before the 2026 midterm, and every one
+   between the midterm and 2028, is held in date order the same way
+   ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). `--no-local-elections` skips them.
+6. **demo-2028:** created and simulated, then left **SIMULATED**. Its election night starts at
    polls closing: 0 EV allocated, 174 available, **88 TO WIN**.
-6. **forecast:** a 2028 Monte Carlo forecast (`--forecast-simulations`, seed `--seed`).
-7. **validate:** `app_meta.demo_election_id` is set and `validate_system` must pass.
+7. **forecast:** a 2028 Monte Carlo forecast (`--forecast-simulations`, seed `--seed`).
+8. **world clock:** today is set to the demo election's day, 8 November 2028
+   ([CLOCK.md](CLOCK.md)). Later elections are created as the clock reaches them.
+9. **validate:** `app_meta.demo_election_id` is set and `validate_system` must pass.
 
 ```bash
 python -m app demo                                  # data/nlfed.db
@@ -76,6 +81,7 @@ python -m app demo --force                          # rebuild the database from 
 python -m app demo --seed 7 --forecast-simulations 0
 python -m app demo --synthetic --database-url sqlite:///tmp/toy.db   # offline toy country
 python -m app demo --json                           # summary with per-step timings
+python -m app demo --no-local-elections             # only the big November elections (faster)
 ```
 
 Options:
@@ -225,6 +231,83 @@ the office holders.
 python -m app finalize --election 2028
 ```
 
+### `reset`
+
+`reset` puts an election back to polls closing so its election night can be replayed. The
+election keeps its id and its hidden simulated result, so the replay reveals exactly the same
+election:
+
+- an election that is not reported yet (`simulated` or `live`) has its night's race calls and
+  playback session deleted;
+- a reported election (`final` / `certified`) also has its certification undone: the automatic
+  recount corrections are reversed from their audit rows, the Electoral College allocations,
+  contingent election, chamber seats, race summaries and calls are removed, the office terms it
+  started are deleted and the terms it ended are reopened.
+
+Elections are certified in chronological order, so only the **most recent** reported election can
+be reset; an earlier one is refused with exit code 6 while a later election is reported (or its
+night is under way). The command asks for confirmation unless `--yes` is given.
+
+```bash
+python -m app reset --election 2028          # asks for confirmation
+python -m app reset --election 2028 --yes    # e.g. in scripts
+python -m app demo --force                   # start over completely: rebuild the demo database
+```
+
+### `local calendar | list | create | schedule` and `finish-earlier`
+
+In-between local elections (school boards, water boards, ballot measures, special elections and
+mayor recalls; [LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)). A local election is one date: every
+province voting that day, with one combined election night. Usually the world clock creates them
+(`clock next`, below); these commands work on them directly.
+
+```bash
+python -m app local calendar                      # the next 12 months of local election dates
+python -m app local calendar --year 2029 -p GE    # one year, the dates Gelderland votes
+python -m app local list --year 2027              # the stored local elections
+python -m app local create -d 2029-03-14 --simulate
+python -m app local schedule --until 2030-11-05   # create every planned local election up to a date
+python -m app finish-earlier --election 2030      # hold every unfinished election before 2030, oldest first
+```
+
+Elections are certified in strict date order. `finalize`, `election-night` and the UI refuse an
+election while an earlier one is unfinished (exit code 6). Once local elections are in use, a
+planned local election that has not been created yet also counts as unfinished. `finish-earlier`
+creates, simulates and runs an instant election night for every unfinished election before the
+given one (`--limit N` stops after N).
+
+`--election latest` and `--election <year>` address the regular elections; local elections are
+addressed by id.
+
+### `clock` — the world clock
+
+One *today* for the whole world; roll from election day to election day ([CLOCK.md](CLOCK.md)).
+
+```bash
+python -m app clock                    # today, today's elections, the next election day
+python -m app clock next               # go to the next election day, then: watch (w), count (c) or later (l)?
+python -m app clock next --count       # … and count it instantly (or --watch, --speed 25)
+python -m app clock watch --speed 25   # watch today's election night in the terminal
+python -m app clock count              # count today's election instantly (every call stored)
+python -m app clock skip --to 2031-01-01   # count every election day before a date, move there
+python -m app clock agenda --months 12 # the coming election days
+python -m app clock news --days 365    # vacancies, recalls, results and your own people
+```
+
+`clock next` refuses (exit code 6) while today's election is unfinished. After the built-in
+scenarios, the clock generates each November election from the previous ones.
+
+### `people` — your own people
+
+```bash
+python -m app people                   # config/people.yaml: homes, parties, races run, offices held
+python -m app people --json
+```
+
+Checks `config/people.yaml` ([PEOPLE.md](PEOPLE.md)) against the geography and the parties (exit
+code 6 with the problem when it does not validate) and lists, per person, every race they ran in
+(won or lost) and the offices they hold.
+
 ### `election-night`
 
 `election-night` shows a broadcast-style night in the terminal. It runs through the election-night
@@ -250,19 +333,20 @@ python -m app election-night --election 2028 --until 23:30    # pause at 23:30 (
 python -m app election-night --election 2028 --headless       # calls and periodic summaries as text
 python -m app election-night --election 2028 --instant        # every event at once, then FINAL
 python -m app election-night --election 2028 --instant --json # final state as JSON
-python -m app election-night --election 2028 --reset          # back to polls closing (not for FINAL elections)
+python -m app election-night --election 2028 --reset          # back to polls closing first, then run it
 ```
 
 Options:
 
 - `--speed`: one of 1, 2, 5, 10 or 25.
 - `--until HH:MM`: pause exactly when the simulated clock reaches that time.
-- `--reset`: delete the night's calls and session first.
+- `--reset`: reset the election to polls closing first (same as `reset`; for the most recent
+  FINAL election its certification is undone, so the night can be replayed).
 
 When the last reporting event is applied, the election is finalized once, with the night's calls.
 The final screen shows the certified outcome: races that ended the night in RECOUNT are resolved
 by the automatic recounts, so all 174 EV and every seat are allocated. A FINAL election's night
-can be displayed but not changed.
+can be displayed but not changed; use `reset` (or `--reset`) on the most recent one to replay it.
 
 ### `forecast`
 
@@ -370,12 +454,17 @@ python -m app scenario validate demo-2028-b
 python -m app demo
 python -m app election-night --election demo --speed 25
 
-# a new election cycle
-python -m app election-night --election 2028 --instant                          # 2028 becomes history
-python -m app scenario duplicate midterm-2026 midterm-2030 --seed 20300001 --name "Midterm Election 2030"
-python -m app election create --year 2030 --scenario midterm-2030 --simulate    # the copy moved to 2030
-python -m app election-night --election 2030 --instant
+# roll on with the world clock
+python -m app clock count                    # the 2028 general election becomes history
+python -m app clock next --count             # the first local election day of 2029, counted
+python -m app clock next                     # the next one: watch or count?
+python -m app clock skip --to 2030-11-01     # count everything up to the 2030 midterm …
+python -m app clock watch --speed 25         # … and watch the generated midterm's night
 python -m app history
+
+# your own people
+$EDITOR config/people.yaml                   # see docs/PEOPLE.md
+python -m app people                         # check the file; later: their races and offices
 
 # analysis and data
 python -m app forecast --election 2028 -n 100000

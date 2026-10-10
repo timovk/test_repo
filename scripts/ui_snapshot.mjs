@@ -6,7 +6,10 @@
  *
  * For every route: loads the page, waits for network idle, saves <out_dir>/<name>.png and prints
  * console errors / failed requests as JSON lines.  Exit code 1 if any page logged an error.
- * Optional env: WIDTH, HEIGHT, THEME=light|dark, WAIT_MS (extra settle time, default 1500).
+ * Optional env: WIDTH, HEIGHT, THEME=light|dark, WAIT_MS (extra settle time, default 1500),
+ * FULL=0 (viewport only instead of the full page), CLIP="x,y,w,h" (screenshot a region),
+ * CLICK="sel1;sel2" (click these selectors in order before the screenshot),
+ * TYPE="selector=text" (type into an input after the clicks).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -46,8 +49,18 @@ for (const route of routes.length ? routes : ["#/night"]) {
   const url = `${base.replace(/\/$/, "")}/${route.startsWith("#") ? route : `#${route}`}`;
   await page.goto(url, { waitUntil: "networkidle", timeout: 60000 }).catch((e) => problems.push({ type: "goto", text: String(e) }));
   await page.waitForTimeout(Number(process.env.WAIT_MS || 1500));
+  for (const sel of (process.env.CLICK || "").split(";").filter(Boolean)) {
+    await page.click(sel, { timeout: 10000 }).catch((e) => problems.push({ type: "click", text: String(e).slice(0, 200) }));
+    await page.waitForTimeout(400);
+  }
+  if (process.env.TYPE) {
+    const i = process.env.TYPE.indexOf("=");
+    await page.fill(process.env.TYPE.slice(0, i), process.env.TYPE.slice(i + 1)).catch((e) => problems.push({ type: "type", text: String(e).slice(0, 200) }));
+    await page.waitForTimeout(600);
+  }
   const name = route.replace(/[^a-z0-9]+/gi, "_").replace(/^_|_$/g, "") || "root";
-  await page.screenshot({ path: path.join(outDir, `${name}.png`), fullPage: true });
+  const clip = process.env.CLIP ? (([x, y, width, height]) => ({ x, y, width, height }))(process.env.CLIP.split(",").map(Number)) : undefined;
+  await page.screenshot({ path: path.join(outDir, `${name}.png`), fullPage: clip ? true : process.env.FULL !== "0", clip });
   console.log(JSON.stringify({ route, screenshot: path.join(outDir, `${name}.png`), problems }));
   if (problems.some((p) => p.type !== "http" || p.status >= 500)) failed = true;
   await page.close();

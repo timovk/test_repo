@@ -324,6 +324,12 @@ class _Race:
     leader: str | None = None
     history: list[CallRecord] = field(default_factory=list)
     lead_changes: list[LeadChange] = field(default_factory=list)
+    #: Contest rules (vote for N, Yes/No threshold) and, for vote-for-N races, ballots cast per
+    #: unit (counted ballots are then not the sum of the counted marks).
+    seats: int = 1
+    marks_per_ballot: int = 1
+    threshold: float | None = None
+    final_cast: np.ndarray | None = None
 
     @property
     def locked(self) -> bool:
@@ -358,6 +364,30 @@ class _Race:
             unit_cluster=self.cluster,
             n_clusters=len(self.cluster_muni),
             race_type=self.meta.race_type.value,
+            seats=self.seats,
+            marks_per_ballot=self.marks_per_ballot,
+            threshold=self.threshold,
+        )
+
+    def winner_keys(self) -> list[str]:
+        """Lines the published status refers to (all projected winners of a vote-for-N race)."""
+        st = self.state
+        if st.key is None:
+            return []
+        d = self.decision
+        if d is not None and d.winner_key == st.key and d.status == st.status and d.winner_keys:
+            return list(d.winner_keys)
+        return [st.key]
+
+    def passing(self) -> bool | None:
+        """Yes/No questions: whether the counted votes currently pass (None otherwise)."""
+        if self.threshold is None or "YES" not in self.line_keys or "NO" not in self.line_keys:
+            return None
+        from app.elections.tabulation import question_passes
+
+        t = self.totals
+        return question_passes(
+            float(t[self.line_keys.index("YES")]), float(t[self.line_keys.index("NO")]), self.threshold
         )
 
 
@@ -503,7 +533,10 @@ class NightEngine:
         if (rv.votes < 0).any() or (np.asarray(rv.blank) < 0).any() or (np.asarray(rv.invalid) < 0).any():
             raise ElectionNightError(f"{key}: negative vote counts")
         # the mathematical-certainty bound (eligible − counted ballots) needs ballots ≤ eligible
-        cast = rv.votes.sum(axis=1) + np.asarray(rv.blank) + np.asarray(rv.invalid)
+        if int(getattr(rv, "marks_per_ballot", 1) or 1) > 1:  # vote for N: marks are not ballots
+            cast = np.asarray(rv.ballots_cast)
+        else:
+            cast = rv.votes.sum(axis=1) + np.asarray(rv.blank) + np.asarray(rv.invalid)
         if (cast > np.asarray(rv.eligible)).any():
             raise ElectionNightError(f"{key}: ballots exceed eligible voters in some units")
         if rv.expected_shares is None or rv.expected_turnout is None:
@@ -545,6 +578,12 @@ class NightEngine:
             totals=np.zeros(L, dtype=np.int64),
             x_total=float(exp_ballots.sum()),
             n_incomplete=n,
+            seats=int(getattr(rv, "seats", 1) or 1),
+            marks_per_ballot=int(getattr(rv, "marks_per_ballot", 1) or 1),
+            threshold=getattr(rv, "threshold", None),
+            final_cast=np.asarray(rv.ballots_cast, dtype=np.int64)
+            if int(getattr(rv, "marks_per_ballot", 1) or 1) > 1
+            else None,
         )
 
     def _build_index(self) -> None:
@@ -827,11 +866,14 @@ class NightEngine:
         fin = r.final[rows]
         new = np.floor(fin * fvals[:, None]).astype(np.int64)
         r.counted[rows] = new
-        r.counted_ballots[rows] = (
-            new.sum(axis=1)
-            + np.floor(r.final_blank[rows] * fvals).astype(np.int64)
-            + np.floor(r.final_invalid[rows] * fvals).astype(np.int64)
-        )
+        if r.final_cast is not None:  # vote for N: marks are not ballots
+            r.counted_ballots[rows] = np.floor(r.final_cast[rows] * fvals).astype(np.int64)
+        else:
+            r.counted_ballots[rows] = (
+                new.sum(axis=1)
+                + np.floor(r.final_blank[rows] * fvals).astype(np.int64)
+                + np.floor(r.final_invalid[rows] * fvals).astype(np.int64)
+            )
         r.totals += new.sum(axis=0) - old
 
     def _update_leader(self, r: _Race) -> None:
@@ -1250,6 +1292,10 @@ class NightEngine:
             "leader": r.leader,
             "called_key": called_key,
             "lean_key": lean_key,
+            "called_keys": r.winner_keys() if called_key is not None else [],
+            "seats": r.seats,
+            "threshold": r.threshold,
+            "passing": r.passing(),
             "win_probability": None if d is None else d.win_probability_of(wp_key),
             # counted quantities are live; model outputs are those of the last evaluation
             "reporting_pct": round(r.reporting_pct(), 3),

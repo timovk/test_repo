@@ -1,5 +1,5 @@
 """Write actions exposed by the API, each one a committed unit of work: create / simulate /
-finalize an election, persist UI settings and add a manual (FICTIONAL) poll.
+finalize / reset an election, persist UI settings and add a manual (FICTIONAL) poll.
 
 The election mathematics stays in :mod:`app.services.elections` (and the engines); these
 functions validate the request, call the service, commit and clear the read cache."""
@@ -103,6 +103,101 @@ def finalize_election(session: Session, ref: ElectionRef) -> dict[str, Any]:
         clear_read_cache()
         raise
     return election_detail(session, resolve_election(session, ref.id))
+
+
+def reset_election(session: Session, ref: ElectionRef) -> dict[str, Any]:
+    """``POST /api/elections/{id}/reset`` — back to polls closing so the election night can be
+    run again.  The election keeps its id and its hidden result, so the replay reveals the same
+    election; a reported election has its certification undone (recount corrections reversed,
+    office terms restored).  Only the most recent reported election can be reset (409)."""
+    from contextlib import nullcontext
+
+    from app.services.read.elections import election_detail
+    from app.services.read.live import manager_for, night_available
+    from app.services.reset import reset_election as reset_service
+
+    manager = manager_for(session) if night_available() else None
+    lock = manager.election_lock(ref.id) if manager is not None else nullcontext()
+    with lock:
+        try:
+            result = reset_service(session, ref.id, night_manager=manager)
+            _commit(session)
+        except Exception:
+            session.rollback()
+            clear_read_cache()
+            raise
+        if manager is not None:  # a read may have reloaded the old night before the commit
+            manager.forget(ref.id)
+    log.info("election reset via API", extra=log_ctx(**result.to_dict()))
+    out = election_detail(session, resolve_election(session, ref.id))
+    out["reset_result"] = result.to_dict()
+    return out
+
+
+def finish_earlier(session: Session, ref: ElectionRef, *, limit: int | None = None) -> dict[str, Any]:
+    """``POST /api/elections/{id}/finish-earlier`` — elections are certified in strict date
+    order: create (local), simulate and finish — through an instant election night, so every
+    race call is stored — every unfinished election held before this one, oldest first.  Each
+    election is committed as soon as it is finished.  ``limit`` caps how many are finished in
+    one call."""
+    from datetime import timedelta
+
+    from app.services import elections as election_service
+    from app.services import local as local_service
+    from app.services.night import run_instant_night
+    from app.services.read.elections import earlier
+    from app.services.read.live import manager_for, night_available
+
+    manager = manager_for(session) if night_available() else None
+    done: list[int] = []
+    try:
+        local_service.ensure_local_elections(session, ref.election_date - timedelta(days=1))
+        _commit(session)
+        for el in local_service.unreported_before(session, ref.election_date, exclude_id=ref.id):
+            if limit is not None and len(done) >= limit:
+                break
+            eid = el.id
+            lock = manager.election_lock(eid) if manager is not None else None
+            if lock is not None:
+                lock.acquire()
+            try:
+                if el.status == ElectionStatus.SCHEDULED.value:
+                    election_service.simulate_election(session, eid)
+                run_instant_night(session, eid)
+                _commit(session)
+                if manager is not None:
+                    manager.forget(eid)
+            finally:
+                if lock is not None:
+                    lock.release()
+            done.append(eid)
+    except Exception:
+        session.rollback()
+        clear_read_cache()
+        raise
+    log.info("finished earlier elections via API", extra=log_ctx(election_id=ref.id, finished=len(done)))
+    out = earlier(session, resolve_election(session, ref.id))
+    out["finished"] = done
+    return out
+
+
+def create_local_election(session: Session, on: date, *, simulate: bool = False) -> dict[str, Any]:
+    """``POST /api/local/elections`` — create (and optionally simulate) the local election of a
+    local election date: every province voting that day (409 when it exists or when no province
+    votes that day)."""
+    from app.services import local as local_service
+    from app.services.read.elections import election_detail
+
+    try:
+        el = local_service.create_local_election(session, on)
+        if simulate:
+            election_service.simulate_election(session, el.id)
+        _commit(session)
+    except Exception:
+        session.rollback()
+        clear_read_cache()
+        raise
+    return election_detail(session, ref_of(el))
 
 
 def update_settings(session: Session, patch: Mapping[str, Any]) -> dict[str, Any]:

@@ -77,6 +77,7 @@ from app.simulation.candidates import (
     generate_down_ballot,
     slugify,
 )
+from app.simulation.people import PeopleAssignment, PeopleConfig, assign_people, slots_from_units
 from app.simulation.races import (
     governor_slots,
     house_slots,
@@ -142,6 +143,64 @@ def holders_at(session: Session, when: date) -> dict[str, Holder]:
             term_end=oh.term_end,
         )
     return out
+
+
+HolderTimeline = dict[str, list[tuple[date, date | None, Holder]]]
+
+
+def holder_timeline(session: Session, prefix: str) -> HolderTimeline:
+    """Every term of the offices whose code starts with ``prefix`` (one query): office code →
+    ``(term_start, ended_on, holder)`` oldest first.  :func:`holder_on` answers who served on a
+    date like :func:`holders_at`, without loading every office of the system per date."""
+    party_code = dict(session.execute(select(Party.id, Party.code)).tuples().all())
+    rows = session.execute(
+        select(
+            OfficeHolder.id,
+            OfficeHolder.office_id,
+            OfficeHolder.candidate_id,
+            OfficeHolder.party_id,
+            OfficeHolder.term_start,
+            OfficeHolder.term_end,
+            OfficeHolder.ended_on,
+            Office.code,
+            Candidate.key,
+            Candidate.party_id,
+        )
+        .join(Office, Office.id == OfficeHolder.office_id)
+        .join(Candidate, Candidate.id == OfficeHolder.candidate_id)
+        .where(Office.code.like(f"{prefix}%"))
+        .order_by(OfficeHolder.term_start, OfficeHolder.id)
+    ).all()
+    out: HolderTimeline = {}
+    for hid, office_id, cand_id, seat_pid, start, end, ended, code, key, cur_pid in rows:
+        out.setdefault(code, []).append(
+            (
+                start,
+                ended,
+                Holder(
+                    office_code=code,
+                    office_id=office_id,
+                    holder_id=hid,
+                    candidate_id=cand_id,
+                    candidate_key=key,
+                    seat_party=party_code.get(seat_pid) if seat_pid is not None else None,
+                    current_party=party_code.get(cur_pid) if cur_pid is not None else None,
+                    term_start=start,
+                    term_end=end,
+                ),
+            )
+        )
+    return out
+
+
+def holder_on(timeline: HolderTimeline, office_code: str, when: date) -> Holder | None:
+    """The holder of an office on a date in a :func:`holder_timeline` (term started, not ended;
+    the latest such term, as :func:`holders_at`)."""
+    found = None
+    for start, ended, h in timeline.get(office_code, ()):
+        if start <= when and (ended is None or ended > when):
+            found = h
+    return found
 
 
 # =========================================================================== parties
@@ -505,6 +564,39 @@ class SetupState:
     existing_keys: set[str]
     candidate_specs: dict[str, CandidateSpec] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: Custom people of config/people.yaml (app.simulation.people) and those running this time.
+    people: PeopleConfig | None = None
+    people_used: dict[str, CandidateSpec] = field(default_factory=dict)
+
+
+def party_ideology(model: StructuralModel) -> dict[str, tuple[float, ...]]:
+    """Party code → its position on the model's ideology axes."""
+    return {c: tuple(float(x) for x in model.ideology[i]) for i, c in enumerate(model.party_codes)}
+
+
+def assign_custom_people(
+    state: SetupState,
+    items: Sequence[tuple[str, RaceType | str, Any]],
+    exclude: set[str],
+    incumbents: Mapping[str, CandidateSpec] | None = None,
+) -> PeopleAssignment | None:
+    """Who of config/people.yaml runs in which of these races (``(key, race type, units)``);
+    ``incumbents`` (race → holder) keep their party's line."""
+    if not state.people:
+        return None
+    slots = slots_from_units(state.frame, items)
+    out = assign_people(
+        state.people,
+        slots,
+        seed=state.seed,
+        on=state.election_date,
+        parties=party_ideology(state.model),
+        exclude=exclude | set(state.people_used),
+        held_lines={(k, c.party) for k, c in (incumbents or {}).items()},
+    )
+    for c in out.specs():
+        state.people_used[c.key] = c
+    return out
 
 
 def scenario_incumbents(doc: ScenarioDocument) -> dict[str, CandidateSpec]:
@@ -659,8 +751,16 @@ def down_ballot_plan(
             continue
         incumbents[s.key] = spec
         used.add(spec.key)
+    people = assign_custom_people(
+        state, [(s.key, s.race_type, s.unit_index) for s in slots], used, incumbents
+    )
     fielded: dict[str, RaceCandidates] = generate_down_ballot(
-        model, slots, state.seed, incumbents=incumbents, existing_keys=state.existing_keys
+        model,
+        slots,
+        state.seed,
+        incumbents=incumbents,
+        existing_keys=state.existing_keys,
+        people=people.races if people is not None else None,
     )
     specs = races_from_candidates(slots, fielded)
     out: list[PlannedRace] = []
@@ -846,6 +946,8 @@ def store_races(
         inc_line = next((pl for pl in pr.lines if pl.line.incumbent), None)
         if inc_party is None and inc_line is not None:
             inc_party = inc_line.line.party_code
+        if inc_party is None and holder is None and spec.is_special:
+            inc_party = spec.incumbent_party  # the party of a vacated seat (special elections)
         inc_cand = (
             holder.candidate_id
             if holder is not None
@@ -907,7 +1009,10 @@ def store_races(
                     "ballot_order": order,
                     "ballot_name": (ln.label or ln.key)[:200],
                     "line_key": ln.key,
-                    "quality_snapshot": float(ln.quality) if ln.candidate_key else None,
+                    # candidates' quality, or the appeal of a Yes/No side (lines with a position)
+                    "quality_snapshot": float(ln.quality)
+                    if ln.candidate_key or ln.ideology is not None
+                    else None,
                     "party_code_snapshot": party.code if party is not None else None,
                     "party_name_snapshot": ident[0] if ident else None,
                     "party_abbr_snapshot": ident[1] if ident else None,

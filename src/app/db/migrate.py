@@ -47,6 +47,35 @@ def current_revision(url: str | None = None) -> str | None:
         return row[0] if row else None
 
 
+def head_revision() -> str:
+    """The latest revision of the migration scripts."""
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    return str(head)
+
+
+def ensure_current(url: str | None = None) -> bool:
+    """Upgrade a database that was created by an older version of the application (it has a
+    schema revision, but not the latest).  An empty database is left alone (``init`` creates
+    it).  Returns whether a migration ran."""
+    from sqlalchemy.engine import make_url
+
+    u = make_url(url or get_settings().db_url)
+    in_memory = u.database in (None, "", ":memory:")
+    if u.get_backend_name() == "sqlite" and not in_memory and not Path(u.database).exists():
+        return False  # never create a database file here
+    try:
+        rev = current_revision(url)
+    except Exception:  # pragma: no cover - unreachable database: reported elsewhere
+        return False
+    if rev is None or rev == head_revision():
+        return False
+    log.info("upgrading database schema %s → %s", rev, head_revision())
+    upgrade_db(url)
+    return True
+
+
 def make_revision(message: str, url: str | None = None, autogenerate: bool = True) -> None:
     cfg = alembic_config(url)
     command.revision(cfg, message=message, autogenerate=autogenerate)

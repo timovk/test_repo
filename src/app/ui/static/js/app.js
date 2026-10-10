@@ -8,6 +8,10 @@
  *   clock · playback controls (hidden / live nights) or the certified final state (FINAL elections).
  * Live numbers come from the night snapshot (store.night); final numbers from
  * /api/elections/{id}/president, /house and /senate.  The strip performs no election mathematics.
+ * For a local election (election_type "local") the EV bar and the House / Senate counters give
+ * way to the provinces voting and the date, "Races called x/y" and "Measures passed x/y" (counted
+ * API flags).  Next to the brand, the world clock's "Today" (docs/CLOCK.md) links to #/today on
+ * every page and shows a running count / skip job.
  */
 import { api } from "./api.js";
 import { $, h, keyed, mount } from "./dom.js";
@@ -16,10 +20,13 @@ import { icon } from "./components/icons.js";
 import { evBar } from "./components/evbar.js";
 import { provBadge } from "./components/badges.js";
 import { toast } from "./components/live-toast.js";
-import { ROUTES } from "./routes.js";
+import { electionPickerButton } from "./components/election-picker.js";
+import { electionProvinces, finishEarlier, fmtDate, isDecidedStatus, isEarlierRefusal, latestRegular, loadProvinceNames, prepareNight, provincesText, tally } from "./components/local-kit.js";
+import { clockIsBusy, clockIsFresh, refreshClock } from "./clock.js";
+import { REGULAR_ONLY_VIEWS, ROUTES } from "./routes.js";
 import { parseHash, startRouter } from "./router.js";
 import { getElection, getState, nightFor, partyColor, setState, subscribe } from "./store.js";
-import { nightControl, watchNight } from "./night-poller.js";
+import { nightControl, stopNight, watchNight } from "./night-poller.js";
 
 const THEME_KEY = "nlfed.theme";
 const ELECTION_KEY = "nlfed.election";
@@ -85,9 +92,10 @@ function renderStrip() {
     h(
       "div",
       { class: "brand" },
-      h("a", { class: "brand__mark", href: "#/night", "aria-label": "Election Night home" }, "NL"),
-      h("div", { class: "lv-brand__text" }, h("div", { class: "brand__sub" }, "NL Federal Election"), h("div", { id: "strip-picker", class: "lv-strip-picker" })),
+      h("a", { class: "brand__mark", href: "#/today", "aria-label": "Today (home)" }, "NL"),
+      h("div", { class: "lv-brand__text" }, h("div", { class: "brand__sub", id: "strip-kind" }, "NL Federal Election"), h("div", { id: "strip-picker", class: "lv-strip-picker" })),
     ),
+    h("a", { class: "strip__counter lv-counter lv-today", id: "strip-today", href: "#/today", "aria-label": "Today — the world clock" }),
     h("div", { class: "strip__slot strip__ev", id: "strip-ev" }),
     h("div", { class: "strip__counter lv-counter", id: "strip-house" }),
     h("div", { class: "strip__counter lv-counter", id: "strip-senate" }),
@@ -97,37 +105,26 @@ function renderStrip() {
 }
 
 /* ------------------------------------------------------------------ election picker */
-function statusSuffix(e) {
-  if (e.status === "live") return " · LIVE";
-  if (e.status === "final" || e.status === "certified") return " · final";
-  return " · not reported";
-}
+let picker = null;
 
+/** Searchable picker (regular elections first, then local elections by year). */
 function renderPicker() {
   const { meta, electionId } = getState();
-  const els = meta?.elections || [];
-  const key = JSON.stringify([electionId, els.map((e) => [e.id, e.status])]);
-  keyed($("#strip-picker"), key, () =>
-    h(
-      "select",
-      {
-        class: "lv-picker",
-        "aria-label": "Election",
-        title: "Choose the election shown on every page",
-        onchange: (e) => {
-          const [path] = location.hash.replace(/^#/, "").split("?");
-          location.hash = `#${path || "/night"}?e=${e.target.value}`;
-        },
+  const host = $("#strip-picker");
+  if (!picker || !host.contains(picker)) {
+    picker = electionPickerButton({
+      onSelect: (id) => {
+        const [path] = location.hash.replace(/^#/, "").split("?");
+        location.hash = `#${path || "/night"}?e=${id}`;
       },
-      els
-        .slice()
-        .reverse()
-        .map((e) => h("option", { value: e.id, selected: e.id === electionId }, `${e.name}${statusSuffix(e)}`)),
-    ),
-  );
-  const sel = $("#strip-picker select");
-  const cur = els.find((e) => e.id === electionId);
-  if (sel && cur) sel.title = `${cur.name} (${cur.status}) — choose the election shown on every page`;
+    });
+    mount(host, picker);
+  }
+  picker.update(meta?.elections || [], electionId);
+  const cur = getElection(electionId);
+  const kind = $("#strip-kind");
+  const text = cur?.local ? "Local elections" : "NL Federal Election";
+  if (kind && kind.textContent !== text) kind.textContent = text;
 }
 
 /* ------------------------------------------------------------------ final-state cache */
@@ -137,6 +134,14 @@ function loadFinal(id) {
   if (finalCache.has(id)) return;
   finalCache.set(id, "loading");
   const soft = (p) => p.catch(() => null);
+  if (getElection(id)?.local) {
+    // Local elections: one race list (counted flags) instead of president / house / senate.
+    soft(api.get(`/api/elections/${id}/races`)).then((races) => {
+      finalCache.set(id, { local: races });
+      updateStrip();
+    });
+    return;
+  }
   // Only general (presidential-year) elections have a presidential race; don't ask otherwise.
   const hasPresident = String(getElection(id)?.election_type || "general") === "general";
   Promise.all([hasPresident ? soft(api.get(`/api/elections/${id}/president`)) : Promise.resolve(null), soft(api.get(`/api/elections/${id}/house`)), soft(api.get(`/api/elections/${id}/senate`))]).then(([pres, house, senate]) => {
@@ -176,6 +181,7 @@ function stripModel() {
     senateSeats: c.senate_seats ?? 24,
   };
   const night = nightFor(electionId);
+  if (election?.local) return localStripModel(base, election, final, night);
   if (final && night?.clock?.status !== "running") {
     loadFinal(electionId);
     const f = finalCache.get(electionId);
@@ -252,6 +258,36 @@ function stripModel() {
   };
 }
 
+/** Strip model of a local election: races called and measures passed (counted API flags). */
+function localStripModel(base, election, final, night) {
+  const lb = { ...base, local: true, noPresident: true };
+  if (final && night?.clock?.status !== "running") {
+    loadFinal(election.id);
+    const f = finalCache.get(election.id);
+    if (!f || f === "loading") return { ...lb, kind: "loading" };
+    const t = tally(f.local?.races || [], "final");
+    return { ...lb, kind: "final", counts: { total: t.total, decided: t.decided, measures: t.measures, measuresYes: t.measuresYes, measuresNo: t.measuresNo, municipalities: t.municipalityCount }, turnout: null };
+  }
+  const snap = night?.snapshot;
+  if (!snap) return { ...lb, kind: "empty" };
+  const races = snap.races || [];
+  const measures = races.filter((r) => r.type === "BALLOT_MEASURE");
+  return {
+    ...lb,
+    kind: "live",
+    clock: night.clock,
+    counts: {
+      total: races.length,
+      decided: races.filter((r) => isDecidedStatus(r.status)).length,
+      measures: measures.length,
+      measuresYes: measures.filter((r) => r.passing === true && (r.reporting_pct ?? 0) > 0).length,
+      measuresNo: measures.filter((r) => r.passing === false && (r.reporting_pct ?? 0) > 0).length,
+      municipalities: snap.reporting?.municipalities_total ?? null,
+    },
+    reporting: snap.reporting?.pct_expected_ballots ?? 0,
+  };
+}
+
 /* ------------------------------------------------------------------ strip rendering */
 let stripEvBar = null;
 
@@ -263,8 +299,40 @@ function winnerName(ev) {
   return t ? String(t.name || "").split(" / ")[0] : null;
 }
 
+function renderLocalEv(m) {
+  const el = $("#strip-ev");
+  stripEvBar = null;
+  el.classList.remove("is-won", "is-contingent");
+  const e = m.election;
+  const c = m.counts;
+  const status = [fmtDate(e.election_date, "long"), c?.municipalities ? `${fmtInt(c.municipalities)} municipalities` : null].filter(Boolean).join(" · ");
+  const pct = c && c.total ? (c.decided / c.total) * 100 : 0;
+  keyed(el, JSON.stringify(["local", e.id, status, pct, c?.total, m.kind]), () =>
+    h(
+      "div",
+      { class: "lv-strip-ev lc-strip-ev" },
+      h(
+        "div",
+        { class: "lv-strip-ev__head" },
+        h("span", { class: "strip__label", title: provincesText(electionProvinces(e), { names: true }) }, `Local · ${provincesText(electionProvinces(e)) || "all provinces"}`),
+        h("span", { class: "lv-strip-ev__status" }, status),
+        h("span", { class: "lv-strip-ev__towin" }, c ? `${fmtInt(c.total)} RACES` : "LOCAL"),
+      ),
+      h(
+        "div",
+        { class: "lc-strip-bar", role: "img", "aria-label": c ? `${fmtInt(c.decided)} of ${fmtInt(c.total)} races called` : "No races called yet" },
+        h("span", { class: "lc-strip-bar__fill", style: { width: `${pct}%` } }),
+      ),
+    ),
+  );
+}
+
 function renderEv(m) {
   const el = $("#strip-ev");
+  if (m.local) {
+    renderLocalEv(m);
+    return;
+  }
   if (m.kind === "loading" || m.kind === "empty") {
     stripEvBar = null;
     keyed(el, `${m.kind}`, () => evBlock("President", `0 EV allocated · ${m.total} available`, m.needed, evBar({ total: m.total, majority: m.needed, tickets: [], compact: true, markerLabel: false, showLegend: false })));
@@ -355,12 +423,42 @@ function seatCounter(title, c, fallbackMajority, fallbackSeats) {
   ];
 }
 
+function localCounter(label, value, ratio, sub, kind) {
+  return [
+    h("span", { class: "strip__label" }, label),
+    h("span", { class: "strip__value" }, value),
+    h("div", { class: ["lv-minibar", "lv-minibar--report", kind && `lc-minibar--${kind}`], "aria-hidden": "true" }, h("span", { class: "lv-minibar__fill", style: { width: `${Math.max(0, Math.min(100, ratio * 100))}%` } })),
+    h("span", { class: "strip__label" }, sub),
+  ];
+}
+
+function renderLocalCounters(m) {
+  const c = m.counts;
+  const final = m.kind === "final";
+  keyed($("#strip-house"), JSON.stringify(["lr", c?.decided, c?.total, m.kind]), () =>
+    localCounter("Races called", c ? `${fmtInt(c.decided)}/${fmtInt(c.total)}` : "–", c && c.total ? c.decided / c.total : 0, !c ? "no count yet" : final ? "certified" : `${fmtInt(c.total - c.decided)} not called`),
+  );
+  keyed($("#strip-senate"), JSON.stringify(["lm", c?.measuresYes, c?.measuresNo, c?.measures, m.kind]), () =>
+    c && !c.measures
+      ? [h("span", { class: "strip__label" }, "Measures"), h("span", { class: "strip__value" }, "–"), h("span", { class: "strip__label" }, "none on this ballot")]
+      : localCounter(final ? "Measures passed" : "Measures passing", c ? `${fmtInt(c.measuresYes)}/${fmtInt(c.measures)}` : "–", c && c.measures ? c.measuresYes / c.measures : 0, !c ? "–" : c.measuresYes + c.measuresNo ? `${fmtInt(c.measuresNo)} ${final ? "failed" : "failing"}` : `${fmtInt(c.measures)} on the ballot`, "yes"),
+  );
+}
+
 function renderCounters(m) {
+  if (m.local) renderLocalCounters(m);
+  else renderRegularCounters(m);
+  renderReport(m);
+}
+
+function renderRegularCounters(m) {
   const houseKey = JSON.stringify(m.house ? [m.house.parties.map((p) => [p.party, p.called, p.leading, p.color]), m.house.sub, m.house.control] : null);
   keyed($("#strip-house"), houseKey, () => seatCounter("House", m.house, m.houseMajority, m.houseSeats));
   const senKey = JSON.stringify(m.senate ? [m.senate.parties.map((p) => [p.party, p.called, p.leading, p.color]), m.senate.sub, m.senate.control] : null);
   keyed($("#strip-senate"), senKey, () => seatCounter("Senate", m.senate, m.senateMajority, m.senateSeats));
+}
 
+function renderReport(m) {
   const rep = $("#strip-report");
   if (m.kind === "final") {
     keyed(rep, `final|${m.turnout}`, () => [
@@ -410,26 +508,111 @@ async function control(action, speed) {
   try {
     await nightControl(action, speed);
   } catch (err) {
+    if (isEarlierRefusal(err)) {
+      // Strict date order: offer the one-click "finish earlier" right in the notification.
+      const id = getState().electionId;
+      const msg = String(err.message).split(". Finish them with")[0].replace(/\s*\(elections are certified in date order; the first is /, " — the first is ").replace(/\)$/, "").replace(/ on \d{4}-\d{2}-\d{2}$/, "");
+      toast(`${msg}.`, { kind: "error", action: { label: "Finish earlier elections", onClick: () => finishEarlier(id).catch(() => null) } });
+      return;
+    }
     toast(err?.message || `Could not ${action} the night`, { kind: "error" });
+  }
+}
+
+/**
+ * Whether an election can be reset to polls closing (mirrors the server rule in
+ * services/reset.py): it has been simulated, and when reported no later election is reported or
+ * has its night under way.  The server has the final word (409 with the reason).
+ */
+export function canResetElection(election, elections = getState().meta?.elections || []) {
+  if (!election || election.status === "scheduled") return false;
+  const reported = election.status === "final" || election.status === "certified";
+  if (!reported) return true;
+  const later = (e) => e.election_date > election.election_date || (e.election_date === election.election_date && e.id > election.id);
+  return !elections.some((e) => e.id !== election.id && later(e) && ["final", "certified", "live"].includes(e.status));
+}
+
+/**
+ * Reset an election to polls closing (POST /api/elections/{id}/reset): the election keeps its id
+ * and its hidden result, so its night replays the same election.  Refreshes everything and opens
+ * the election night.
+ */
+export async function resetElection(id) {
+  const res = await api.post(`/api/elections/${id}/reset`, {}, { timeout: 300000 });
+  finalCache.delete(id);
+  api.invalidate("/api/");
+  stopNight();
+  setState({ night: null });
+  try {
+    setState({ meta: await api.get("/api/meta") });
+  } catch {
+    /* the poller refreshes it later */
+  }
+  selectElection(id);
+  const target = `#/night?e=${id}`;
+  if (location.hash === target) window.dispatchEvent(new HashChangeEvent("hashchange"));
+  else location.hash = target;
+  toast(`${res?.election?.year ?? "Election"} reset to polls closing — press Start to replay the night`);
+  return res;
+}
+
+async function replay(id) {
+  try {
+    await resetElection(id);
+  } catch (err) {
+    toast(err?.message || "Could not reset the election", { kind: "error" });
   }
 }
 
 function renderControls(m) {
   const el = $("#strip-controls");
   if (m.kind === "final") {
-    const key = `final|${m.ev?.decidedBy}|${m.election?.id}`;
+    const resettable = canResetElection(m.election);
+    const key = `final|${m.ev?.decidedBy}|${m.election?.id}|${resettable}`;
     keyed(el, key, () =>
       h(
         "div",
         { class: "lv-final" },
         h("span", { class: "pill pill--final lv-final__pill", style: { "--party": "var(--surface-3)" } }, icon("lock", { size: 11, className: "pill__icon" }), "Final"),
-        h("div", { class: "lv-final__text" }, h("span", { class: "strip__label" }, "Certified result"), h("span", { class: "lv-final__sub" }, m.ev?.decidedBy === "contingent" ? "President chosen by contingent election" : m.noPresident ? "Midterm · House, Senate, local" : "Historic election · no live controls")),
+        h(
+          "div",
+          { class: "lv-final__text" },
+          h("span", { class: "strip__label" }, "Certified result"),
+          h(
+            "span",
+            { class: "lv-final__sub" },
+            m.local
+              ? resettable
+                ? "Replay resets it to polls closing"
+                : `Local elections · ${provincesText(electionProvinces(m.election))}`
+              : m.ev?.decidedBy === "contingent"
+                ? "President chosen by contingent election"
+                : m.noPresident
+                  ? "Midterm · House, Senate, local"
+                  : resettable
+                    ? "Replay resets it to polls closing"
+                    : "Historic election · no live controls",
+          ),
+        ),
+        resettable ? confirmButton("Replay", "reset", "Reset this election to polls closing and replay its night (the result stays the same)", () => replay(m.election.id), false) : null,
       ),
     );
     return;
   }
   const clk = m.clock;
   if (!clk) {
+    if (m.election?.status === "scheduled" && m.kind !== "loading") {
+      // A scheduled election has no night until its hidden result is simulated.
+      keyed(el, `sched|${m.election.id}`, () =>
+        h(
+          "div",
+          { class: "lv-final" },
+          h("div", { class: "lv-final__text" }, h("span", { class: "strip__label" }, "Scheduled"), h("span", { class: "lv-final__sub" }, "Not simulated yet")),
+          h("button", { class: "btn btn--sm btn--primary lv-ctl lv-ctl--main", type: "button", title: "Simulate the hidden result and prepare the election night", onclick: () => prepareNight(m.election.id) }, icon("play", { size: 13 }), "Prepare"),
+        ),
+      );
+      return;
+    }
     keyed(el, "none", () => h("span", { class: "strip__label" }, m.kind === "loading" ? "" : "No election night available"));
     return;
   }
@@ -478,7 +661,54 @@ function updateStrip() {
   renderControls(m);
   const liveLink = document.querySelector('.nav__link[data-path="/night"]');
   if (liveLink) liveLink.classList.toggle("is-live", m.clock?.status === "running");
-  void electionId;
+  markNav(!!getElection(electionId)?.local);
+}
+
+/** Dim the regular-only sections in the nav while a local election is selected. */
+let navLocal = null;
+function markNav(local) {
+  if (local === navLocal) return;
+  navLocal = local;
+  document.querySelectorAll(".nav__link").forEach((a) => {
+    const r = ROUTES.find((x) => x.path === a.dataset.path);
+    const na = local && r && REGULAR_ONLY_VIEWS.has(r.view);
+    a.classList.toggle("is-na", !!na);
+    if (na) a.title = "Not part of local elections (regular November elections only)";
+    else a.removeAttribute("title");
+  });
+}
+
+/** Friendly page for a regular-only section while a local election is selected. */
+function notInLocalState(route, election, path) {
+  const reg = latestRegular();
+  return h(
+    "div",
+    { class: "view" },
+    h("header", { class: "page-head" }, h("div", null, h("div", { class: "page-head__eyebrow" }, `${route.nav || "Results"} · ${route.title}`), h("h1", { class: "page-head__title" }, route.title)), h("div", { class: "page-head__meta" }, provBadge("FICTIONAL"))),
+    h(
+      "section",
+      { class: "card lc-na" },
+      h(
+        "div",
+        { class: "lc-na__body" },
+        h("span", { class: "lc-na__icon" }, icon("ballot", { size: 28 })),
+        h("h2", { class: "lc-na__title" }, "Not part of this local election"),
+        h(
+          "p",
+          { class: "lc-na__text" },
+          h("b", null, election.name),
+          ` holds only local contests — school boards, ballot measures, water boards, special elections and recalls. The ${route.title} page belongs to the regular November elections.`,
+        ),
+        h(
+          "div",
+          { class: "lc-na__actions" },
+          h("a", { class: "btn btn--primary", href: `#/local?e=${election.id}` }, icon("ballot", { size: 14 }), "Local results"),
+          h("a", { class: "btn", href: `#/night?e=${election.id}` }, icon("night", { size: 14 }), "Election night"),
+          reg ? h("a", { class: "btn btn--ghost", href: `#${path}?e=${reg.id}` }, `${route.title} · ${reg.name}`) : null,
+        ),
+      ),
+    ),
+  );
 }
 
 function highlightNav(path) {
@@ -486,6 +716,62 @@ function highlightNav(path) {
     const p = a.dataset.path;
     a.classList.toggle("is-active", path === p || (p !== "/night" && path.startsWith(`${p}/`)));
   });
+  $("#strip-today")?.classList.toggle("is-active", path === "/today");
+}
+
+/* ------------------------------------------------------------------ world clock ("Today") */
+const DAY_FMT = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+const dayShort = (iso) => (iso ? DAY_FMT.format(new Date(`${iso}T00:00:00Z`)) : "–");
+
+/** Strip block "TODAY · 8 Nov 2028" + what the day holds (or the running count / skip job). */
+function renderToday() {
+  const el = $("#strip-today");
+  if (!el) return;
+  const { clock, clockJob } = getState();
+  const busy = clockIsBusy();
+  const job = clockJob?.running ? clockJob : null;
+  const today = clock?.today || null;
+  const unfinished = (clock?.pending || []).length > 0;
+  const todays = clock?.elections_today || [];
+  let sub;
+  let subKind = "";
+  if (job) {
+    sub = [h("span", { class: "lc-spinner", "aria-hidden": "true" }), job.kind === "skip" ? `Skipping ${job.total ? `${job.done}/${job.total}` : "…"}` : `Counting${job.total > 1 ? ` ${job.done}/${job.total}` : "…"}`];
+    subKind = "busy";
+  } else if (busy) {
+    sub = [h("span", { class: "lc-spinner", "aria-hidden": "true" }), { next: "Moving on…", watch: "Preparing…", count: "Counting…", skip: "Skipping…", refresh: "Updating…" }[busy] || "Working…"];
+    subKind = "busy";
+  } else if (unfinished && todays.length) {
+    sub = "Election day";
+    subKind = "day";
+  } else if (unfinished) {
+    sub = "Unfinished election";
+    subKind = "day";
+  } else if (clock?.next) {
+    sub = `Next · ${dayShort(clock.next.date)}`;
+  } else sub = clock ? "No election ahead" : "";
+  const key = JSON.stringify([today, subKind, job ? [job.kind, job.done, job.total] : null, busy, clock?.next?.date, unfinished, todays.length]);
+  keyed(el, key, () => [
+    h("span", { class: "strip__label" }, icon("clock", { size: 10 }), " Today"),
+    h("span", { class: "strip__value lv-today__date" }, today ? dayShort(today) : "–"),
+    h("span", { class: ["strip__label", "lv-today__sub", subKind && `lv-today__sub--${subKind}`] }, subKind === "day" ? h("span", { class: "lv-today__dot", "aria-hidden": "true" }) : null, sub),
+  ]);
+  el.title = clock ? `${clock.today_label} — the world clock (open the Today page)` : "The world clock (open the Today page)";
+}
+
+/** Refresh the clock when election statuses change (a night finished, an election was reset …). */
+let statusSig = null;
+let clockRefreshTimer = null;
+function watchStatuses(meta) {
+  const sig = (meta?.elections || []).map((e) => `${e.id}:${e.status}`).join(",");
+  if (statusSig !== null && sig !== statusSig) {
+    clearTimeout(clockRefreshTimer);
+    // Clock actions publish the fresh clock themselves: re-read it only when it is not fresh.
+    clockRefreshTimer = setTimeout(() => {
+      if (!clockIsFresh()) refreshClock().catch(() => null);
+    }, 400);
+  }
+  statusSig = sig;
 }
 
 /* ------------------------------------------------------------------ routing */
@@ -505,10 +791,17 @@ async function onRoute({ route, params, query, path }) {
   highlightNav(path);
   if (query.e && Number(query.e) !== getState().electionId) selectElection(Number(query.e));
   if (!route) {
-    mount(main, h("div", { class: "state" }, h("h2", null, "Page not found"), h("a", { class: "btn", href: "#/night" }, "Go to Election Night")));
+    mount(main, h("div", { class: "state" }, h("h2", null, "Page not found"), h("a", { class: "btn", href: "#/today" }, "Go to Today")));
     return;
   }
   document.title = `${route.title} · NL Federal Election Simulator`;
+  const selected = getElection(getState().electionId);
+  if (selected?.local && REGULAR_ONLY_VIEWS.has(route.view)) {
+    ++renderToken;
+    mount(main, notInLocalState(route, selected, path));
+    window.scrollTo(0, 0);
+    return;
+  }
   const token = ++renderToken;
   const loading = connectingState("Loading…");
   mount(main, loading);
@@ -585,6 +878,13 @@ async function boot() {
   });
   subscribe("electionId", updateStrip);
   subscribe("settings", updateStrip);
+  subscribe("clock", renderToday);
+  subscribe("clockJob", renderToday);
+  subscribe("clockBusy", renderToday);
+  subscribe("meta", watchStatuses);
+  renderToday();
+  loadProvinceNames().then(() => updateStrip());
+  const clockLoad = refreshClock().catch(() => null);
   try {
     const [meta, settings] = await Promise.all([api.get("/api/meta"), api.get("/api/settings").catch(() => null)]);
     if (settings)
@@ -601,8 +901,13 @@ async function boot() {
     const stored = Number(safeStorage(() => localStorage.getItem(ELECTION_KEY)));
     const ids = (meta.elections || []).map((e) => e.id);
     const preferred = Number(settings?.default_election_id);
-    const initial =
-      Number(parseHash().query.e) || (ids.includes(preferred) ? preferred : null) || (ids.includes(stored) ? stored : null) || meta.demo_election_id || ids[ids.length - 1] || null;
+    let initial = Number(parseHash().query.e) || (ids.includes(preferred) ? preferred : null) || (ids.includes(stored) ? stored : null) || null;
+    if (!initial) {
+      // First visit: start on the world clock's election of today (wait for it a little only).
+      const clock = await Promise.race([clockLoad, new Promise((r) => setTimeout(() => r(null), 3000))]);
+      const todayId = Number((clock?.elections_today || [])[0]?.id);
+      initial = (ids.includes(todayId) ? todayId : null) || meta.demo_election_id || ids[ids.length - 1] || null;
+    }
     if (initial) selectElection(initial);
   } catch (err) {
     console.error(err);

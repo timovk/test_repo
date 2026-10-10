@@ -15,6 +15,10 @@ StatLine OData JSON) derived from the synthetic toy country, with deliberate gap
 * ``BU01000400`` lacks both (→ wijk class, imputed);
 * a water neighbourhood and a water municipality feature (must be ignored);
 * an island neighbourhood ``BU01999900`` (GM0103) 3 km off the Groningen coast (→ water link).
+
+The water board GML (PDOK/INSPIRE layout: EPSG:4258, ``lat lon h`` posLists) holds the four
+synthetic water boards, with a 300 m hole around the centroid of ``BU05050500`` (→ assigned to the
+nearest board) and no polygon near the island (4 km away → no water board).
 """
 
 from __future__ import annotations
@@ -25,9 +29,12 @@ from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import pyogrio
 import pytest
+import shapely
+from pyproj import Transformer
 from shapely.geometry import box
 
 from app.core.config import clear_config_cache
@@ -39,6 +46,8 @@ from app.geography.synthetic import SyntheticGeography
 MISSING = -99997
 YEAR = 2025
 ISLAND_CODE = "BU01999900"
+HOLE_UNIT_CODE = "BU05050500"
+WATER_BOARD_GML = "waterschappen_administratieve_eenheden.gml"
 
 
 @pytest.fixture()
@@ -80,6 +89,52 @@ def _unit_frame(synthetic: SyntheticGeography) -> gpd.GeoDataFrame:
     island["geometry"] = [box(gr[0] + 10_000, gr[3] + 3_000, gr[0] + 12_000, gr[3] + 5_000)]
     island["area_km2"] = island["land_area_km2"] = 4.0
     return gpd.GeoDataFrame(pd.concat([u, island], ignore_index=True), geometry="geometry", crs=28992)
+
+
+def water_board_gml(boards: gpd.GeoDataFrame) -> str:
+    """GML text of ``boards`` (``code`` 'WSnn', ``name``, polygons in EPSG:28992) in the layout of
+    the Het Waterschapshuis INSPIRE file: a WFS 2.0 FeatureCollection of ``au:AdministrativeUnit``
+    with ``gml:MultiSurface`` in EPSG:4258 and 3-D ``lat lon h`` posLists (holes as interiors)."""
+    to_latlon = Transformer.from_crs(28992, 4258, always_xy=True)
+
+    def pos_list(ring: shapely.LinearRing) -> str:
+        xy = np.asarray(ring.coords)
+        lon, lat = to_latlon.transform(xy[:, 0], xy[:, 1])
+        return " ".join(f"{a:.12f} {o:.12f} 0.0" for a, o in zip(lat, lon, strict=True))
+
+    members = []
+    for i, row in enumerate(boards.itertuples(index=False)):
+        national = int(str(row.code)[2:])
+        surfaces = []
+        for j, poly in enumerate(shapely.get_parts(row.geometry)):
+            rings = [
+                f'<gml:exterior><gml:LinearRing><gml:posList srsDimension="3">{pos_list(poly.exterior)}'
+                "</gml:posList></gml:LinearRing></gml:exterior>"
+            ]
+            rings += [
+                f'<gml:interior><gml:LinearRing><gml:posList srsDimension="3">{pos_list(hole)}'
+                "</gml:posList></gml:LinearRing></gml:interior>"
+                for hole in poly.interiors
+            ]
+            surfaces.append(
+                f'<gml:surfaceMember><gml:Polygon gml:id="p{i}_{j}">{"".join(rings)}</gml:Polygon></gml:surfaceMember>'
+            )
+        members.append(
+            f"""<wfs:member><au:AdministrativeUnit gml:id="NL.WBHCODE.{national}.Admingrenswaterschap.{i}">
+<au:geometry><gml:MultiSurface gml:id="ms{i}" srsName="urn:ogc:def:crs:EPSG::4258">{"".join(surfaces)}</gml:MultiSurface></au:geometry>
+<au:nationalCode>{national}</au:nationalCode>
+<au:inspireId><base:Identifier><base:localId>Admingrenswaterschap.{i}</base:localId><base:namespace>NL.WBHCODE.{national}</base:namespace></base:Identifier></au:inspireId>
+<au:nationalLevel>4thOrder</au:nationalLevel><au:nationalLevelName>Waterschap</au:nationalLevelName><au:country>NL</au:country>
+<gml:name>{row.name}</gml:name>
+</au:AdministrativeUnit></wfs:member>"""
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" '
+        'xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:base="http://inspire.ec.europa.eu/schemas/base/3.3" '
+        'xmlns:au="http://inspire.ec.europa.eu/schemas/au/3.0" numberMatched="unknown" numberReturned="0">'
+        + "\n".join(members)
+        + "</wfs:FeatureCollection>"
+    )
 
 
 def _pw_mean(df: pd.DataFrame, by: str, cols: list[str]) -> pd.DataFrame:
@@ -262,6 +317,22 @@ def write_cbs_raw(raw_dir: Path, synthetic: SyntheticGeography) -> dict[str, Any
     (raw_dir / "kerncijfers_wijken_buurten_2022.json").write_text(
         json.dumps({"value": rows}), encoding="utf-8"
     )
+    # ------------------------------------------------------------------ water boards (GML)
+    boards = synthetic.water_boards
+    assert boards is not None
+    boards = boards[["code", "name", "geometry"]].copy()
+    hole_unit = u.loc[u["code"] == HOLE_UNIT_CODE].geometry.iloc[0]
+    hole = hole_unit.centroid.buffer(300.0)
+    holder = int(np.flatnonzero(boards.geometry.contains(hole))[0])
+    boards.loc[boards.index[holder], "geometry"] = boards.geometry.iloc[holder].difference(hole)
+    (raw_dir / WATER_BOARD_GML).write_text(water_board_gml(boards), encoding="utf-8")
+    facts["water_boards"] = len(boards)
+    facts["hole_unit"] = HOLE_UNIT_CODE
+    facts["hole_board"] = str(boards["code"].iloc[holder])
+    facts["unit_water_board"] = dict(
+        zip(synthetic.units["code"], synthetic.units["water_board_code"], strict=True)
+    )
+
     facts["n_units"] = len(u)
     facts["island_code"] = ISLAND_CODE
     facts["year"] = YEAR

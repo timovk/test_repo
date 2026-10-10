@@ -16,6 +16,7 @@ import { bandBar } from "../components/res-charts.js";
 import { FAMILY_LABEL, facts, flipTag, liveRefresh, marginLabel, pc, raceColor, racePill, rampLegend, reportingMeter, resultRows, segmented, seqColor, seqRamp, swatchLegend } from "../components/res-kit.js";
 import { resMap } from "../components/res-map.js";
 import { liveCard, pageFrame } from "../components/res-page.js";
+import { typeLabel } from "../components/local-kit.js";
 import { currentElectionId, links } from "./_shared.js";
 
 const TYPE_LABEL = {
@@ -128,6 +129,11 @@ export async function render(el, params, ctx) {
   function shareIn(districtCode) {
     return (geo?.districts || []).find((d) => d.code === districtCode)?.share_of_municipality;
   }
+  /** Local contests: nonpartisan lines show no party chip (Yes/No questions show nothing). */
+  function localNp(r) {
+    if (r.type === "BALLOT_MEASURE" || r.type === "RECALL") return "question";
+    return r.type === "SCHOOL_BOARD" || r.type === "WATER_BOARD";
+  }
   function raceCard(r) {
     const m = r.municipal;
     const src = data.results_source;
@@ -137,7 +143,7 @@ export async function render(el, params, ctx) {
     return h(
       "section",
       { class: "card res-race-card", style: { "--party": muniColor || overall || "var(--uncalled)" } },
-      h("div", { class: "card__head" }, h("h2", { class: "card__title" }, TYPE_LABEL[r.type] || r.type), h("div", { class: "page-head__meta" }, racePill(r))),
+      h("div", { class: "card__head" }, h("h2", { class: "card__title" }, TYPE_LABEL[r.type] || typeLabel(r.type)), h("div", { class: "page-head__meta" }, racePill(r))),
       h(
         "div",
         { class: "card__body" },
@@ -156,7 +162,7 @@ export async function render(el, params, ctx) {
         m
           ? [
               h("div", { class: "res-subhead res-subhead--tight" }, `In ${geo.name}`, src === "live" && m.reporting_pct !== null && m.reporting_pct !== undefined ? reportingMeter(m.reporting_pct, { width: 50 }) : null),
-              resultRows(m.lines || [], { compact: true, max: 4, leaderKey: m.leader, mateLabel: r.type === "GOVERNOR" ? "Lt. Gov." : "with", seats: m.seats_won }),
+              resultRows(m.lines || [], { compact: true, max: 4, leaderKey: m.leader, mateLabel: r.type === "GOVERNOR" ? "Lt. Gov." : "with", seats: m.seats_won, nonpartisan: localNp(r) }),
               h(
                 "div",
                 { class: "res-race-card__kv" },
@@ -166,13 +172,22 @@ export async function render(el, params, ctx) {
               ),
             ]
           : src === "hidden"
-            ? resultRows(r.lines || [], { compact: true, max: 4, mateLabel: r.type === "GOVERNOR" ? "Lt. Gov." : "with" })
+            ? resultRows(r.lines || [], { compact: true, max: 4, mateLabel: r.type === "GOVERNOR" ? "Lt. Gov." : "with", nonpartisan: localNp(r) })
             : h("p", { class: "muted res-empty" }, "No municipal breakdown for the national race; see the province EV race."),
       ),
       h(
         "div",
         { class: "card__foot res-race-card__foot" },
-        h("span", null, r.type === "PRESIDENT" ? "Nationwide: " : "Race-wide: ", r.winner_party || r.leader_party ? [partyChip(r.winner_party || r.leader_party, { color: overall }), " ", r.winner_name || r.leader_name || ""] : h("span", { class: "muted" }, src === "hidden" ? "results hidden" : "–")),
+        h(
+          "span",
+          null,
+          r.type === "PRESIDENT" ? "Nationwide: " : "Race-wide: ",
+          r.winner_party || r.leader_party
+            ? [partyChip(r.winner_party || r.leader_party, { color: overall }), " ", r.winner_name || r.leader_name || ""]
+            : localNp(r) && (r.winner_name || r.leader_name)
+              ? h("b", null, r.winner_name || r.leader_name)
+              : h("span", { class: "muted" }, src === "hidden" ? "results hidden" : "–"),
+        ),
         r.margin_pp !== null && r.margin_pp !== undefined ? h("span", null, marginLabel(null, r.margin_pp)) : null,
         r.flip_status ? flipTag(r.flip_status, { prev: r.previous_party }) : null,
       ),

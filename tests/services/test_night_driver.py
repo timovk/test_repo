@@ -313,7 +313,12 @@ def test_elections_that_can_never_be_certified_are_refused(db: DB) -> None:
         with pytest.raises(ElectionError):
             create_election(s, "founding-2024", strict=False)  # 2024 is already final
         later = create_election(s, "demo-2028", year=2032, strict=False)
-        instant_finalize(s, later.id)
+        later_id = later.id
+        with pytest.raises(ElectionError, match="must be finished first"):  # strict date order
+            instant_finalize(s, later_id)
+    with db.scope() as s:
+        # a database in which a later election was certified anyway (older versions allowed it)
+        s.get(Election, later_id).status = ElectionStatus.FINAL.value
     # the SIMULATED 2028 election can no longer be certified: its night must not start
     m = db.manager()
     with pytest.raises(ElectionNightError):

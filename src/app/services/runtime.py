@@ -45,13 +45,13 @@ from app.campaigns.config import NATIONAL_CODE, config_from_spec
 from app.campaigns.engine import combine_effects
 from app.campaigns.types import CampaignEffects, CombinedCampaignEffects
 from app.core.config import get_constitution
-from app.core.constitution import ConstitutionConfig, ElectoralSystem, RaceType
+from app.core.constitution import ConstitutionConfig, ElectionType, ElectoralSystem, RaceType
 from app.core.errors import DataNotPreparedError, ElectionError, NotFoundError
 from app.core.logging import Timer, get_logger
 from app.core.rng import config_hash
 from app.districts.service import PlanMapping, active_plan, load_plan_mapping
 from app.elections.calendar import CycleContents, ElectionCalendar
-from app.elections.types import BallotLine, RaceSpec, RaceVotes
+from app.elections.types import BallotLine, RaceSpec, RaceVotes, contest_rules
 from app.geography.frame import DEMOGRAPHIC_VARIABLES, GeographyFrame
 from app.geography.synthetic import SyntheticGeography, frame_from_tables, synthetic_geography
 from app.models import (
@@ -74,6 +74,7 @@ from app.models import (
     ReportingEventUnit,
     Scenario,
     TurnoutResult,
+    WaterBoard,
 )
 from app.reporting.live import RaceMeta
 from app.reporting.timeline import Timeline
@@ -110,7 +111,16 @@ RUN_FINALIZE = "election-final"
 PROVINCE_WIDE: frozenset[RaceType] = frozenset(
     {RaceType.PRESIDENT_PROVINCE, RaceType.SENATE, RaceType.GOVERNOR, RaceType.PROVINCIAL_LEGISLATURE}
 )
-MUNICIPALITY_WIDE: frozenset[RaceType] = frozenset({RaceType.MAYOR, RaceType.MUNICIPAL_COUNCIL})
+MUNICIPALITY_WIDE: frozenset[RaceType] = frozenset(
+    {
+        RaceType.MAYOR,
+        RaceType.MUNICIPAL_COUNCIL,
+        RaceType.SCHOOL_BOARD,
+        RaceType.BALLOT_MEASURE,
+        RaceType.RECALL,
+        RaceType.COUNCIL_SEAT,
+    }
+)
 #: Race types whose results are also aggregated by House district.
 DISTRICT_LEVEL_TYPES: frozenset[RaceType] = frozenset(
     {RaceType.HOUSE, RaceType.PRESIDENT, RaceType.PRESIDENT_PROVINCE}
@@ -387,16 +397,70 @@ def get_frame(session: Session) -> GeographyFrame:
             + ", ".join(problems)
             + " (reload the geography)"
         )
-    key = (id(base), _digest(province_ids), _digest(muni_ids), _digest(unit_ids))
+    water = _water_boards(session, vintage, base, unit_ids)
+    key = (id(base), _digest(province_ids), _digest(muni_ids), _digest(unit_ids), water["digest"])
     with _lock:
         cached = _cache_get(_frames, key)
         if cached is not None and cached.__dict__.get("_nlfed_base") is base:
             return cached
-        frame = dataclasses.replace(base, province_ids=province_ids, muni_ids=muni_ids, unit_ids=unit_ids)
+        frame = dataclasses.replace(
+            base,
+            province_ids=province_ids,
+            muni_ids=muni_ids,
+            unit_ids=unit_ids,
+            water_board_codes=water["codes"],
+            water_board_names=water["names"],
+            water_board_province=water["province"],
+            unit_water_board=water["unit"],
+            water_board_ids=water["ids"],
+        )
         frame.__dict__["_nlfed_base"] = base
         frame.__dict__["_nlfed_token"] = frame_token(base)
         _cache_put(_frames, key, frame, 4)
     return frame
+
+
+def _water_boards(
+    session: Session, vintage: GeoVintage, base: GeographyFrame, unit_ids: np.ndarray
+) -> dict[str, Any]:
+    """Water boards of the vintage from the database (REAL areas): codes, names, the province
+    index holding each board's election, ids and the unit → board index (−1 = none)."""
+    rows = session.execute(
+        select(WaterBoard.id, WaterBoard.code, WaterBoard.name, Province.code)
+        .join(Province, Province.id == WaterBoard.province_id)
+        .where(WaterBoard.vintage_id == vintage.id)
+        .order_by(WaterBoard.code)
+    ).all()
+    if not rows:
+        return {
+            "codes": [],
+            "names": [],
+            "province": np.zeros(0, dtype=np.int64),
+            "unit": None,
+            "ids": None,
+            "digest": "none",
+        }
+    ids = np.array([int(r[0]) for r in rows], dtype=np.int64)
+    pindex = {c: i for i, c in enumerate(base.province_codes)}
+    board_index = {int(r[0]): i for i, r in enumerate(rows)}
+    assigned = dict(
+        session.execute(
+            select(GeoUnit.id, GeoUnit.water_board_id).where(
+                GeoUnit.vintage_id == vintage.id, GeoUnit.water_board_id.is_not(None)
+            )
+        )
+        .tuples()
+        .all()
+    )
+    unit = np.array([board_index.get(assigned.get(int(u), -1), -1) for u in unit_ids], dtype=np.int64)
+    return {
+        "codes": [str(r[1]) for r in rows],
+        "names": [str(r[2]) for r in rows],
+        "province": np.array([pindex.get(str(r[3]), 0) for r in rows], dtype=np.int64),
+        "unit": unit,
+        "ids": ids,
+        "digest": _digest(np.concatenate([ids, unit])),
+    }
 
 
 def unit_index_of_ids(frame: GeographyFrame, ids: np.ndarray) -> np.ndarray:
@@ -766,11 +830,13 @@ def election_inputs(
     races: dict[str, RaceSpec] = {}
     line_ids: dict[str, dict[str, int]] = {}
     race_meta: dict[str, RaceMeta] = {}
+    parent_code = {r.id: r.code for r in race_rows}
     incumbents: dict[str, IncumbentInfo] = {}
     d_units = district_units(mapping) if mapping is not None else []
     d_index = {c: i for i, c in enumerate(mapping.district_codes)} if mapping is not None else {}
     for r in race_rows:
         rt = RaceType(r.race_type)
+        race_details = loads(r.details_json) if r.details_json else {}
         pcode = prov_code.get(r.province_id) if r.province_id is not None else None
         dcode = dist_code.get(r.district_id) if r.district_id is not None else None
         mcode = muni_code.get(r.municipality_id) if r.municipality_id is not None else None
@@ -784,8 +850,14 @@ def election_inputs(
             units = d_units[d_index[dcode]]
         elif rt in MUNICIPALITY_WIDE:
             units = municipality_units(frame, str(mcode))
+        elif rt == RaceType.WATER_BOARD:
+            ws = race_details.get("water_board")
+            if ws not in frame.water_board_codes:
+                raise ElectionError(f"{r.code}: water board {ws!r} is not in the geography")
+            units = frame.units_in_water_board(frame.water_board_index(str(ws)))
         else:  # pragma: no cover - every RaceType is handled above
             raise ElectionError(f"unsupported race type {rt}")
+        line_details = race_details.get("lines", {})
         lines: list[BallotLine] = []
         lids: dict[str, int] = {}
         labels: dict[str, str] = {}
@@ -818,6 +890,7 @@ def election_inputs(
                     home_municipality=c.home_municipality_code if c is not None else None,
                     running_mate_home_province=home_prov(mate),
                     withdrawn=bool(b.withdrawn),
+                    ideology=_line_position(line_details.get(key)),
                 )
             )
             lids[key] = b.id
@@ -839,6 +912,8 @@ def election_inputs(
             incumbent_party=inc_party,
             is_open_seat=bool(r.is_open_seat),
             is_special=bool(r.is_special),
+            threshold=None if r.threshold is None else float(r.threshold),
+            details=race_details,
         )
         races[r.code] = spec
         line_ids[r.code] = lids
@@ -858,7 +933,7 @@ def election_inputs(
             line_labels=labels,
             line_parties=lparties,
             line_colors=colors,
-            parent="PRES" if rt == RaceType.PRESIDENT_PROVINCE else None,
+            parent="PRES" if rt == RaceType.PRESIDENT_PROVINCE else parent_code.get(r.parent_race_id),
             incumbent_party=inc_party,
             name=r.name,
         )
@@ -878,12 +953,22 @@ def election_inputs(
         holdover[key] = holdover.get(key, 0) + 1
     effects = stored_campaign_effects(session, el.id, party_code)
     _, ctx_effects = campaign_context_effects(doc, effects, model.party_codes) if effects else (None, {})
+    local = el.election_type == ElectionType.LOCAL.value
+    turnout_effects = {}
+    if local:
+        from app.elections.local_calendar import load_local_config
+
+        # off-cycle local elections draw far fewer voters
+        turnout_effects = {("national", "NL"): float(load_local_config().turnout_logit_shift)}
     context = ElectionContext.from_scenario(
         doc,
         president_party=president_party,
         incumbents=incumbents,
         extra_candidates=list(extra.values()),
         campaign_effects=ctx_effects,
+        turnout_effects=turnout_effects,
+        election_type=el.election_type,
+        year=el.year,
     )
     if president_party is None:
         # the setup snapshot records the president's party; None there means "no president"
@@ -922,10 +1007,20 @@ def election_inputs(
         district_ids=[int(i) for i in mapping.district_ids] if mapping is not None else [],
         plan_id=mapping.plan_id if mapping is not None else None,
         constitution=get_constitution(),
-        cycle=calendar.cycle(el.year),
+        cycle=calendar.cycle(el.year) if not local else CycleContents.local(el.election_date),
         party_ids={p.code: pid for pid, p in parties.items()},
         president_party=context.president_party,
     )
+
+
+def _line_position(d: Mapping[str, Any] | None) -> tuple[float, ...] | None:
+    """A ballot line's stored position (``details_json.lines.<key>.ideology``), if any."""
+    if not d:
+        return None
+    ideo = d.get("ideology")
+    if not ideo:
+        return None
+    return tuple(float(x) for x in ideo)
 
 
 # =========================================================================== expectations
@@ -1109,6 +1204,7 @@ def load_final_race_votes(
             eligible=eligible,
             expected_shares=es,
             expected_turnout=et,
+            **contest_rules(spec),
         )
         try:
             rv.check()

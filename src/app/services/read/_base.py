@@ -189,6 +189,12 @@ class ElectionRef:
     simulated_at: datetime | None
     finalized_at: datetime | None
     results_source: str
+    #: Local (in-between) elections: the provinces voting that day (empty for regular elections).
+    provinces: tuple[str, ...] = ()
+
+    @property
+    def local(self) -> bool:
+        return self.election_type == "local"
 
     @property
     def reported(self) -> bool:
@@ -219,6 +225,8 @@ class ElectionRef:
             "reported": self.reported,
             "live": self.live,
             "results_source": self.results_source,
+            "local": self.local,
+            "provinces": list(self.provinces),
         }
 
     def envelope(self, **payload: Any) -> dict[str, Any]:
@@ -263,18 +271,34 @@ def ref_of(el: Election) -> ElectionRef:
         simulated_at=el.simulated_at,
         finalized_at=el.finalized_at,
         results_source=_source(el),
+        provinces=tuple(p for p in (el.provinces or "").split(",") if p),
     )
 
 
 def _latest_id(session: Session) -> int | None:
-    return session.scalar(
-        select(Election.id).order_by(Election.election_date.desc(), Election.id.desc()).limit(1)
-    )
+    """The most recent regular election (local elections are addressed by id), else any."""
+    for q in (select(Election.id).where(Election.election_type != "local"), select(Election.id)):
+        eid = session.scalar(q.order_by(Election.election_date.desc(), Election.id.desc()).limit(1))
+        if eid is not None:
+            return eid
+    return None
 
 
 def demo_election_id(session: Session) -> int | None:
-    """The demo election: ``app_meta.demo_election_id`` when set and valid, else the most recent
-    election that is not reported yet (ready for an election night), else the latest one."""
+    """The election the app opens on.  With the world clock set (docs/CLOCK.md): today's
+    election, else the latest regular election on or before today.  Otherwise
+    ``app_meta.demo_election_id`` when set and valid, else the most recent election that is not
+    reported yet (ready for an election night), else the latest one."""
+    clock_row = session.get(AppMeta, "world_date")
+    if clock_row is not None and clock_row.value:
+        today = date.fromisoformat(clock_row.value)
+        for q in (
+            select(Election.id).where(Election.election_date == today),
+            select(Election.id).where(Election.election_date <= today, Election.election_type != "local"),
+        ):
+            eid = session.scalar(q.order_by(Election.election_date.desc(), Election.id.desc()).limit(1))
+            if eid is not None:
+                return int(eid)
     row = session.get(AppMeta, DEMO_ELECTION_KEY)
     if row is not None:
         try:
@@ -285,7 +309,7 @@ def demo_election_id(session: Session) -> int | None:
             return eid
     pending = session.scalar(
         select(Election.id)
-        .where(Election.status.not_in(list(REPORTED_STATUSES)))
+        .where(Election.status.not_in(list(REPORTED_STATUSES)), Election.election_type != "local")
         .order_by(Election.election_date.desc(), Election.id.desc())
         .limit(1)
     )
@@ -333,9 +357,10 @@ def all_election_refs(session: Session) -> list[ElectionRef]:
     ]
 
 
-def reported_refs(session: Session) -> list[ElectionRef]:
-    """Reported (FINAL / CERTIFIED) elections, chronologically."""
-    return [r for r in all_election_refs(session) if r.reported]
+def reported_refs(session: Session, *, include_local: bool = False) -> list[ElectionRef]:
+    """Reported (FINAL / CERTIFIED) elections, chronologically — the regular elections only
+    unless ``include_local`` (history and analytics compare regular elections)."""
+    return [r for r in all_election_refs(session) if r.reported and (include_local or not r.local)]
 
 
 def require_reported(ref: ElectionRef) -> None:

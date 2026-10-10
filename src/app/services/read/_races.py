@@ -32,8 +32,9 @@ from app.models import (
     OfficeHolder,
     Party,
     Race,
+    WaterBoard,
 )
-from app.services._common import REPORTED_STATUSES
+from app.services._common import REPORTED_STATUSES, loads
 from app.services.read._base import (
     ElectionRef,
     ballot_lines,
@@ -97,6 +98,7 @@ class RaceBook:
     live: dict[str, dict[str, Any]] = field(default_factory=dict)
     snapshot: dict[str, Any] = field(default_factory=dict)
     seats_won: dict[int, dict[str, int]] = field(default_factory=dict)
+    water_boards: dict[str, str] = field(default_factory=dict)  # code → REAL name
 
     # ------------------------------------------------------------------ loading
     @classmethod
@@ -136,6 +138,14 @@ class RaceBook:
             incumbents=_incumbent_people(session, races),
             previous_party={},
         )
+        if any(r.race_type == RaceType.WATER_BOARD.value for r in races):
+            book.water_boards = dict(
+                session.execute(
+                    select(WaterBoard.code, WaterBoard.name).where(WaterBoard.vintage_id == ref.vintage_id)
+                )
+                .tuples()
+                .all()
+            )
         if ref.reported:
             book.totals = stored_totals(session, ref, ids)
             book.turnout = stored_turnout(session, ref, ids)
@@ -298,14 +308,72 @@ class RaceBook:
             out[f"{key}_party"] = None if ln is None else ln["party"]
             out[f"{key}_name"] = None if ln is None else ln["name"]
             out[f"{key}_color"] = None if ln is None else ln["color"]
+        contest, winners = self._contest(race, winner)
+        if contest is not None:
+            out["contest"] = contest
+        out["winners"] = winners
+        out["winner_names"] = [ln["name"] for k in winners if (ln := self.line(race, k)) is not None]
         if lines:
             lst = with_votes(wl, votes, winner=winner)
+            if len(winners) > 1:  # vote for N: every elected line is a winner
+                for d in lst:
+                    d["winner"] = d["key"] in winners
             if top is not None:
                 if votes is not None:
                     lst = sorted(lst, key=lambda d: (-(d["votes"] or 0), d["order"]))
                 lst = lst[:top]
             out["lines"] = [compact_line(x) for x in lst] if compact else lst
         return out
+
+    def _contest(self, race: Race, winner: str | None) -> tuple[dict[str, Any] | None, list[str]]:
+        """Local contest data (measure text, threshold, seats up, recall target …) and every
+        winning line (all elected candidates of a vote-for-N race).  Certification results
+        (``passed``, ``winners`` …) only for reported elections; live values from the night."""
+        d = loads(race.details_json) if race.details_json else {}
+        at_large = race.electoral_system == "plurality_at_large"
+        winners: list[str] = []
+        live = (self.live.get(race.code) or {}) if self.ref.live else {}
+        if self.ref.reported:
+            winners = list(d.get("winners") or ([] if winner is None else [winner]))
+        elif self.ref.live and live.get("status") in DECIDED:
+            winners = list(live.get("called_keys") or ([] if winner is None else [winner]))
+        if not d and race.threshold is None:
+            return None, winners
+        public = (
+            "kind",
+            "label",
+            "title",
+            "summary",
+            "measure_kind",
+            "topic",
+            "body",
+            "water_board",
+            "cycle",
+            "seats_total",
+            "seats_up",
+            "reason",
+            "event_date",
+            "target_name",
+            "target_party",
+            "vacated_party",
+            "parent",
+            "replacement_race",
+            "term_start",
+            "term_end",
+            "nonpartisan",
+        )
+        out: dict[str, Any] = {k: d[k] for k in public if k in d}
+        if "water_board" in d:
+            out["water_board_name"] = self.water_boards.get(d["water_board"])
+        out["threshold"] = None if race.threshold is None else float(race.threshold)
+        out["vote_for"] = int(race.seats) if at_large else 1
+        if self.ref.reported:
+            for k in ("passed", "yes_share", "moot", "recall_passed", "seat_assignment"):
+                if k in d:
+                    out[k] = d[k]
+        elif self.ref.live:
+            out["passing"] = live.get("passing")
+        return out, winners
 
     def _incumbent(self, race: Race) -> dict[str, Any] | None:
         if race.incumbent_candidate_id is None and race.incumbent_party_id is None:

@@ -22,7 +22,7 @@ from app.analytics.history import compare_elections, ec_pv_divergence
 from app.analytics.metrics import tipping_point_from_frame
 from app.analytics.results import ResultsFrameError
 from app.core.config import get_constitution
-from app.core.constitution import RaceStatus, RaceType
+from app.core.constitution import ElectionStatus, RaceStatus, RaceType
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.elections.seats import INDEPENDENT, chamber_control
@@ -71,6 +71,7 @@ from app.services.read.live import (
     live_state,
     night_available,
 )
+from app.services.reset import can_reset
 from app.services.results import results_frame
 
 log = get_logger(__name__)
@@ -324,13 +325,21 @@ def election_detail(session: Session, ref: ElectionRef) -> dict[str, Any]:
         .order_by(Election.election_date, Election.id)
         .limit(1)
     )
-    night: dict[str, Any] = {"available": night_available(), "live": ref.live, "clock": None}
+    night: dict[str, Any] = {
+        "available": night_available(),  # the night service is installed
+        "live": ref.live,
+        "clock": None,
+        # a SCHEDULED election has no night until it is simulated (POST /simulate)
+        "needs_simulation": ref.status == ElectionStatus.SCHEDULED.value,
+    }
     if ref.live:
         state = live_state(session, ref.id)
         night["clock"] = state.get("clock")
     out = ref.envelope(**{k: v for k, v in s.items() if k not in skip})
     out["next_election_id"] = nxt
     out["night"] = night
+    allowed, why = can_reset(session, ref.id)
+    out["reset"] = {"allowed": allowed, "reason": why}
     out["constitution"] = _thresholds()
     return out
 
@@ -2019,6 +2028,131 @@ def race_detail(session: Session, ref: ElectionRef, code: str) -> dict[str, Any]
     return build() if ref.live else cached(session, "race", (*ref.cache_key(), code), build)
 
 
+# =========================================================================== race list
+_LIST_ORDER = {
+    RaceType.PRESIDENT.value: 0,
+    RaceType.GOVERNOR.value: 1,
+    RaceType.SENATE.value: 2,
+    RaceType.HOUSE.value: 3,
+    RaceType.WATER_BOARD.value: 4,
+    RaceType.MAYOR.value: 5,
+    RaceType.RECALL.value: 5,
+    RaceType.COUNCIL_SEAT.value: 6,
+    RaceType.SCHOOL_BOARD.value: 7,
+    RaceType.BALLOT_MEASURE.value: 8,
+}
+
+
+def race_list(
+    session: Session,
+    ref: ElectionRef,
+    *,
+    q: str | None = None,
+    race_type: str | None = None,
+    municipality: str | None = None,
+    sort: str = "name",
+) -> dict[str, Any]:
+    """``GET /api/elections/{id}/races`` — every race of the election as a compact, searchable
+    list (the local election results page): name, type, status, the leading / winning candidates
+    ("+N candidates"), measure outcome and reporting.  Results follow the hidden-until-reported
+    rule; ``q`` matches race names, places and candidate names."""
+    types = (
+        None if not race_type else [RaceType(t.strip().upper()) for t in race_type.split(",") if t.strip()]
+    )
+
+    def build() -> list[dict[str, Any]]:
+        book = RaceBook.load(session, ref, types=types)
+        rows = []
+        for race in book.races:
+            if race.race_type == RaceType.PRESIDENT_PROVINCE.value:
+                continue
+            v = book.view(race, compact=True)
+            lines = v.get("lines") or []
+            ranked = (
+                sorted(lines, key=lambda x: (-(x.get("votes") or 0), x.get("candidate_id") or 0))
+                if v.get("total_votes")
+                else lines
+            )
+            contest = v.get("contest") or {}
+            question = contest.get("threshold") is not None
+            lead = v.get("winner") or v.get("leader")
+            lead_line = next((x for x in lines if x["key"] == lead), None)
+            yes = next((x for x in lines if x["key"] == "YES"), None)
+            rows.append(
+                {
+                    "code": v["code"],
+                    "name": v["name"],
+                    "type": v["type"],
+                    "province_code": v.get("province_code"),
+                    "municipality_code": v.get("municipality_code"),
+                    "municipality_name": v.get("municipality_name"),
+                    "status": v.get("status"),
+                    "reporting_pct": v.get("reporting_pct"),
+                    "is_special": v.get("is_special"),
+                    "vote_for": contest.get("vote_for", 1),
+                    "candidates": len(lines),
+                    "leader": None if lead_line is None else lead_line["name"],
+                    "leader_party": None if lead_line is None else lead_line["party"],
+                    "leader_color": None if lead_line is None else lead_line["color"],
+                    "leader_pct": None if lead_line is None else lead_line.get("pct"),
+                    "winners": v.get("winner_names") or [],
+                    "decided": bool(v.get("winners")),
+                    "question": question,
+                    "label": contest.get("label"),
+                    "title": contest.get("title"),
+                    "threshold": contest.get("threshold"),
+                    "passed": contest.get("passed"),
+                    "passing": contest.get("passing"),
+                    "yes_pct": None if yes is None else yes.get("pct"),
+                    "moot": contest.get("moot", False),
+                    "kind": contest.get("kind"),
+                    "recall_passed": contest.get("recall_passed"),
+                    "target_name": contest.get("target_name"),
+                    "target_party": contest.get("target_party"),
+                    "parent": contest.get("parent"),
+                    "replacement_race": contest.get("replacement_race"),
+                    "water_board": contest.get("water_board"),
+                    "water_board_name": contest.get("water_board_name"),
+                    "top": [
+                        {
+                            "key": x["key"],
+                            "name": x["name"],
+                            "party": x["party"],
+                            "color": x["color"],
+                            "pct": x.get("pct"),
+                            "votes": x.get("votes"),
+                            "winner": x.get("winner", False),
+                            "incumbent": x.get("incumbent", False),
+                        }
+                        for x in ranked[: max(int(contest.get("vote_for", 1)) + 1, 2)]
+                    ],
+                    "search": " ".join(
+                        [v["name"], v.get("municipality_name") or "", *(x["name"] for x in lines)]
+                    ).lower(),
+                }
+            )
+        return rows
+
+    rows = build() if ref.live else cached(session, "race_list", (*ref.cache_key(), race_type or ""), build)
+    if municipality:
+        rows = [r for r in rows if (r.get("municipality_code") or "").upper() == municipality.upper()]
+    if q:
+        needle = q.strip().lower()
+        rows = [r for r in rows if needle in r["search"]]
+    if sort == "type":
+        rows = sorted(rows, key=lambda r: (_LIST_ORDER.get(r["type"], 9), r["name"]))
+    else:
+        rows = sorted(rows, key=lambda r: r["name"])
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r["type"]] = counts.get(r["type"], 0) + 1
+    return ref.envelope(
+        count=len(rows),
+        counts=counts,
+        races=[{k: v for k, v in r.items() if k != "search"} for r in rows],
+    )
+
+
 # =========================================================================== calls / timeline
 def calls(
     session: Session,
@@ -2202,3 +2336,16 @@ def timeline(
         }
     )
     return ref.envelope(**out)
+
+
+# =========================================================================== strict date order
+def earlier(session: Session, ref: ElectionRef) -> dict[str, Any]:
+    """``GET /api/elections/{id}/earlier`` — elections are certified in strict date order: the
+    unfinished elections held before this one (and planned local elections not created yet)."""
+    from app.services.elections import earlier_unfinished
+
+    if ref.reported:
+        return ref.envelope(count=0, unreported=[], unreported_count=0, not_created_count=0, first=None)
+    return ref.envelope(
+        **{k: v for k, v in earlier_unfinished(session, ref.id).items() if k != "election_id"}
+    )

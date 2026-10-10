@@ -68,6 +68,7 @@ candidates:
     MAYOR: 0.14
     PROVINCIAL_LEGISLATURE: 0.0
     MUNICIPAL_COUNCIL: 0.0
+    COUNCIL_SEAT: 0.12               # special election for one council seat (partisan)
   running_mate_quality_share: 0.25
   home_municipality_bonus:
     PRESIDENT: 0.20
@@ -76,6 +77,7 @@ candidates:
     SENATE: 0.12
     GOVERNOR: 0.12
     MAYOR: 0.0
+    WATER_BOARD: 0.15                # a water board spans many municipalities
   home_province_bonus: {SENATE: 0.0, GOVERNOR: 0.0}   # presidential: scenario president.home_province_bonus
   running_mate_home_municipality_bonus: 0.08
   independent_base_share: 0.025
@@ -84,6 +86,13 @@ candidates:
   withdrawn_residual_share: 0.06
   open_seat_party_bonus: 0.02
   race_line_sd: 0.04
+  # In-between local contests (docs/LOCAL_ELECTIONS.md).  Nonpartisan board candidates and the
+  # YES/NO sides of measures and recalls are lines without a party: their supporters come from
+  # every party by ideological closeness; a YES side's "quality" is its appeal (logit).
+  race_line_sd_by_race: {BALLOT_MEASURE: 0.30, RECALL: 0.30, SCHOOL_BOARD: 0.15, WATER_BOARD: 0.15, COUNCIL_SEAT: 0.08}
+  undervote_by_race: {SCHOOL_BOARD: 0.05, WATER_BOARD: 0.09, BALLOT_MEASURE: 0.04, RECALL: 0.015, COUNCIL_SEAT: 0.03}
+  at_large_mark_fill: 0.7          # share of the N − 1 optional extra marks a ballot uses
+  at_large_flatten: 1.6            # mark shares ∝ first-preference share^(1/1.6)
   region_overlap_threshold: 0.25
   age_range:
     HOUSE: [27, 68]
@@ -92,6 +101,9 @@ candidates:
     MAYOR: [32, 68]
     PROVINCIAL_LEGISLATURE: [25, 70]
     MUNICIPAL_COUNCIL: [22, 72]
+    COUNCIL_SEAT: [22, 72]
+    SCHOOL_BOARD: [28, 70]
+    WATER_BOARD: [32, 74]
   female_share: 0.46
 
 # FPTP strategic voting (scaled by the scenario's environment.strategic_voting).
@@ -99,7 +111,7 @@ strategic:
   viability_gap_start: 0.04      # share points behind the 2nd-placed line where defection starts
   viability_gap_full: 0.20       # … and reaches its full strength
   temperature: 0.30
-  race_type_weights: {PRESIDENT: 1.0, PRESIDENT_PROVINCE: 1.0, HOUSE: 1.0, SENATE: 1.0, GOVERNOR: 1.0, MAYOR: 0.8}
+  race_type_weights: {PRESIDENT: 1.0, PRESIDENT_PROVINCE: 1.0, HOUSE: 1.0, SENATE: 1.0, GOVERNOR: 1.0, MAYOR: 0.8, COUNCIL_SEAT: 0.8}
   viable_lines: 2
 
 shocks:

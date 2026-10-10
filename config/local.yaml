@@ -1,0 +1,118 @@
+# In-between local elections (FICTIONAL) — schema: app.elections.local_calendar.LocalConfig
+#
+# Between the big November elections every province holds a few local election days a year.
+# Each municipality has its own fixed day among them (its "slot"), so something is on a ballot
+# somewhere almost every month.  A local election = one province on one date; it holds:
+#
+#   * school boards       — nonpartisan, several seats at once (vote for up to N, the top N win),
+#                           staggered 4-year terms: half the seats every 2 years
+#   * water boards        — the board of a REAL water authority (waterschap), nonpartisan,
+#                           at-large, all seats every 4 years; held in the province with most of
+#                           the board's voters (its voters in other provinces vote too)
+#   * ballot measures     — local Yes/No propositions generated from the topic library below
+#   * special elections   — a vacant mayoralty (rest of the term) or one vacant council seat
+#   * mayor recalls       — Yes/No recall question plus a replacement race on the same ballot
+#
+# Regular mayor and council elections stay at the midterms.  Everything here is deterministic in
+# `seed`: the same configuration always gives the same dates, ballots and vacancies.
+seed: 1848
+data_category: FICTIONAL
+
+# ---------------------------------------------------------------- local election days
+days_per_province: 4
+# Months local days may fall in.  October–January are excluded, so a local day is never close
+# to a November election; July–August are the summer holidays.
+months: [2, 3, 4, 5, 6, 9]
+occurrences: [1, 2, 3]          # the nth weekday of the month
+weekday: wednesday              # Dutch elections are held on Wednesdays
+polls_close: "21:00"
+# Logit shift of turnout for an off-cycle local election (≈ 30–40 % instead of ≈ 75 %).
+turnout_logit_shift: -1.25
+# Term of office of an elected board starts this many days after the local election day.
+term_start_days: 45
+
+# ---------------------------------------------------------------- school boards
+school_boards:
+  # seats by municipal population: [minimum population, seats]
+  seats_by_population: [[0, 5], [40000, 7], [150000, 9]]
+  term_years: 4
+  # candidates per seat up (uniform range); incumbents whose seat is up run again with this
+  # probability
+  candidates_per_seat: [1.3, 2.4]
+  incumbent_runs_again: 0.72
+
+# ---------------------------------------------------------------- water boards
+water_boards:
+  seats_by_population: [[0, 7], [600000, 9], [1200000, 11]]
+  term_years: 4
+  candidates_per_seat: [1.4, 2.3]
+  incumbent_runs_again: 0.7
+
+# ---------------------------------------------------------------- ballot measures
+measures:
+  # expected measures per municipality per local day = rate × (population / 50,000)^elasticity
+  rate: 1.5
+  population_elasticity: 0.3
+  max_per_day: 5
+  # logit shift added to every topic's appeal: calibrates how often measures pass overall
+  # (most local measures pass, but tax increases and bonds needing 60 % often fail)
+  base_appeal: 0.45
+  # numbering style of a municipality's measures (seeded per municipality)
+  styles: [proposition_number, measure_letter, proposition_letter]
+
+# ---------------------------------------------------------------- vacancies and recalls
+vacancies:
+  mayor_rate: 0.03               # vacancies per mayoralty per year (resignation, death, …)
+  council_rate: 0.06             # one-seat vacancies per council per year
+  reasons: {resigned: 0.55, died: 0.08, appointed_elsewhere: 0.22, removed: 0.15}
+  min_days_before: 90            # special election on the municipality's next local day ≥ 90 days later
+recalls:
+  mayor_rate: 0.012              # qualifying recall petitions per mayor per year
+  min_days_before: 60
+  min_days_in_office: 180        # a mayor cannot be recalled in the first months of a term
+  # recall YES appeal (logit; recalls usually fail) and the extra appeal when a scandal drove it
+  base_appeal: -0.45
+  scandal_probability: 0.35
+  scandal_appeal: 0.65
+# No special election or recall when the office's regular election (the midterm) is this close
+# after the special election date: the seat stays vacant (or the mayor stays) until then.
+regular_election_window_days: 200
+
+# ---------------------------------------------------------------- measure topics
+# Every topic: a title (shown on the ballot), a summary, a kind, the YES side's position on the
+# model's ideology axes (economic: left − / right +, social: progressive − / conservative +,
+# europe: sceptic − / pro +; the NO side takes the opposite), an appeal (logit shift of YES;
+# negative = harder to pass), the YES share needed to pass, a relative weight and an optional
+# minimum population.  All topics are FICTIONAL.
+topics:
+  - {key: sales-tax-roads, kind: tax, title: "Sales tax for road and bridge repair", summary: "Raise the local sales tax by 0.25 points for ten years to repair roads and bridges.", lean: {economic: -0.45, social: 0.0, europe: 0.0}, appeal: -0.15, threshold: 0.5, weight: 1.2}
+  - {key: tourist-tax, kind: tax, title: "Higher tourist tax", summary: "Raise the tourist tax per overnight stay and spend it on the town centre.", lean: {economic: -0.35, social: -0.1, europe: 0.0}, appeal: 0.25, threshold: 0.5, weight: 0.9}
+  - {key: property-tax-cap, kind: tax, title: "Cap on the property tax", summary: "Limit yearly increases of the municipal property tax (OZB) to inflation.", lean: {economic: 0.55, social: 0.1, europe: 0.0}, appeal: 0.3, threshold: 0.5, weight: 1.0}
+  - {key: library-levy, kind: tax, title: "Library levy", summary: "A small yearly levy to keep every public library branch open six days a week.", lean: {economic: -0.4, social: -0.2, europe: 0.0}, appeal: 0.05, threshold: 0.5, weight: 0.8}
+  - {key: school-bond, kind: bond, title: "Bond for school buildings", summary: "Borrow to renovate and insulate primary school buildings.", lean: {economic: -0.35, social: -0.1, europe: 0.0}, appeal: 0.35, threshold: 0.6, weight: 1.1}
+  - {key: pool-bond, kind: bond, title: "Bond for a new swimming pool", summary: "Borrow to build a new public swimming pool and sports hall.", lean: {economic: -0.3, social: 0.0, europe: 0.0}, appeal: 0.0, threshold: 0.6, weight: 0.9}
+  - {key: dike-bond, kind: bond, title: "Bond for flood defences and drainage", summary: "Borrow to raise quays, improve drainage and store rainwater.", lean: {economic: -0.2, social: -0.1, europe: 0.1}, appeal: 0.55, threshold: 0.6, weight: 0.8}
+  - {key: housing-bond, kind: bond, title: "Bond for affordable housing", summary: "Borrow to build affordable rental homes on municipal land.", lean: {economic: -0.55, social: -0.2, europe: 0.0}, appeal: 0.1, threshold: 0.6, weight: 1.0}
+  - {key: term-limits, kind: charter, title: "Charter amendment: term limits for the mayor", summary: "Limit the mayor to two consecutive terms.", lean: {economic: 0.1, social: 0.2, europe: -0.2}, appeal: 0.4, threshold: 0.6667, weight: 0.8}
+  - {key: council-size, kind: charter, title: "Charter amendment: smaller council", summary: "Reduce the number of council seats at the next regular election.", lean: {economic: 0.35, social: 0.25, europe: -0.3}, appeal: 0.05, threshold: 0.6667, weight: 0.6}
+  - {key: ranked-choice, kind: charter, title: "Charter amendment: ranked-choice voting for mayor", summary: "Elect the mayor by ranked-choice ballot from the next regular election.", lean: {economic: -0.1, social: -0.45, europe: 0.3}, appeal: -0.2, threshold: 0.6667, weight: 0.5}
+  - {key: district-councils, kind: charter, title: "Charter amendment: neighbourhood councils", summary: "Create elected advisory councils for every neighbourhood.", lean: {economic: -0.2, social: -0.3, europe: 0.1}, appeal: -0.1, threshold: 0.6667, weight: 0.4, min_population: 60000}
+  - {key: wind-turbines, kind: zoning, title: "Wind turbines near homes", summary: "Allow wind turbines within 600 metres of residential areas.", lean: {economic: -0.2, social: -0.45, europe: 0.35}, appeal: -0.35, threshold: 0.5, weight: 1.0}
+  - {key: solar-fields, kind: zoning, title: "Solar fields on farmland", summary: "Allow solar parks on agricultural land outside the built-up area.", lean: {economic: -0.15, social: -0.35, europe: 0.3}, appeal: -0.2, threshold: 0.5, weight: 0.8}
+  - {key: harbour-rezoning, kind: zoning, title: "Rezoning of the old harbour", summary: "Turn the old harbour area into a mixed housing and business district.", lean: {economic: 0.25, social: -0.15, europe: 0.1}, appeal: 0.15, threshold: 0.5, weight: 0.7}
+  - {key: high-rise, kind: zoning, title: "High-rise housing near the station", summary: "Allow residential towers of up to 70 metres around the railway station.", lean: {economic: 0.3, social: -0.3, europe: 0.2}, appeal: -0.15, threshold: 0.5, weight: 0.7, min_population: 50000}
+  - {key: car-free-centre, kind: policy, title: "Car-free town centre", summary: "Close the historic centre to through traffic and widen the pavements.", lean: {economic: -0.3, social: -0.5, europe: 0.3}, appeal: -0.1, threshold: 0.5, weight: 1.0}
+  - {key: paid-parking, kind: policy, title: "Paid parking in residential streets", summary: "Introduce paid parking and resident permits around the centre.", lean: {economic: -0.2, social: -0.3, europe: 0.1}, appeal: -0.4, threshold: 0.5, weight: 0.8}
+  - {key: speed-limit-30, kind: policy, title: "30 km/h speed limit in built-up areas", summary: "Make 30 km/h the default speed limit on municipal roads.", lean: {economic: -0.2, social: -0.4, europe: 0.2}, appeal: 0.0, threshold: 0.5, weight: 0.9}
+  - {key: fireworks-ban, kind: policy, title: "Ban on consumer fireworks", summary: "Ban consumer fireworks on New Year's Eve and organise a public display instead.", lean: {economic: -0.15, social: -0.25, europe: 0.1}, appeal: 0.3, threshold: 0.5, weight: 1.0}
+  - {key: coffee-shops, kind: policy, title: "Licences for cannabis coffee shops", summary: "Allow licensed cannabis coffee shops in the municipality.", lean: {economic: 0.1, social: -0.65, europe: 0.1}, appeal: -0.05, threshold: 0.5, weight: 0.8}
+  - {key: sunday-shopping, kind: policy, title: "Sunday shopping", summary: "Allow shops to open on Sundays from noon.", lean: {economic: 0.35, social: -0.55, europe: 0.1}, appeal: 0.1, threshold: 0.5, weight: 0.9}
+  - {key: body-cameras, kind: policy, title: "Body cameras for municipal enforcement officers", summary: "Equip municipal enforcement officers (boa's) with body cameras.", lean: {economic: 0.15, social: 0.45, europe: -0.1}, appeal: 0.45, threshold: 0.5, weight: 0.7}
+  - {key: camera-surveillance, kind: policy, title: "Camera surveillance in the nightlife district", summary: "Install permanent cameras in the nightlife and station area.", lean: {economic: 0.1, social: 0.5, europe: -0.1}, appeal: 0.3, threshold: 0.5, weight: 0.7}
+  - {key: asylum-centre, kind: policy, title: "Asylum reception centre", summary: "Approve a reception centre for 300 asylum seekers on municipal land.", lean: {economic: -0.2, social: -0.7, europe: 0.5}, appeal: -0.25, threshold: 0.5, weight: 0.8}
+  - {key: free-public-transport, kind: policy, title: "Free buses for seniors", summary: "Free local bus travel for residents aged 67 and over.", lean: {economic: -0.6, social: 0.1, europe: 0.0}, appeal: 0.35, threshold: 0.5, weight: 0.7}
+  - {key: municipal-merger, kind: policy, title: "Study a merger with neighbouring municipalities", summary: "Ask the council to study a merger with the neighbouring municipalities.", lean: {economic: 0.25, social: -0.2, europe: 0.3}, appeal: -0.45, threshold: 0.5, weight: 0.6}
+  - {key: tram-extension, kind: bond, title: "Bond for a tram line extension", summary: "Borrow to extend the tram network to the new neighbourhoods.", lean: {economic: -0.3, social: -0.35, europe: 0.2}, appeal: -0.05, threshold: 0.6, weight: 0.6, min_population: 120000}
+  - {key: street-renaming, kind: policy, title: "Renaming streets named after colonial figures", summary: "Rename streets named after people involved in colonialism and slavery.", lean: {economic: -0.1, social: -0.75, europe: 0.2}, appeal: -0.4, threshold: 0.5, weight: 0.5, min_population: 70000}
+  - {key: shrink-tourism, kind: policy, title: "Limit holiday rentals", summary: "Limit short-term holiday rentals to 30 nights a year.", lean: {economic: -0.45, social: -0.1, europe: 0.0}, appeal: 0.25, threshold: 0.5, weight: 0.6, min_population: 40000}
+  - {key: village-shop, kind: tax, title: "Subsidy for village shops and pubs", summary: "Subsidise the last shop or pub in small villages.", lean: {economic: -0.25, social: 0.3, europe: -0.2}, appeal: 0.2, threshold: 0.5, weight: 0.6}

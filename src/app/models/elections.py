@@ -11,6 +11,7 @@ and :mod:`app.elections.tabulation` guarantees that the levels reconcile exactly
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
@@ -28,6 +29,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, utcnow
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app.models.geography import Province
 
 
 class Election(Base):
@@ -47,6 +51,11 @@ class Election(Base):
     apportionment_id: Mapped[int | None] = mapped_column(ForeignKey("apportionment.id"))
     district_plan_id: Mapped[int | None] = mapped_column(ForeignKey("district_plan.id"))
     previous_election_id: Mapped[int | None] = mapped_column(ForeignKey("election.id"))
+    #: Unused since local elections are held per date (kept for older databases).
+    province_id: Mapped[int | None] = mapped_column(ForeignKey("province.id"), index=True)
+    #: Local (in-between) elections: the provinces voting that day, comma separated ("OV,ZE,NB";
+    #: docs/LOCAL_ELECTIONS.md).  None for regular elections.
+    provinces: Mapped[str | None] = mapped_column(String(80))
     polls_close_local: Mapped[str] = mapped_column(String(5), default="21:00")
     timezone: Mapped[str] = mapped_column(String(40), default="Europe/Amsterdam")
     national_environment_json: Mapped[str | None] = mapped_column(Text)  # realised shocks (audit)
@@ -57,6 +66,8 @@ class Election(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
     races: Mapped[list[Race]] = relationship(back_populates="election", cascade="all, delete-orphan")
+    #: The province of a local election (joined eagerly: the read layer shows its code).
+    province: Mapped[Province | None] = relationship(lazy="joined")
 
 
 class Race(Base):
@@ -99,6 +110,11 @@ class Race(Base):
     flipped: Mapped[bool | None] = mapped_column(Boolean)
     decided_by: Mapped[str | None] = mapped_column(String(24))  # popular_vote | contingent | lot | recount
     called_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: Yes/No contests: YES share needed to pass (0.5 simple majority, 0.6667 two thirds).
+    threshold: Mapped[float | None] = mapped_column(Float)
+    #: Contest data as JSON: measure title/topic/summary, recall target, water board, seats up,
+    #: and after certification the winners of a multi-seat race and whether a question passed.
+    details_json: Mapped[str | None] = mapped_column(Text)
 
     election: Mapped[Election] = relationship(back_populates="races")
     ballot: Mapped[list[BallotCandidate]] = relationship(

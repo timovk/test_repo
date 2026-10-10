@@ -173,8 +173,8 @@ def test_friendly_errors(cli_db: CliDB, runner: CliRunner) -> None:
     assert "Not found" in res.output and "Traceback" not in res.output
     run(runner, "simulate", "-e", "banana", code=_common.EXIT_NOT_FOUND)
     run(runner, "simulate", "-e", "2024", code=_common.EXIT_CONFLICT)  # final elections are history
-    res = run(runner, "election-night", "-e", "2024", "--reset", code=_common.EXIT_CONFLICT)
-    assert "immutable" in res.output
+    res = run(runner, "finalize", "-e", "2024", code=_common.EXIT_CONFLICT)
+    assert "already final" in res.output and "Traceback" not in res.output
 
 
 def test_database_commands(runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -315,3 +315,39 @@ def test_run_command_starts_uvicorn(runner: CliRunner, monkeypatch: pytest.Monke
     assert args == ("app.api.main:create_app",)
     assert kwargs["factory"] is True and kwargs["port"] == 9999 and kwargs["host"] == "0.0.0.0"
     assert kwargs["reload"] is True
+
+
+def test_reset(cli_db: CliDB, runner: CliRunner) -> None:
+    run(runner, "finalize", "-e", "2028", "--json")
+    assert status_of(cli_db, cli_db.second) == "final"
+    run(runner, "reset", "-e", "2024", "--yes", code=_common.EXIT_CONFLICT)  # followed by 2028
+    declined = runner.invoke(app, ["reset", "-e", "2028"], input="n\n")
+    assert declined.exit_code == 1 and status_of(cli_db, cli_db.second) == "final"
+    res = as_json(run(runner, "reset", "-e", "2028", "--yes", "--json"))
+    assert (
+        res["election_id"] == cli_db.second
+        and res["previous_status"] == "final"
+        and res["mode"] == "uncertified"
+    )
+    assert status_of(cli_db, cli_db.second) == "simulated"
+    out = run(runner, "reset", "-e", "2028", "--yes").output
+    assert "reset to polls closing" in out
+
+
+def test_local_commands(cli_db: CliDB, runner: CliRunner) -> None:
+    cal = as_json(run(runner, "local", "calendar", "--year", "2025", "--json"))
+    assert cal["count"] > 0
+    first = cal["days"][0]
+    second = next(d for d in cal["days"] if d["date"] > first["date"])  # the next local day
+    created = as_json(run(runner, "local", "create", "-d", first["date"], "--simulate", "--json"))
+    assert created["status"] == "simulated" and created["election_type"] == "local"
+    run(runner, "local", "create", "-d", first["date"], code=_common.EXIT_CONFLICT)
+    out = run(runner, "local", "calendar", "--year", "2025").output
+    assert "local election days" in out
+    later = as_json(run(runner, "local", "create", "-d", second["date"], "--json"))
+    if second["date"] > first["date"]:
+        run(runner, "finalize", "-e", str(later["id"]), code=_common.EXIT_CONFLICT)  # earlier one unfinished
+    done = run(runner, "finish-earlier", "-e", str(later["id"])).output
+    assert "earlier election(s) finished" in done
+    listed = as_json(run(runner, "local", "list", "--json"))
+    assert listed["count"] >= 2 and any(e["status"] == "final" for e in listed["elections"])

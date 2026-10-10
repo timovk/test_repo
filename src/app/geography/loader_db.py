@@ -2,9 +2,10 @@
 
 :func:`load_tables_into_db` upserts provinces (ids 1..12 in canonical order), data-source
 provenance, the :class:`GeoVintage`, per-vintage province statistics (with simplified EPSG:4326 WKB
-geometry), municipalities and CBS neighbourhoods (units) with their demographics.  It works for any
-tables with the store schema — the REAL processed store (:func:`load_into_db`) as well as the
-synthetic test geography.
+geometry), municipalities and CBS neighbourhoods (units) with their demographics, and — when a
+water board table is given — the REAL water boards of the vintage with ``geo_unit.water_board_id``
+(:func:`sync_water_boards`).  It works for any tables with the store schema — the REAL processed
+store (:func:`load_into_db`) as well as the synthetic test geography.
 
 Rows are written with bulk ``INSERT``/``UPDATE`` statements (≈15k units load in seconds).  The
 operation is idempotent: re-loading an unchanged vintage is a no-op; ``force=True`` re-synchronises
@@ -41,6 +42,7 @@ from app.models import (
     MunicipalityDemographics,
     Province,
     ProvinceStats,
+    WaterBoard,
     utcnow,
 )
 
@@ -183,7 +185,7 @@ def upsert_sources(session: Session, year: int, sources: Any) -> dict[str, int]:
             "publisher": str(data.get("publisher", ""))[:120],
             "url": str(data.get("url", "")),
             "license": str(data.get("license", ""))[:80],
-            "data_category": "REAL",
+            "data_category": str(data.get("data_category") or "REAL")[:16],
             "retrieved_at": _parse_time(data.get("retrieved_at")),
             "sha256": data.get("sha256"),
             "size_bytes": _int(data.get("bytes", data.get("size_bytes"))),
@@ -264,6 +266,7 @@ def load_tables_into_db(
     label: str | None = None,
     config: GeographyConfig | None = None,
     fingerprint: str | None = None,
+    water_boards: pd.DataFrame | None = None,
 ) -> GeoVintage:
     """Upsert one geography vintage from store-schema tables.
 
@@ -271,6 +274,11 @@ def load_tables_into_db(
     geometries are stored as simplified EPSG:4326 WKB: inputs already in EPSG:4326 are used as-is,
     projected inputs are coverage-simplified with the ``simplify`` tolerances of the geography config.
     ``sources`` accepts download records, their JSON dicts or a ``{key: record}`` mapping.
+
+    ``water_boards`` is a board table (``code, name, province_code, population, area_km2``; the
+    store's ``water_boards.parquet``) and requires a ``water_board_code`` unit column; the
+    vintage's water boards and ``geo_unit.water_board_id`` are then synchronised (also when the
+    rest of the vintage is up to date).  Without it existing water board rows are left alone.
 
     Without ``force`` an already complete vintage is left untouched — unless its row counts or
     population total differ from the input, or ``fingerprint`` (the store manifest fingerprint)
@@ -294,6 +302,8 @@ def load_tables_into_db(
             and _vintage_complete(session, vintage, len(munis), len(units), total_pop)
             and (fingerprint is None or _stored_fingerprint(session, year) == fingerprint)
         ):
+            if water_boards is not None:
+                sync_water_boards(session, vintage, water_boards, units, province_ids, config=cfg)
             _activate(session, vintage)
             log.info("geography %d already loaded (vintage id %d) — skipped", year, vintage.id)
             return vintage
@@ -505,6 +515,16 @@ def load_tables_into_db(
         if rows:
             session.execute(insert(GeoUnitDemographics), rows)
         session.flush()
+        if water_boards is not None:
+            sync_water_boards(
+                session,
+                vintage,
+                water_boards,
+                units,
+                province_ids,
+                source_id=source_ids.get(cfg.water_boards.source),
+                config=cfg,
+            )
         if fingerprint is not None:
             _set_meta(session, f"{FINGERPRINT_KEY_PREFIX}{year}", fingerprint)
         _activate(session, vintage)
@@ -516,6 +536,101 @@ def load_tables_into_db(
         extra=log_ctx(vintage_id=vintage.id),
     )
     return vintage
+
+
+def sync_water_boards(
+    session: Session,
+    vintage: GeoVintage,
+    water_boards: pd.DataFrame,
+    units: pd.DataFrame,
+    province_ids: Mapping[str, int] | None = None,
+    source_id: int | None = None,
+    config: GeographyConfig | None = None,
+) -> dict[str, int]:
+    """Make the vintage's :class:`WaterBoard` rows and ``geo_unit.water_board_id`` match
+    ``water_boards`` (board table) and the ``water_board_code`` column of ``units`` (by ``code``).
+
+    Idempotent: boards are upserted by code (ids kept), boards no longer present are deleted
+    after their units are detached, and only units whose board changed are updated.  Units
+    without a board code get NULL.  ``source_id`` (the water board :class:`DataSource`) defaults to
+    the recorded ``water_boards_<year>`` source.  Returns ``{code: id}`` of the boards.
+    """
+    if "water_board_code" not in units.columns:
+        raise ValueError("water boards need a 'water_board_code' unit column")
+    cfg = config or load_geography_config()
+    pids = dict(province_ids or session.execute(select(Province.code, Province.id)).tuples().all())
+    if source_id is None:
+        source_id = session.scalar(
+            select(DataSource.id).where(DataSource.key == f"{cfg.water_boards.source}_{vintage.year}"[:80])
+        )
+    with Timer(log, f"sync water boards {vintage.year}"):
+        existing = {
+            wb.code: wb
+            for wb in session.scalars(select(WaterBoard).where(WaterBoard.vintage_id == vintage.id))
+        }
+        wanted: dict[str, dict[str, Any]] = {}
+        for r in water_boards.itertuples(index=False):
+            code = str(r.code)
+            province = getattr(r, "province_code", None)
+            if province is None or pd.isna(province) or str(province) not in pids:
+                raise ValueError(f"water board {code} has no valid province ({province!r})")
+            wanted[code] = {
+                "vintage_id": vintage.id,
+                "code": code[:8],
+                "name": str(r.name)[:120],
+                "province_id": int(pids[str(province)]),
+                "population": int(_int(getattr(r, "population", 0)) or 0),
+                "area_km2": float(_num(getattr(r, "area_km2", 0.0)) or 0.0),
+                "source_id": source_id,
+            }
+        stale = [wb.id for code, wb in existing.items() if code not in wanted]
+        if stale:
+            session.execute(
+                update(GeoUnit).where(GeoUnit.water_board_id.in_(stale)).values(water_board_id=None)
+            )
+            session.execute(delete(WaterBoard).where(WaterBoard.id.in_(stale)))
+        for code, values in wanted.items():
+            row = existing.get(code)
+            if row is None:
+                session.add(WaterBoard(**values))
+            else:
+                for k, v in values.items():
+                    if getattr(row, k) != v:
+                        setattr(row, k, v)
+        session.flush()
+        ids = dict(
+            session.execute(select(WaterBoard.code, WaterBoard.id).where(WaterBoard.vintage_id == vintage.id))
+            .tuples()
+            .all()
+        )
+        target = {
+            str(c): (None if b is None or pd.isna(b) else ids.get(str(b)))
+            for c, b in zip(units["code"], units["water_board_code"], strict=True)
+        }
+        unknown = sorted({str(b) for b in units["water_board_code"].dropna()} - set(ids))
+        if unknown:
+            raise ValueError(f"units reference water boards missing from the board table: {unknown[:5]}")
+        changes = [
+            {"id": uid, "water_board_id": target.get(code)}
+            for uid, code, current in session.execute(
+                select(GeoUnit.id, GeoUnit.cbs_code, GeoUnit.water_board_id).where(
+                    GeoUnit.vintage_id == vintage.id
+                )
+            )
+            if target.get(code) != current
+        ]
+        if changes:
+            session.execute(update(GeoUnit), changes)
+        session.flush()
+    log.info(
+        "water boards %d: %d boards, %d units assigned (%d updated)",
+        vintage.year,
+        len(ids),
+        sum(v is not None for v in target.values()),
+        len(changes),
+        extra=log_ctx(vintage_id=vintage.id),
+    )
+    return ids
 
 
 def _vintage_complete(
@@ -579,6 +694,7 @@ def load_into_db(session: Session, year: int | None = None, force: bool = False)
         columns=[c for c in _parquet_columns(base / "municipalities.parquet") if c != "geometry"],
     )
     units = store.load_units_attrs(year)
+    water_boards = store.load_water_boards(year)
     prov_web = pyogrio.read_dataframe(store.web_geojson_path(year, "provinces"), columns=["code"])
     muni_web = pyogrio.read_dataframe(store.web_geojson_path(year, "municipalities"), columns=["code"])
     provinces = gpd.GeoDataFrame(
@@ -602,6 +718,7 @@ def load_into_db(session: Session, year: int | None = None, force: bool = False)
         source_years=manifest.get("source_years"),
         processed_path=str(base),
         fingerprint=manifest.get("fingerprint"),
+        water_boards=water_boards,
     )
 
 

@@ -144,9 +144,15 @@ def needs_recount(
         return False, f"no automatic recount for {rtype.value} races"
     if len(tab.line_keys) < 2:
         return False, "uncontested race"
-    first, second = _top_two(tab)
     valid = int(np.asarray(tab.totals, dtype=np.int64).sum())
-    margin = first - second
+    if getattr(tab, "seats", 1) > 1 or getattr(tab, "threshold", None) is not None:
+        # last seat vs first loser (vote for N), or distance to the pass threshold (Yes/No)
+        if getattr(tab, "seats", 1) >= len(tab.line_keys):
+            return False, "uncontested race"
+        margin = 0 if tab.tied else int(tab.margin_votes)
+    else:
+        first, second = _top_two(tab)
+        margin = first - second
     if margin == 0:
         if rule.exact_tie:
             return True, "exact tie"
@@ -287,6 +293,7 @@ def perform_recount(
     k = int(min(len(candidates), max(proc.min_units, min(proc.max_units, k))))
     sample = np.sort(rng.choice(candidates, size=k, replace=False)) if k else np.zeros(0, dtype=np.int64)
 
+    multi = int(getattr(race_votes, "marks_per_ballot", 1) or 1) > 1
     kinds = [_KIND_KEYS[name] for name in proc.kind_weights]
     kw = np.array([proc.kind_weights[name] for name in proc.kind_weights], dtype=float)
     kw = kw / kw.sum()
@@ -322,6 +329,10 @@ def perform_recount(
         pile = votes[row].astype(float)
         done = False
         for kind in order:
+            if multi and kind in (RULED_INVALID, RULED_VALID):
+                # vote-for-N ballots: a ruling moves a whole ballot (several marks), so only
+                # misread tallies and found ballots are corrected
+                continue
             if kind == MISREAD and L >= 2:
                 a = _pick(rng, pile)
                 if a is None:
@@ -330,6 +341,10 @@ def perform_recount(
                 if b is None:
                     continue
                 d = min(want, int(votes[row, a]))
+                if multi:  # a candidate is marked at most once per valid ballot
+                    d = min(d, int(cast[row] - blank[row] - invalid[row] - votes[row, b]))
+                    if d <= 0:
+                        continue
                 rec(row, a, votes[row, a], votes[row, a] - d, kind)
                 rec(row, b, votes[row, b], votes[row, b] + d, kind)
                 votes[row, a] -= d
@@ -384,6 +399,9 @@ def perform_recount(
         expected_turnout=None
         if race_votes.expected_turnout is None
         else np.array(race_votes.expected_turnout, copy=True),
+        seats=race_votes.seats,
+        marks_per_ballot=race_votes.marks_per_ballot,
+        threshold=race_votes.threshold,
     )
     try:
         recounted.check()
@@ -419,7 +437,11 @@ def perform_recount(
         margin_votes_after=after.margin_votes,
         margin_pct_before=before.margin_pct,
         margin_pct_after=after.margin_pct,
-        outcome_changed=before.winner_key != after.winner_key,
+        outcome_changed=(
+            set(before.winners) != set(after.winners) or before.passed != after.passed
+            if before.seats > 1 or before.threshold is not None
+            else before.winner_key != after.winner_key
+        ),
         decided_by=how,
         units_examined=[int(uidx[r]) for r in sample],
         units_changed=changed_units,

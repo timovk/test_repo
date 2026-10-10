@@ -69,6 +69,11 @@ function follow(st) {
 async function fetchOnce() {
   const id = currentId;
   if (!id) return;
+  // A SCHEDULED election has no night until it is simulated (the API answers 409): don't ask.
+  if (electionStatus(id) === "scheduled") {
+    if (getState().night) setState({ night: null });
+    return;
+  }
   try {
     // The first request of a night builds it on the server (seconds, longer on slow machines).
     const st = await api.get(`/api/night/${id}/state?detail=summary`, { timeout: 180000 });

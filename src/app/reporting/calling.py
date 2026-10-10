@@ -149,6 +149,11 @@ class RaceProgress:
     n_clusters: int | None = None
     #: RaceType value (optional; forwarded to the recount check).
     race_type: str | None = None
+    #: Contest rules: seats filled (the top ``seats`` lines win, vote for up to N), votes per
+    #: ballot (marks) and the YES share a Yes/No question needs (lines ``YES`` / ``NO``).
+    seats: int = 1
+    marks_per_ballot: int = 1
+    threshold: float | None = None
 
     @property
     def n_units(self) -> int:
@@ -185,9 +190,13 @@ class RaceProgress:
         (``floor(f × final)`` per line, see :func:`allocate_counted`)."""
         f = np.clip(np.asarray(reported_fraction, dtype=np.float64), 0.0, 1.0)
         counted = allocate_counted(race.votes, f)
-        counted_ballots = (
-            counted.sum(axis=1) + allocate_counted(race.blank, f) + allocate_counted(race.invalid, f)
-        )
+        marks = int(getattr(race, "marks_per_ballot", 1) or 1)
+        if marks > 1:  # vote for N: the counted marks are not ballots
+            counted_ballots = allocate_counted(race.ballots_cast, f)
+        else:
+            counted_ballots = (
+                counted.sum(axis=1) + allocate_counted(race.blank, f) + allocate_counted(race.invalid, f)
+            )
         n, L = race.votes.shape
         exp_shares = race.expected_shares if race.expected_shares is not None else np.full((n, L), 1.0 / L)
         exp_turnout = (
@@ -203,6 +212,9 @@ class RaceProgress:
             expected_ballots=np.asarray(exp_turnout, dtype=np.float64) * race.eligible,
             eligible=np.asarray(race.eligible, dtype=np.int64),
             unit_cluster=None if unit_cluster is None else np.asarray(unit_cluster),
+            seats=int(getattr(race, "seats", 1) or 1),
+            marks_per_ballot=marks,
+            threshold=getattr(race, "threshold", None),
         )
 
 
@@ -234,6 +246,8 @@ class RecountInput:
     margin_votes: int
     margin_pct: float  # percentage points of valid votes
     race_type: str | None = None  # RaceType value when known (the night engine sets it)
+    seats: int = 1
+    threshold: float | None = None
 
 
 #: ``recount_check(RecountInput) -> bool | (bool, reason)`` — True when an automatic recount is
@@ -277,6 +291,9 @@ class CallDecision:
     basis: str
     retracted: bool
     n_draws: int
+    #: Every line the status refers to: the (projected / called / final) winners of a vote-for-N
+    #: race, else ``[winner_key]`` (empty while undecided).
+    winner_keys: list[str] = field(default_factory=list)
     _evidence_fn: Callable[[], dict] | None = field(default=None, repr=False, compare=False)
     _evidence: dict | None = field(default=None, repr=False, compare=False)
 
@@ -332,10 +349,101 @@ class CallDecision:
             "basis": self.basis,
             "retracted": self.retracted,
             "n_draws": self.n_draws,
+            "winner_keys": list(self.winner_keys),
         }
         if include_evidence:
             d["evidence"] = self.evidence
         return d
+
+
+# --------------------------------------------------------------------------- contest rules
+@dataclass(frozen=True)
+class _Contest:
+    """How a race is won: plurality (``seats == 1``), the top ``seats`` lines (vote for N), or a
+    Yes/No question with a pass threshold (``weights``: YES·(1−t) vs NO·t)."""
+
+    seats: int = 1
+    threshold: float | None = None
+    yes: int | None = None
+    no: int | None = None
+
+    @classmethod
+    def of(cls, progress: RaceProgress, keys: list[str]) -> _Contest:
+        t = getattr(progress, "threshold", None)
+        if t is not None and "YES" in keys and "NO" in keys:
+            return cls(1, float(t), keys.index("YES"), keys.index("NO"))
+        seats = int(getattr(progress, "seats", 1) or 1)
+        return cls(seats if 1 < seats < len(keys) else 1)
+
+    @property
+    def question(self) -> bool:
+        return self.threshold is not None
+
+    @property
+    def multi(self) -> bool:
+        return self.seats > 1
+
+    def weights(self, L: int) -> np.ndarray:
+        w = np.ones(L)
+        if self.question:
+            w[self.yes] = 1.0 - float(self.threshold)
+            w[self.no] = float(self.threshold)
+        return w
+
+    def max_weight(self) -> float:
+        return 1.0 if not self.question else max(float(self.threshold), 1.0 - float(self.threshold))
+
+    def passes(self, tot: np.ndarray) -> bool:
+        from app.elections.tabulation import question_passes
+
+        return question_passes(float(tot[self.yes]), float(tot[self.no]), float(self.threshold))
+
+    def order(self, tot: np.ndarray) -> np.ndarray:
+        """Lines by standing: winners first (questions: the winning side first)."""
+        if self.question:
+            win, lose = (self.yes, self.no) if self.passes(tot) else (self.no, self.yes)
+            rest = [i for i in range(len(tot)) if i not in (win, lose)]
+            return np.array([win, lose, *rest], dtype=np.int64)
+        return np.argsort(-tot, kind="stable")
+
+    def gap(self, tot: np.ndarray, order: np.ndarray) -> float:
+        """The decisive margin in votes: leader − runner-up, last winner − first loser (vote for
+        N), or YES·(1−t) − NO·t in absolute value (questions; a remaining ballot moves it by at
+        most ``max_weight``)."""
+        if self.question:
+            return abs(float(tot[self.yes]) * (1.0 - self.threshold) - float(tot[self.no]) * self.threshold)
+        if len(order) <= self.seats:
+            return float(tot[order[-1]]) if len(order) else 0.0
+        return float(tot[order[self.seats - 1]] - tot[order[self.seats]])
+
+    def margin_votes(self, tot: np.ndarray, order: np.ndarray) -> int:
+        """Displayed margin: votes that would have to change sides (questions), else the gap."""
+        g = self.gap(tot, order)
+        return math.ceil(g - 1e-9) if self.question else int(g)
+
+    def boundary(self, order: np.ndarray) -> tuple[int, int | None]:
+        """(last winner, first loser) — the pair whose gap decides the race."""
+        if self.multi:
+            return int(order[self.seats - 1]), (int(order[self.seats]) if len(order) > self.seats else None)
+        return int(order[0]), (int(order[1]) if len(order) > 1 else None)
+
+    def wins(self, block: np.ndarray) -> np.ndarray:
+        """Per-line win counts over draws (D, L): elected (top N) or the winning side."""
+        L = block.shape[1]
+        if not len(block):
+            return np.zeros(L, np.int64)
+        if self.question:
+            yes_wins = block[:, self.yes] * (1.0 - self.threshold) > block[:, self.no] * self.threshold
+            if abs(self.threshold - 0.5) >= 1e-12:
+                yes_wins = block[:, self.yes] * (1.0 - self.threshold) >= block[:, self.no] * self.threshold
+            out = np.zeros(L, np.int64)
+            out[self.yes] = int(yes_wins.sum())
+            out[self.no] = int(len(block) - yes_wins.sum())
+            return out
+        if self.multi:
+            top = np.argsort(-block, axis=1, kind="stable")[:, : self.seats]
+            return np.bincount(top.ravel(), minlength=L)
+        return np.bincount(np.argmax(block, axis=1), minlength=L)
 
 
 # --------------------------------------------------------------------------- the caller
@@ -424,11 +532,15 @@ class RaceCaller:
         has_results = units_reported + units_partial > 0
         all_reported = units_reported == n
 
-        order = np.argsort(-tot, kind="stable")
+        contest = _Contest.of(progress, keys)
+        order = contest.order(tot)
         lead_i = int(order[0])
         second_i = int(order[1]) if L > 1 else None
         leader_key = keys[lead_i] if C > 0 else None
-        margin_votes = int(tot[lead_i] - (tot[second_i] if second_i is not None else 0)) if C > 0 else 0
+        if contest.question or contest.multi:
+            margin_votes = contest.margin_votes(tot, order) if C > 0 else 0
+        else:
+            margin_votes = int(tot[lead_i] - (tot[second_i] if second_i is not None else 0)) if C > 0 else 0
         margin_pct = 100.0 * margin_votes / C if C > 0 else 0.0
         remaining = f < 1.0
         outstanding_upper = int(np.maximum(el[remaining] - cb[remaining], 0).sum())
@@ -459,24 +571,53 @@ class RaceCaller:
             }
         )
         if all_reported:
-            return self._final(progress, keys, tot, C, cb_tot, order, common, prior_ev)
+            return self._final(progress, keys, tot, C, cb_tot, order, common, prior_ev, contest)
 
         cfg = self.config.calling
-        uncontested = L == 1
-        math_certain = has_results and C > 0 and (uncontested or margin_votes > outstanding_upper)
+        uncontested = L == 1 or (contest.multi and contest.seats >= L)
+        if contest.question or contest.multi:
+            certain_gap = contest.gap(tot, order) > outstanding_upper * contest.max_weight()
+        else:
+            certain_gap = margin_votes > outstanding_upper
+        math_certain = has_results and C > 0 and (uncontested or certain_gap)
         prior_i = keys.index(prior.key) if prior is not None and prior.key in keys else None
         targets = self._refine_targets(has_results, rshare, prior, prior_i)
-        m = self._project(progress, keys, counted, f, cb, x, tot, C, seed, seq, targets, lead_i, second_i)
+        b_lead, b_second = contest.boundary(order) if contest.multi else (lead_i, second_i)
+        m = self._project(
+            progress, keys, counted, f, cb, x, tot, C, seed, seq, targets, b_lead, b_second, contest
+        )
         prob = m.wins / m.n_draws
         mu = m.mu
         mu_tot = float(mu.sum())
-        mu_order = np.argsort(-mu, kind="stable")
-        proj_margin = (
-            100.0 * float(mu[mu_order[0]] - (mu[mu_order[1]] if L > 1 else 0.0)) / mu_tot
-            if mu_tot > 0
-            else 0.0
-        )
-        top_i = int(np.argmax(prob))
+        mu_order = contest.order(mu) if contest.question else np.argsort(-mu, kind="stable")
+        if contest.multi:
+            proj_margin = 100.0 * contest.gap(mu, mu_order) / mu_tot if mu_tot > 0 else 0.0
+        elif contest.question:
+            proj_margin = (
+                100.0 * contest.gap(mu, mu_order) / max(contest.max_weight(), 1e-9) / mu_tot
+                if mu_tot > 0
+                else 0.0
+            )
+        else:
+            proj_margin = (
+                100.0 * float(mu[mu_order[0]] - (mu[mu_order[1]] if L > 1 else 0.0)) / mu_tot
+                if mu_tot > 0
+                else 0.0
+            )
+        elect_prob = prob
+        projected_winners: list[int] = []
+        if contest.multi:
+            # P(elected) per line; the race is as certain as its weakest projected winner
+            rank = sorted(range(L), key=lambda i: (-prob[i], -mu[i], i))
+            projected_winners = rank[: contest.seats]
+            p_set = float(prob[projected_winners[-1]])
+            top_i = max(projected_winners, key=lambda i: (mu[i], -i))
+            prob = np.zeros(L)
+            prob[projected_winners] = p_set
+            if math_certain:
+                lead_i = top_i
+        else:
+            top_i = int(np.argmax(prob))
         status, key, basis, retracted, retracted_key = self._decide(
             has_results=has_results,
             rshare=rshare,
@@ -490,16 +631,30 @@ class RaceCaller:
             prior=prior,
             prior_i=prior_i,
         )
-        win_prob = (
-            {k: (1.0 if i == lead_i else 0.0) for i, k in enumerate(keys)}
-            if math_certain
-            else _kv(keys, prob)
-        )
+        if contest.multi:
+            counted_winners = [int(i) for i in order[: contest.seats]]
+            win_prob = (
+                {k: (1.0 if i in counted_winners else 0.0) for i, k in enumerate(keys)}
+                if math_certain
+                else _kv(keys, elect_prob)
+            )
+        else:
+            win_prob = (
+                {k: (1.0 if i == lead_i else 0.0) for i, k in enumerate(keys)}
+                if math_certain
+                else _kv(keys, prob)
+            )
         share_mean = mu / mu_tot if mu_tot > 0 else np.full(L, 1.0 / L)
         outstanding_valid = max(mu_tot - C, 0.0)
         comeback = self._comeback(
-            keys, tot, m.gain_q995, lead_i, second_i, outstanding_valid, outstanding_upper, C
+            keys, tot, m.gain_q995, b_lead, b_second, outstanding_valid, outstanding_upper, C
         )
+        if key is None:
+            winner_keys: list[str] = []
+        elif contest.multi:
+            winner_keys = [keys[i] for i in (order[: contest.seats] if math_certain else projected_winners)]
+        else:
+            winner_keys = [key]
         mean_d, p05_d, p95_d = _kv(keys, share_mean), _kv(keys, m.q05), _kv(keys, m.q95)
         votes_d = _kv(keys, mu, 1)
         at_risk = (
@@ -567,11 +722,16 @@ class RaceCaller:
                     "margin_sd_votes": _r(m.margin_sd, 1),
                 },
                 "win_probability": win_prob,
-                "model_win_probability": _kv(keys, prob),
+                "model_win_probability": _kv(keys, elect_prob),
                 "n_draws": m.n_draws,
                 "math_certain": math_certain,
                 "comeback": comeback,
                 "thresholds": self._thresholds(),
+                "contest": {
+                    "seats": contest.seats,
+                    "threshold": contest.threshold,
+                    "winner_keys": winner_keys,
+                },
             }
             if basis == "manual":
                 ev["manual_call_at_risk"] = at_risk
@@ -592,6 +752,7 @@ class RaceCaller:
             basis=basis,
             retracted=retracted,
             n_draws=m.n_draws,
+            winner_keys=winner_keys,
             _evidence_fn=_evidence,
             **common,
         )
@@ -712,13 +873,29 @@ class RaceCaller:
         order: np.ndarray,
         common: dict,
         prior_ev: dict | None,
+        contest: _Contest | None = None,
     ) -> CallDecision:
+        contest = contest or _Contest()
         L = len(keys)
         top = int(order[0])
         second = int(order[1]) if L > 1 else None
-        tied_lines = [i for i in range(L) if tot[i] == tot[top]]
+        if contest.question:
+            tied_lines = [contest.yes, contest.no] if contest.gap(tot, order) == 0 else [top]
+        elif contest.multi:
+            b_lead, b_loser = contest.boundary(order)
+            cut = tot[b_lead]
+            tied_lines = (
+                [i for i in range(L) if tot[i] == cut]
+                if b_loser is not None and tot[b_loser] == cut
+                else [top]
+            )
+        else:
+            tied_lines = [i for i in range(L) if tot[i] == tot[top]]
         tied = C == 0 or len(tied_lines) > 1
-        margin_votes = int(tot[top] - (tot[second] if second is not None else 0))
+        if contest.question or contest.multi:
+            margin_votes = contest.margin_votes(tot, order)
+        else:
+            margin_votes = int(tot[top] - (tot[second] if second is not None else 0))
         margin_pct = 100.0 * margin_votes / C if C > 0 else 0.0
         rin = RecountInput(
             race_key=progress.race_key,
@@ -731,6 +908,8 @@ class RaceCaller:
             margin_votes=margin_votes,
             margin_pct=margin_pct,
             race_type=progress.race_type,
+            seats=contest.seats,
+            threshold=contest.threshold,
         )
         if tied:
             recount, reason = True, "tie"
@@ -745,12 +924,19 @@ class RaceCaller:
         else:
             recount, reason = margin_pct <= self.config.recount.margin_pct, "fallback_margin"
         status = RaceStatus.RECOUNT if recount else RaceStatus.FINAL
-        if tied and C > 0:
+        if contest.multi:
+            winners = [int(i) for i in order[: contest.seats]] if C > 0 else []
+            win_prob = {k: (1.0 if i in winners else 0.0) for i, k in enumerate(keys)}
+        elif tied and C > 0:
             win_prob = {k: (1.0 / len(tied_lines) if i in tied_lines else 0.0) for i, k in enumerate(keys)}
         else:
             win_prob = {k: (1.0 if (i == top and C > 0) else 0.0) for i, k in enumerate(keys)}
         shares = tot / C if C > 0 else np.zeros(L)
         key = keys[top] if C > 0 and not tied else None
+        if contest.multi and C > 0 and not tied:
+            final_winner_keys = [keys[i] for i in order[: contest.seats]]
+        else:
+            final_winner_keys = [key] if key is not None else []
         basis = "recount" if recount else "final"
         fallback = self.config.recount.margin_pct
 
@@ -778,6 +964,11 @@ class RaceCaller:
                 "recount": {"required": recount, "reason": reason, "fallback_margin_pct": fallback},
                 "win_probability": win_prob,
                 "math_certain": not tied,
+                "contest": {
+                    "seats": contest.seats,
+                    "threshold": contest.threshold,
+                    "winner_keys": final_winner_keys,
+                },
             }
 
         return CallDecision(
@@ -795,6 +986,7 @@ class RaceCaller:
             basis=basis,
             retracted=False,
             n_draws=0,
+            winner_keys=final_winner_keys,
             _evidence_fn=_evidence,
             **common,
         )
@@ -815,7 +1007,9 @@ class RaceCaller:
         targets: list[tuple[int | None, float]],
         lead_i: int,
         second_i: int | None,
+        contest: _Contest | None = None,
     ) -> _Model:
+        contest = contest or _Contest()
         mc = self.config.calling.model
         L = len(keys)
         n = len(f)
@@ -838,8 +1032,11 @@ class RaceCaller:
 
         cv = counted.sum(axis=1).astype(np.float64)
         cb_tot = float(cb.sum())
-        vr = float(C / cb_tot) if cb_tot > 0 and C > 0 else mc.valid_rate_prior
-        vr = min(max(vr, 0.5), 1.0)
+        marks = max(int(getattr(progress, "marks_per_ballot", 1) or 1), 1)
+        prior_vr = mc.valid_rate_prior * (1.0 + 0.5 * (marks - 1))
+        vr = float(C / cb_tot) if cb_tot > 0 and C > 0 else prior_vr
+        # valid votes per ballot: up to the number of marks a voter may make (vote for N)
+        vr = min(max(vr, 0.5), float(marks))
 
         # --- turnout ratio (log, shrunk toward 1)
         fx = f * x
@@ -994,7 +1191,7 @@ class RaceCaller:
             if not ok.all():
                 log.warning("%s: %d non-finite projection draws ignored", progress.race_key, int((~ok).sum()))
                 block = block[ok]
-            return np.bincount(np.argmax(block, axis=1), minlength=L) if len(block) else np.zeros(L, np.int64)
+            return contest.wins(block)
 
         draws = _draw(cfg.n_draws_min)
         wins = _wins(draws)

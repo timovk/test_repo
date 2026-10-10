@@ -1,4 +1,4 @@
-"""Elections: list, create, simulate, finalize, and every results page (hidden-until-reported:
+"""Elections: list, create, simulate, finalize, reset, and every results page (hidden-until-reported:
 ``results_source`` is ``final``, ``live`` or ``hidden``)."""
 
 from __future__ import annotations
@@ -63,6 +63,21 @@ def finalize(ref: ElectionDep, session: SessionDep) -> ApiJSON:
     return respond(actions.finalize_election(session, ref))
 
 
+@router.post(
+    "/{election_id}/reset",
+    summary="Back to polls closing: replay the election night",
+    description=(
+        "The election keeps its id and its hidden simulated result, so a replay reveals the same "
+        "election. A reported (final/certified) election has its certification undone: recount "
+        "corrections are reversed from their audit rows, Electoral College allocations, seats, "
+        "race calls and summaries are removed and the office terms it ended are restored. Only "
+        "the most recent reported election can be reset (409 otherwise)."
+    ),
+)
+def reset(ref: ElectionDep, session: SessionDep) -> ApiJSON:
+    return respond(actions.reset_election(session, ref))
+
+
 @router.get("/{election_id}/president", summary="Presidential race: tickets, EV, winner, tipping point")
 def president(ref: ElectionDep, session: SessionDep) -> ApiJSON:
     return respond(el.president(session, ref))
@@ -124,6 +139,28 @@ def governors(ref: ElectionDep, session: SessionDep) -> ApiJSON:
 @router.get("/{election_id}/mayors", summary="Mayor races")
 def mayors(ref: ElectionDep, session: SessionDep, province: str | None = None) -> ApiJSON:
     return respond(el.mayors(session, ref, province))
+
+
+@router.get("/{election_id}/races", summary="Every race as a searchable list (local election results page)")
+def races(
+    ref: ElectionDep,
+    session: SessionDep,
+    q: str | None = Query(None, description="search race names, places and candidates"),
+    type: str | None = Query(None, description="race type(s), comma separated, e.g. BALLOT_MEASURE"),
+    municipality: str | None = Query(None, description="CBS municipality code"),
+    sort: Literal["name", "type"] = "name",
+) -> ApiJSON:
+    return respond(el.race_list(session, ref, q=q, race_type=type, municipality=municipality, sort=sort))
+
+
+@router.post("/{election_id}/finish-earlier", summary="Finish every earlier election (strict date order)")
+def finish_earlier(ref: ElectionDep, session: SessionDep) -> ApiJSON:
+    return respond(actions.finish_earlier(session, ref))
+
+
+@router.get("/{election_id}/earlier", summary="What must be finished before this election can be certified")
+def earlier(ref: ElectionDep, session: SessionDep) -> ApiJSON:
+    return respond(el.earlier(session, ref))
 
 
 @router.get("/{election_id}/races/{race}", summary="Any race: lines, result, calls, recounts, breakdown")

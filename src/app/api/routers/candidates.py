@@ -34,3 +34,8 @@ def candidates(
 @router.get("/candidates/{candidate_id}", summary="Candidate profile and career")
 def candidate(candidate_id: int, session: SessionDep) -> ApiJSON:
     return respond(people.candidate_profile(session, candidate_id))
+
+
+@router.get("/people", summary="Your own people (config/people.yaml): where they ran, what they hold")
+def custom_people(session: SessionDep) -> ApiJSON:
+    return respond(people.custom_people(session))

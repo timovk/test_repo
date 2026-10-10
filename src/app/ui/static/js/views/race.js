@@ -7,14 +7,23 @@
  * history with the exact evidence stored with every call, the recount audit trail, and the
  * municipality breakdown.  All numbers come from the API (no election mathematics here) and
  * follow the hidden / live / final results rule.
+ *
+ * Local contests (the race carries a `contest` object) add: vote-for-N boards ("Vote for N · N
+ * seats", every elected line marked, seats total / up, nonpartisan note, water board body),
+ * ballot measures and recalls (title, label, summary, a Yes/No bar with a marker at the
+ * threshold, passed / failed — passing while counting — and the threshold rule), recall ↔
+ * replacement-race links (with the "moot" note when the recall failed) and special elections
+ * (vacancy reason, date, term).  Races without `contest` render exactly as before.
  */
 import { api } from "../api.js";
 import { h, keyed, mount } from "../dom.js";
 import { fmtCompact, fmtInt, fmtPct, fmtPP, fmtProb, fmtShare } from "../format.js";
 import { partyChip, provBadge, statusPill } from "../components/badges.js";
 import { dataTable } from "../components/table.js";
-import { flipTag, liveRefresh, marginLabel, pc, raceColor, racePill, reportingMeter, resultRows, tile } from "../components/res-kit.js";
+import { facts, flipTag, liveRefresh, marginLabel, pc, raceColor, racePill, reportingMeter, resultRows, tile } from "../components/res-kit.js";
 import { liveCard, pageFrame } from "../components/res-page.js";
+import { fmtDate, outcomeTag, shortName, thresholdRule, thresholdShort, yesNoBar } from "../components/local-kit.js";
+import { icon } from "../components/icons.js";
 import { currentElectionId, links } from "./_shared.js";
 
 const TYPE_LABEL = {
@@ -28,7 +37,27 @@ const TYPE_LABEL = {
   PROVINCIAL_LEGISLATURE: "Provincial legislature",
 };
 
-const isList = (r) => /proportional/.test(String(r?.electoral_system || "")) || (r?.seats || 1) > 1;
+const LOCAL_TYPE_LABEL = {
+  SCHOOL_BOARD: "School board election",
+  WATER_BOARD: "Water board election",
+  BALLOT_MEASURE: "Ballot measure",
+  RECALL: "Recall election",
+  COUNCIL_SEAT: "Special council-seat election",
+};
+
+/** Plurality-at-large boards ("vote for up to N") and Yes/No questions are not party lists. */
+const isList = (r) => /proportional/.test(String(r?.electoral_system || "")) || ((r?.seats || 1) > 1 && !/plurality_at_large|question/.test(String(r?.electoral_system || "")));
+const isQuestionRace = (r) => !!r?.contest && (r.electoral_system === "question" || r.type === "BALLOT_MEASURE" || r.type === "RECALL");
+const voteForOf = (r) => r?.contest?.vote_for || (r?.electoral_system === "plurality_at_large" ? r?.seats : 1) || 1;
+const isMulti = (r) => !!r?.contest && voteForOf(r) > 1;
+const isNonpartisan = (r) => !!r?.contest && (r.contest.nonpartisan || (r.lines || []).every((l) => !l.party));
+const humanize = (v) => (v ? String(v).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) : "–");
+
+function typeLabelOf(r) {
+  if (r.contest?.kind === "recall_replacement") return "Replacement mayoral race";
+  if (r.contest && r.type === "MAYOR" && r.is_special) return "Special mayoral election";
+  return TYPE_LABEL[r.type] || LOCAL_TYPE_LABEL[r.type] || "Race";
+}
 
 export async function render(el, params) {
   const id = currentElectionId();
@@ -48,7 +77,10 @@ export async function render(el, params) {
   const raceCard = liveCard("Race", { id: "race-main" });
   const raceTiles = h("div", { class: "res-tiles res-hero-tiles" });
   const raceLines = h("div");
-  raceCard.body.append(raceTiles, raceLines);
+  const contestNote = h("div", { class: "lc-cnote" });
+  raceCard.body.append(contestNote, raceTiles, raceLines);
+  const contestCard = liveCard("About this contest", { id: "race-contest" });
+  contestCard.hidden = true;
   const raceFoot = h("div", { class: "card__foot res-hero-foot" });
   raceCard.append(raceFoot);
   const linksCard = liveCard("Where this race is", { id: "race-links" });
@@ -74,11 +106,19 @@ export async function render(el, params) {
   function paintRace() {
     const r = data.race;
     const src = data.results_source;
-    frame.setTitle(r.name || code, `${TYPE_LABEL[r.type] || "Race"} · ${code} · ${data.election?.name || ""}`);
-    raceCard.setTitle(isList(r) ? `Party lists · ${fmtInt(r.seats)} seats` : "Candidates");
-    keyed(raceCard.meta, `${r.status}|${raceColor(r)}`, () => racePill(r));
+    frame.setTitle(r.name || code, `${typeLabelOf(r)} · ${code} · ${data.election?.name || ""}`);
+    paintContestNote();
+    if (isQuestionRace(r)) {
+      paintQuestion();
+      return;
+    }
+    const multi = isMulti(r);
+    raceCard.setTitle(isList(r) ? `Party lists · ${fmtInt(r.seats)} seats` : multi ? `Candidates · vote for up to ${fmtInt(voteForOf(r))}` : "Candidates");
+    keyed(raceCard.meta, `${r.status}|${raceColor(r)}${multi ? "|multi" : ""}`, () =>
+      multi ? [h("span", { class: "lc-votefor-badge" }, `Vote for ${fmtInt(voteForOf(r))} · ${fmtInt(voteForOf(r))} seats`), racePill(r)] : racePill(r),
+    );
     const leaderParty = r.winner_party || r.leader_party;
-    const tiles = [
+    const tiles = r.contest && (multi || isNonpartisan(r)) ? localTiles(r, src) : [
       tile(r.winner ? "Winner" : "Leader", leaderParty ? partyChip(leaderParty, { color: raceColor(r) }) : "–", r.winner_name || r.leader_name || (src === "hidden" ? "Results hidden until reported" : "No votes counted yet"), { accent: raceColor(r) || undefined }),
       tile("Margin", r.margin_pp !== null && r.margin_pp !== undefined ? `${fmtPP(r.margin_pp)} pp` : "–", r.margin_votes !== null && r.margin_votes !== undefined ? `${fmtInt(r.margin_votes)} votes` : "winner − runner-up"),
       src === "final"
@@ -90,21 +130,205 @@ export async function render(el, params) {
           ? tile("Call model", fmtProb(r.win_probability), "leader's win probability")
           : tile("Votes counted", fmtInt(r.total_votes), isList(r) ? "D'Hondt seat allocation" : "valid votes"),
     ];
-    keyed(raceTiles, JSON.stringify([r.status, leaderParty, r.margin_pp, r.reporting_pct, r.turnout_pct, r.total_votes, r.win_probability]), () => tiles);
+    keyed(raceTiles, JSON.stringify([r.status, leaderParty, r.margin_pp, r.reporting_pct, r.turnout_pct, r.total_votes, r.win_probability, r.winners]), () => tiles);
     const opts = { leaderKey: r.leader, seats: r.seats_won || undefined, mateLabel: r.type === "GOVERNOR" ? "Lt. governor" : "with" };
-    if (!raceLines.firstChild?.update) mount(raceLines, resultRows(r.lines || [], opts));
-    else raceLines.firstChild.update(r.lines || [], opts);
+    let lines = r.lines || [];
+    if (r.contest) {
+      // Local contests: every elected line is marked (vote for N), nonpartisan candidates show no
+      // party chip, and board seats carry their seat number.
+      const won = new Set(r.winners || []);
+      lines = lines.map((l) => (won.has(l.key) && !l.winner ? { ...l, winner: true } : l));
+      opts.nonpartisan = isNonpartisan(r);
+      const seatsOf = r.contest.seat_assignment;
+      if (seatsOf && Object.keys(seatsOf).length) opts.tags = Object.fromEntries(Object.entries(seatsOf).map(([k, n]) => [k, `SEAT ${n}`]));
+      opts.max = Math.max(12, lines.length);
+    }
+    if (!raceLines.firstChild?.update || raceLines.firstChild.dataset.kind) mount(raceLines, resultRows(lines, opts));
+    else raceLines.firstChild.update(lines, opts);
     const inc = r.incumbent;
     const prev = data.previous_race;
     keyed(raceFoot, JSON.stringify([inc, r.open_seat, r.previous_party, r.flip_status, r.decided_by, prev, r.is_special]), () => [
-      inc ? h("span", null, "Incumbent: ", h("b", null, inc.name), ` (${inc.party || "independent"})`, inc.running === false ? " · not running" : " · running") : h("span", null, isList(r) ? "Party-list election" : "No incumbent"),
+      inc && !inc.name && r.contest
+        ? h("span", null, "Vacant seat", inc.party ? [" · last held by ", h("b", null, inc.party)] : null)
+        : inc
+          ? h("span", null, "Incumbent: ", h("b", null, inc.name), ` (${inc.party || "independent"})`, inc.running === false ? " · not running" : " · running")
+          : h("span", null, isList(r) ? "Party-list election" : "No incumbent"),
       r.open_seat ? h("span", null, " · ", h("span", { class: "res-tag res-tag--open" }, "OPEN SEAT")) : null,
       r.is_special ? h("span", null, " · ", h("span", { class: "res-tag" }, "SPECIAL ELECTION")) : null,
+      isNonpartisan(r) ? h("span", null, " · ", h("span", { class: "res-tag" }, "NONPARTISAN")) : null,
       r.previous_party ? h("span", null, " · Held by ", h("b", null, r.previous_party)) : null,
       r.flip_status ? h("span", null, " · ", flipTag(r.flip_status, { prev: r.previous_party })) : null,
       r.decided_by ? h("span", null, ` · Decided by ${String(r.decided_by).replace(/_/g, " ")}`) : null,
       prev ? h("span", null, ` · ${prev.year}: ${prev.winner_name || "–"} (${prev.winner_party || "–"})${prev.margin_pp !== null && prev.margin_pp !== undefined ? `, margin ${fmtPP(prev.margin_pp).replace(/^[+−±]/, "")} pp` : ""}`) : null,
     ]);
+  }
+
+  /* ------------------------------------------------------------------ local contests */
+  /** Tiles of a vote-for-N board or a nonpartisan race. */
+  function localTiles(r, src) {
+    const multi = isMulti(r);
+    const names = r.winner_names || [];
+    const c = r.contest || {};
+    const hiddenSub = src === "hidden" ? "Results hidden until election night" : "No votes counted yet";
+    const up = Array.isArray(c.seats_up) ? c.seats_up.length : voteForOf(r);
+    return [
+      multi
+        ? tile(r.status === "FINAL" || r.status === "CALLED" ? "Elected" : names.length ? "Projected" : "Leading", names.length ? `${fmtInt(names.length)} of ${fmtInt(voteForOf(r))}` : "–", names.length ? `${names.slice(0, names.length > 4 ? 3 : 4).map(shortName).join(", ")}${names.length > 4 ? ` +${names.length - 3} more` : ""}` : r.leader_name ? `${shortName(r.leader_name)} leads` : hiddenSub, { accent: "var(--uncalled)" })
+        : tile(r.winner ? "Winner" : "Leader", r.winner_name || r.leader_name ? shortName(r.winner_name || r.leader_name) : "–", r.winner_name || r.leader_name ? "nonpartisan" : hiddenSub),
+      tile(multi ? "Last-seat margin" : "Margin", r.margin_pp !== null && r.margin_pp !== undefined ? `${fmtPP(r.margin_pp)} pp` : "–", r.margin_votes !== null && r.margin_votes !== undefined ? `${fmtInt(r.margin_votes)} votes${multi ? " · last elected vs. first runner-up" : ""}` : multi ? "last elected vs. first runner-up" : "winner − runner-up"),
+      src === "final"
+        ? tile("Turnout", fmtPct(r.turnout_pct), r.ballots_cast ? `${fmtInt(r.ballots_cast)} ballots of ${fmtInt(r.eligible)} eligible` : null)
+        : tile("Reporting", r.reporting_pct !== null && r.reporting_pct !== undefined ? fmtPct(r.reporting_pct) : "–", "of the expected vote"),
+      multi && c.seats_total ? tile("Seats up", `${fmtInt(up)} of ${fmtInt(c.seats_total)}`, "on this board (staggered terms)") : tile("Votes counted", fmtInt(r.total_votes), multi ? "every ballot may mark several names" : "valid votes"),
+    ];
+  }
+
+  /** The Yes share (0–100) of a question race from its lines (the API values). */
+  function yesLine() {
+    const ls = data.race.lines || [];
+    return { yes: ls.find((l) => l.key === "YES") || null, no: ls.find((l) => l.key === "NO") || null };
+  }
+
+  /** Ballot measure / recall: question panel with the Yes/No bar and the threshold. */
+  function paintQuestion() {
+    const r = data.race;
+    const c = r.contest || {};
+    const src = data.results_source;
+    const recall = r.type === "RECALL";
+    const t = c.threshold ?? 0.5;
+    const { yes, no } = yesLine();
+    const counted = src !== "hidden" && yes && yes.pct !== null && yes.pct !== undefined && (r.reporting_pct ?? 0) > 0;
+    const outcome = { type: r.type, passed: c.passed ?? null, passing: c.passing ?? null };
+    if (outcome.passed === null && c.recall_passed !== undefined && c.recall_passed !== null) outcome.passed = c.recall_passed;
+    // Two nodes: one for the "Result" tile, one for the panel foot (a node lives in one place).
+    const oTag = counted ? outcomeTag(outcome, { size: "lg" }) : null;
+    const oTagFoot = counted ? outcomeTag(outcome, { size: "lg" }) : null;
+    raceCard.setTitle(recall ? "Recall question" : "Ballot question");
+    keyed(raceCard.meta, `${r.status}|q`, () => racePill(r));
+    const state = oTag ? (outcome.passed === true || (outcome.passed === null && outcome.passing === true) ? "above" : "short of") : null;
+    keyed(raceTiles, JSON.stringify(["q", r.status, yes?.pct, outcome, r.reporting_pct, r.turnout_pct, src]), () => [
+      tile("Result", oTag || (src === "hidden" ? "Hidden" : "–"), src === "final" ? "certified outcome" : counted ? "current count — not final" : src === "hidden" ? "revealed on election night" : "no votes counted yet"),
+      tile("Yes", counted ? fmtPct(yes.pct) : "–", counted ? `${fmtInt(yes.votes)} Yes · ${fmtInt(no?.votes)} No` : "share of valid votes", { accent: "var(--yes)" }),
+      tile("Needed to pass", thresholdShort(t), t <= 0.5 ? "more than 50% Yes · a tie fails" : `at least ${Math.round(t * 1000) / 10}% Yes`),
+      src === "final"
+        ? tile("Turnout", fmtPct(r.turnout_pct), r.ballots_cast ? `${fmtInt(r.ballots_cast)} ballots of ${fmtInt(r.eligible)} eligible` : null)
+        : tile("Reporting", r.reporting_pct !== null && r.reporting_pct !== undefined ? fmtPct(r.reporting_pct) : "–", "of the expected vote"),
+    ]);
+    const title = recall ? `Shall ${c.target_name ? `Mayor ${c.target_name}` : "the mayor"}${c.target_party ? ` (${c.target_party})` : ""} be recalled?` : c.title || r.name;
+    const summary = recall
+      ? `${c.reason === "scandal" ? "A recall petition after a scandal" : "A citizens' recall petition"} qualified${c.event_date ? ` on ${fmtDate(c.event_date, "long")}` : ""}. If the recall passes, the replacement race on the same ballot elects the new mayor.`
+      : c.summary || null;
+    keyed(raceLines, JSON.stringify(["q", src, yes?.pct, yes?.votes, no?.votes, outcome, r.margin_pp, c.title, c.target_name]), () => {
+      const panel = h(
+        "div",
+        { class: ["lc-q", recall && "lc-q--recall"] },
+        h(
+          "div",
+          { class: "lc-q__label" },
+          h("span", { class: "lc-q__kicker" }, recall ? "Recall" : c.label || "Measure"),
+          !recall && c.measure_kind ? h("span", { class: "res-tag" }, String(c.measure_kind).replace(/_/g, " ").toUpperCase()) : null,
+          recall && c.reason ? h("span", { class: "res-tag" }, String(c.reason).toUpperCase()) : null,
+        ),
+        h("h3", { class: "lc-q__title" }, title),
+        summary ? h("p", { class: "lc-q__summary" }, summary) : null,
+        yesNoBar(counted ? yes.pct : null, t, { size: "lg", noPct: counted ? no?.pct : null, yesVotes: counted ? yes.votes : null, noVotes: counted ? no?.votes : null }),
+        h(
+          "div",
+          { class: "lc-q__foot" },
+          oTagFoot,
+          h("span", { class: "lc-q__rule" }, thresholdRule(t)),
+          counted && state && r.margin_pp !== null && r.margin_pp !== undefined ? h("span", { class: "lc-q__margin num" }, `Yes is ${fmtPP(r.margin_pp).replace(/^[+−±]/, "")} pp ${state} the threshold`) : null,
+          src === "hidden" ? h("span", { class: "muted" }, "Results hidden until election night") : null,
+        ),
+        recall && c.replacement_race
+          ? h(
+              "a",
+              { class: "lc-q__link", href: links.race(c.replacement_race) },
+              icon("chevronRight", { size: 14 }),
+              outcome.passed === true ? "The recall passed — see who was elected in the replacement race" : outcome.passed === false ? "The recall failed — the replacement race is moot" : "Replacement race on the same ballot",
+            )
+          : null,
+      );
+      panel.dataset.kind = "question";
+      return panel;
+    });
+    keyed(raceFoot, JSON.stringify(["q", r.municipality_name, r.decided_by, src]), () => [
+      h("span", null, `${recall ? "Mayor recall" : "Ballot measure"} in `, h("b", null, r.municipality_name || r.municipality_code || "–")),
+      h("span", null, " · ", h("span", { class: "res-tag" }, "NONPARTISAN QUESTION")),
+      r.decided_by && src === "final" ? h("span", null, ` · Decided by ${String(r.decided_by).replace(/_/g, " ")}`) : null,
+    ]);
+  }
+
+  /** "Moot: the recall failed" / recall outcome note above the tiles. */
+  function paintContestNote() {
+    const c = data.race.contest;
+    const key = JSON.stringify([c?.moot, c?.parent, c?.kind]);
+    keyed(contestNote, key, () =>
+      c?.moot
+        ? h(
+            "div",
+            { class: "notice lc-moot-note", role: "note" },
+            icon("alert", { size: 16 }),
+            h("span", null, h("strong", null, "Moot: the recall failed. "), "The mayor stays in office, so this replacement race does not take effect.", c.parent ? [" ", h("a", { class: "res-link", href: links.race(c.parent) }, "See the recall question →")] : null),
+          )
+        : null,
+    );
+  }
+
+  /** "About this contest" facts card (local contests only). */
+  function paintContest() {
+    const r = data.race;
+    const c = r.contest;
+    contestCard.hidden = !c;
+    if (!c) return;
+    const kind = c.kind || "";
+    const items = [];
+    const partyNode = (p) => (p ? partyChip(p, { color: pc(p) }) : "–");
+    let note = null;
+    if (kind === "school_board" || kind === "water_board" || r.type === "SCHOOL_BOARD" || r.type === "WATER_BOARD") {
+      contestCard.setTitle(r.type === "WATER_BOARD" ? "About this water board" : "About this school board");
+      items.push({ label: "Board", value: c.body || r.name });
+      if (c.water_board) {
+        const wbName = c.water_board_name || String(r.name || "").split(" – ")[0];
+        items.push({ label: "Water authority", value: wbName || c.water_board, cat: "REAL", note: `${c.water_board} · a real Dutch water authority (waterschap)` });
+      }
+      if (c.seats_total) items.push({ label: "Seats on the board", value: fmtInt(c.seats_total) });
+      if (Array.isArray(c.seats_up) && c.seats_up.length) items.push({ label: "Seats up", value: fmtInt(c.seats_up.length), note: `seat${c.seats_up.length === 1 ? "" : "s"} ${c.seats_up.join(", ")}` });
+      items.push({ label: "Vote for", value: `up to ${fmtInt(voteForOf(r))}`, note: `the top ${fmtInt(voteForOf(r))} win` });
+      if (c.term_start) items.push({ label: "Term starts", value: fmtDate(c.term_start, "long") });
+      note = `Nonpartisan election: candidates appear without a party label. Every voter may mark up to ${voteForOf(r)} names; the ${voteForOf(r)} candidates with the most votes are elected.${c.water_board ? " The water authority is real; this election, its candidates and results are fictional." : ""}`;
+    } else if (kind === "measure" || r.type === "BALLOT_MEASURE") {
+      contestCard.setTitle("About this measure");
+      items.push({ label: "Ballot label", value: c.label || "–" });
+      items.push({ label: "Kind", value: humanize(c.measure_kind) });
+      items.push({ label: "Needed to pass", value: thresholdShort(c.threshold), note: thresholdRule(c.threshold) });
+      items.push({ label: "Municipality", value: r.municipality_name || r.municipality_code || "–" });
+      note = "A local Yes/No proposition. The measure passes when the Yes share reaches the threshold.";
+    } else if (kind === "recall" || r.type === "RECALL") {
+      contestCard.setTitle("About this recall");
+      items.push({ label: "Mayor", value: c.target_name || "–" });
+      items.push({ label: "Party", value: partyNode(c.target_party) });
+      items.push({ label: "Reason", value: c.reason === "scandal" ? "Scandal" : c.reason === "petition" ? "Citizen petition" : humanize(c.reason) });
+      if (c.event_date) items.push({ label: "Petition qualified", value: fmtDate(c.event_date, "long") });
+      items.push({ label: "Needed to recall", value: thresholdShort(c.threshold), note: thresholdRule(c.threshold) });
+      if (c.replacement_race) items.push({ label: "Replacement race", value: h("a", { class: "res-link", href: links.race(c.replacement_race) }, c.replacement_race) });
+      note = "If the recall passes, the replacement race on the same ballot elects the new mayor; if it fails, the replacement race is moot.";
+    } else {
+      contestCard.setTitle(kind === "recall_replacement" ? "About this replacement race" : "About this special election");
+      if (kind === "recall_replacement") items.push({ label: "Recall question", value: c.parent ? h("a", { class: "res-link", href: links.race(c.parent) }, c.parent) : "–", note: c.moot ? "the recall failed: moot" : null });
+      else items.push({ label: "Vacancy", value: humanize(c.reason) });
+      if (c.event_date) items.push({ label: kind === "recall_replacement" ? "Petition qualified" : "Vacant since", value: fmtDate(c.event_date, "long") });
+      if (c.vacated_party) items.push({ label: "Seat last held by", value: partyNode(c.vacated_party) });
+      if (c.term_start || c.term_end) items.push({ label: "Term", value: c.term_end ? `until ${fmtDate(c.term_end, "long")}` : "–", note: c.term_start ? `from ${fmtDate(c.term_start, "long")} · rest of the term` : "rest of the term" });
+      note =
+        kind === "council_seat"
+          ? "Special election for one vacant seat on the municipal council (the rest of the council is not up)."
+          : kind === "recall_replacement"
+            ? "Elects a new mayor only if the recall on the same ballot passes."
+            : "Special election for the vacant mayoralty, for the rest of the term.";
+    }
+    keyed(contestCard.body, JSON.stringify([c, r.municipality_name]), () => [facts(items, { cols: 2 }), note ? h("p", { class: "res-muted-note lc-contest-note" }, note) : null]);
+    keyed(contestCard.meta, kind, () => [provBadge("FICTIONAL")]);
   }
 
   function paintLinks() {
@@ -117,6 +341,11 @@ export async function render(el, params) {
     if (r.type === "SENATE") items.push(["Chamber", "Senate · 24 seats", "#/senate"]);
     if (r.type === "GOVERNOR") items.push(["All governors", "12 governor races", "#/governors"]);
     if (r.type === "HOUSE") items.push(["Chamber", "House · 150 seats", "#/house"]);
+    if (r.contest) {
+      items.push(["Ballot", `All races · ${data.election?.name || "this election"}`, `#/local?e=${id}`]);
+      if (r.contest.replacement_race) items.push(["Replacement race", r.contest.replacement_race, links.race(r.contest.replacement_race)]);
+      if (r.contest.parent) items.push(["Recall question", r.contest.parent, links.race(r.contest.parent)]);
+    }
     keyed(linksCard.body, JSON.stringify(items), () =>
       h(
         "ul",
@@ -337,11 +566,11 @@ export async function render(el, params) {
           { key: "name", label: "Municipality", format: (v, x) => h("a", { href: links.municipality(x.code), class: "res-link" }, v || x.code) },
           src === "live" ? { key: "reporting_pct", label: "Reporting", value: (x) => x.reporting_pct ?? null, format: (v) => reportingMeter(v, { width: 46 }) } : null,
           { key: "total_votes", label: "Votes", align: "r", value: (x) => x.total_votes ?? (x.votes ? Object.values(x.votes).reduce((a, b) => a + b, 0) : null), format: (v) => fmtInt(v) },
-          src === "final" ? { key: "leader_party", label: "Leader", value: (x) => x.leader_party || "", format: (v, x) => (v ? partyChip(v, { color: pc(v, x.leader_color) }) : "–") } : null,
+          src === "final" ? { key: "leader_party", label: "Leader", value: (x) => x.leader_party || "", format: (v, x) => (v ? partyChip(v, { color: pc(v, x.leader_color) }) : data.race?.contest && x.leader ? lineName(x.leader) : "–") } : null,
           src === "final" ? { key: "margin_pp", label: "Margin", align: "r", format: (v) => marginLabel(null, v) } : null,
           ...lines.map((l) => ({
             key: `l_${l.key}`,
-            label: `${(l.candidate || l.president)?.name || l.name} (${l.party || "IND"})`,
+            label: data.race?.contest && !l.party ? (l.candidate || l.president)?.name || l.name : `${(l.candidate || l.president)?.name || l.name} (${l.party || "IND"})`,
             align: "r",
             value: (x) => (src === "final" ? x.pct?.[l.key] ?? null : x.votes?.[l.key] ?? null),
             format: (v) => (v === null || v === undefined ? "–" : src === "final" ? fmtPct(v) : fmtInt(v)),
@@ -365,6 +594,7 @@ export async function render(el, params) {
     paintCalls();
     paintRecounts();
     paintMunis(first);
+    paintContest();
     if (first) paintLinks();
   }
 
@@ -374,7 +604,7 @@ export async function render(el, params) {
     lastSource = data.results_source;
     mount(
       frame.body,
-      h("div", { class: "res-grid res-grid--hero" }, h("div", { class: "res-stack" }, raceCard, deskCard), h("div", { class: "res-stack" }, linksCard, evidenceCard)),
+      h("div", { class: "res-grid res-grid--hero" }, h("div", { class: "res-stack" }, raceCard, deskCard), h("div", { class: "res-stack" }, contestCard, linksCard, evidenceCard)),
       recountCard,
       h("div", { class: "res-grid res-grid--2" }, muniCard, callsCard),
     );

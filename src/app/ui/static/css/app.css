@@ -5,6 +5,8 @@
 @import url("./views-live.css");
 @import url("./views-results.css");
 @import url("./views-analysis.css");
+@import url("./views-local.css");
+@import url("./views-clock.css");
 
 *,
 *::before,

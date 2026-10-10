@@ -27,9 +27,11 @@ from app.core.config import get_constitution
 from app.core.constitution import (
     ELECTORAL_VOTES,
     HOUSE_MAJORITY,
+    LOCAL_RACE_TYPES,
     PRESIDENTIAL_MAJORITY,
     SENATE_MAJORITY,
     ElectionStatus,
+    ElectionType,
     OfficeType,
     RaceType,
     majority_of,
@@ -366,13 +368,18 @@ def _election_checks(session: Session, el: Election) -> ValidationReport:
         .tuples()
         .all()
     )
-    if cycle.president and types.get(RaceType.PRESIDENT.value):
+    # a local election (docs/LOCAL_ELECTIONS.md) holds its own contests, not the year's
+    local = el.election_type == ElectionType.LOCAL.value
+    if local:
+        regular = sorted(set(types) - {t.value for t in LOCAL_RACE_TYPES} - {RaceType.MAYOR.value})
+        rep.add(f"{tag}: local contests only", not regular, "ok" if not regular else f"also {regular}")
+    if cycle.president and types.get(RaceType.PRESIDENT.value) and not local:
         rep.add(
             f"{tag}: presidential contests",
             types.get(RaceType.PRESIDENT_PROVINCE.value, 0) == cons.province_count,
             f"{types.get(RaceType.PRESIDENT_PROVINCE.value, 0)} province contests",
         )
-    if cycle.house:
+    if cycle.house and not local:
         rep.add(
             f"{tag}: House races",
             types.get(RaceType.HOUSE.value, 0) == cons.house_seats,
@@ -420,6 +427,8 @@ def _election_checks(session: Session, el: Election) -> ValidationReport:
                 Race.election_id == el.id,
                 Race.winner_ballot_candidate_id.is_(None),
                 Race.race_type != RaceType.PRESIDENT.value,
+                # a recall replacement race is moot (elects nobody) when the recall failed
+                ~func.coalesce(Race.details_json, "").like('%"moot":true%'),
             )
         )
         rep.add(f"{tag}: every race has a winner", not undecided, f"{undecided or 0} races without a winner")

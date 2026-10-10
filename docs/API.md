@@ -485,7 +485,9 @@ The envelope plus `seed, scenario, contents, apportionment_id, district_plan_id,
 polls, campaigns, simulated_at, finalized_at, runs` (`{"election-setup"|"election"|"election-final":
 {id, seed, duration_s}}`), `results` (reported only — President, EV, chambers, governors,
 legislature seats, turnout, flips, recounts), `next_election_id`, `night`
-(`{available, live, clock}`) and `constitution` (totals and majorities).
+(`{available, live, clock, needs_simulation}`: `available` = the night service is installed;
+`needs_simulation` = a SCHEDULED election, whose night needs `POST …/simulate` first), `reset` (`{allowed, reason}`, see `POST …/reset`) and
+`constitution` (totals and majorities).
 
 ### `POST /api/elections/{id}/simulate`
 
@@ -497,6 +499,71 @@ election-night timeline; SIMULATED status. 409 for live / final elections.
 Instant finish without an election night (simulates first when needed); FINAL status. 409 when
 already final or when the election is live (finish the night instead:
 `POST /api/night/{id}/control {"action": "finish"}`).
+
+### `POST /api/elections/{id}/reset`
+
+Back to polls closing, so the election night can be replayed. The election keeps its id and its
+hidden simulated result, so the replay reveals the same election. An unreported election
+(`simulated` / `live`) has its night's calls and session deleted. A reported election
+(`final` / `certified`) also has its certification undone: recount corrections are reversed from
+their audit rows; Electoral College allocations, the contingent election, chamber seats, race
+summaries and calls are removed; the office terms it started are deleted and those it ended are
+reopened. Returns the election detail plus `reset_result`
+(`{election_id, year, previous_status, status, mode: "night"|"uncertified", seconds, changed}`).
+409 for a scheduled election and for a reported election that is followed by a reported (or
+live) one — elections are certified in chronological order. `GET /api/elections/{id}` tells in
+advance: `reset: {allowed, reason}`.
+
+### `GET /api/elections/{id}/races?q=&type=&municipality=&sort=name|type`
+
+Every race of the election as a compact, searchable list (the local election results page; works
+for every election). `q` matches race names, places and candidate names; `type` takes race types,
+comma separated (`SCHOOL_BOARD,BALLOT_MEASURE`). Per race: `code, name, type, province_code,
+municipality_code, municipality_name, status, reporting_pct, is_special, vote_for, candidates,
+leader, leader_party, leader_color, leader_pct, winners` (names), `decided, question, label,
+title, threshold, passed, passing, yes_pct, moot`, the contest's `kind`, recall fields (`recall_passed,
+target_name, target_party, parent, replacement_race`), `water_board, water_board_name` and `top`
+(the best lines). Results follow the
+hidden-until-reported rule. Also `count` and `counts` (per race type).
+
+### `GET /api/elections/{id}/earlier` · `POST /api/elections/{id}/finish-earlier`
+
+Elections are certified in strict date order ([LOCAL_ELECTIONS.md](LOCAL_ELECTIONS.md)).
+`earlier` reports what must be finished first: `count`, `unreported` (`[{id, name, date,
+status}]`), `unreported_count`, `not_created_count` (planned local elections not created yet) and
+`first`. `finish-earlier` creates, simulates and runs an instant election night for each of them,
+oldest first, committing each one. It can take minutes; it returns the same shape plus
+`finished` (ids). `finalize` and starting a night answer 409 while `count > 0`.
+
+### Local elections: `GET /api/local/calendar` · `GET /api/local/elections` · `POST /api/local/elections` → 201
+
+A local election is one date: every province voting that day, with one combined election night.
+
+- `GET /api/local/calendar?start=&end=&province=` returns the planned local election dates
+  (default: the 12 months after the latest reported election, at most three years). Per date:
+  `date, name, provinces, province_slots, municipalities, races, counts` (school_board,
+  water_board, measure, mayor_special, council_seat, recall), `province_counts`
+  (`{province: {kind: n}}`), `contests` (`[{kind, code, name, municipality_code,
+  province_code}]`), `election_id` and `status`. `province` keeps the dates that province votes.
+  Also `province_days` (each province's `{month, occurrence}` rules).
+- `GET /api/local/elections?year=&province=` lists the stored local elections, newest first,
+  with `provinces`, `province_names`, `races` and `race_counts`.
+- `POST /api/local/elections {date, simulate?}` creates the local election of a date. It answers
+  409 when that election exists, when no province votes that day, or when a later election is
+  already reported.
+
+Election briefs (`/api/meta`, every envelope) carry `local` and `provinces` (the provinces voting;
+empty for regular elections). Race views
+(§2.4) of local contests add `contest`:
+- the contest data: `kind, label, title, summary, measure_kind, threshold, vote_for, body,
+  water_board, water_board_name` (REAL) `, seats_total, seats_up, cycle, reason, event_date,
+  target_name, target_party, vacated_party, parent, replacement_race, term_start, term_end,
+  nonpartisan`;
+- reported only: `passed, yes_share, moot, recall_passed, seat_assignment`;
+- live only: `passing`.
+
+They also add `winners` (every elected line key of a vote-for-N race) and `winner_names`. Night
+snapshot races add `called_keys, seats, threshold, passing`.
 
 ---
 
@@ -798,6 +865,53 @@ cumulative_ballots, national_fraction}]`. Live: only events up to the night's cu
 
 ---
 
+## 6a. The world clock (FICTIONAL)
+
+One *today* for the whole world; you roll from election day to election day
+([CLOCK.md](CLOCK.md)). State: `app_meta.world_date`.
+
+### `GET /api/clock`
+
+`{today, today_label, clock_set, elections_today: [brief + provinces], pending: [briefs of the
+unfinished elections on or before today], can_advance, next: {date, label, kind
+(local|general|midterm), name, election_id, status, planned, finished, races, provinces, counts},
+job}`. Future elections are planned (`election_id` null) until the clock reaches them.
+
+### `GET /api/clock/agenda?start=&end=`
+
+Election days from `start` (default 120 days before today) to `end` (default a year after):
+`days: [{date, label, kind, name, election_id, status, planned, finished, races, provinces, counts,
+when: past|today|upcoming}]`. At most three years at a time.
+
+### `GET /api/clock/news?since=&until=`
+
+What happened (newest first; default the last 180 days): `items: [{date, kind, text, …}]` with
+`kind` `vacancy` / `recall` (office events, with `municipality_code` and the `election_date` of
+the special election), `result` (an election's outcome, with `election_id`) and `person` (one of
+your own people ran: `candidate_id`, `election_id`, `won`).
+
+### `POST /api/clock/next`
+
+Go to the next election day and create its election (a regular one is generated after the
+built-in scenarios). 409 while today's election is unfinished or a job runs. Returns the
+`GET /api/clock` payload plus `arrived: {previous, today, election_id, election, news}` (the news
+since the previous day, oldest first).
+
+### `POST /api/clock/watch`
+
+Simulate today's election (its hidden result and night timeline) so its election night can start
+(`POST /api/night/{id}/control`). Returns the clock payload plus `election_id`.
+
+### `POST /api/clock/count` → 202 · `POST /api/clock/skip {date}` → 202 · `GET /api/clock/job`
+
+Background jobs, one at a time. `count` finishes today's election through an instant election
+night; `skip` counts every election day before `date` and moves the clock there (at most twelve
+years). `GET /api/clock/job` (and `job` in `GET /api/clock`): `{id, kind, status
+(running|done|error), running, done, total, current, seconds, result, error}`; `result` of a skip
+is `{previous, today, counted, election_id, news}`. While a job runs, the clock actions answer 409.
+
+---
+
 ## 7. Election night (SIMULATED)
 
 Served by the night service (`app.services.night.NightManager`, one per database, bound to the
@@ -848,7 +962,8 @@ winner) and the House / Senate counters are the certified seats; `snapshot.certi
 Body `{"action": "start"|"pause"|"resume"|"speed"|"step"|"finish"|"reset", "speed"?: number}`;
 returns the new state. `step` reveals the next reporting event and pauses; `finish` applies every
 remaining event and finalizes the election; `reset` returns to polls closing (refused for FINAL
-elections). 409 for invalid transitions (e.g. `pause` before `start`, or starting the night of an
+elections — use `POST /api/elections/{id}/reset`, which also undoes the certification of the most
+recent reported election). 409 for invalid transitions (e.g. `pause` before `start`, or starting the night of an
 election that can no longer be certified because a later one is FINAL), 422 for unknown actions.
 
 ### `GET /api/night/{id}/stream`
@@ -989,6 +1104,14 @@ Hidden / live elections: `{…envelope, "available": false}`.
               "record": [{"election_id": 1, "year": 2024, "president_pct": null, "electoral_votes": null,
                           "house_seats": 8, "senate_seats": 0, "governors": 0}, "…"]}, "…"]}
 ```
+
+### `GET /api/people`
+
+Your own people of `config/people.yaml` ([PEOPLE.md](PEOPLE.md)): `{file, error, count,
+people: [{key, name, home, home_name, province, born, party, party_known, chance, quality, offices,
+candidate_id, runs: [{election_id, election, date, race_code, race, race_type, party, incumbent,
+status, won}], holds: [{office, name}]}]}`. `won` is null until the election is reported; `error`
+explains a file that does not validate.
 
 ### `GET /api/candidates?search=&party=&office=&limit=50&offset=0`
 
@@ -1261,7 +1384,7 @@ serve `index.html` (client-side routing); until the UI exists a placeholder page
 | GET | `/api/data/provenance` · `/api/data/validation` | 3 |
 | GET | `/api/provinces` · `/api/provinces/{code}` · `/api/municipalities` · `/api/municipalities/{code}` · `/api/apportionment` | 4 |
 | GET | `/api/districts` · `/api/districts/plan` · `/api/districts/{code}` · `/api/senate/seats` · `/api/geo/{layer}.geojson` | 4 |
-| GET/POST | `/api/elections` · GET `/api/elections/{id}` · POST `/api/elections/{id}/simulate` · POST `/api/elections/{id}/finalize` | 5 |
+| GET/POST | `/api/elections` · GET `/api/elections/{id}` · POST `/api/elections/{id}/simulate` · POST `/api/elections/{id}/finalize` · POST `/api/elections/{id}/reset` | 6 |
 | GET | `/api/elections/{id}/president` · `/electoral-college` · `/provinces` · `/provinces/{code}` · `/municipalities` · `/municipalities/{code}` · `/house` · `/house/{district}` · `/senate` · `/governors` · `/mayors` · `/races/{race}` · `/calls` · `/timeline` | 6 |
 | GET/POST | `/api/night/{id}/state` · POST `/control` · GET `/stream` · `/municipalities` · `/municipalities/{code}` · `/races/{race}` · POST `/calls/{race}/override` | 7 |
 | GET | `/api/history/summary` · `/compare` · `/closest` · `/landslides` · `/divergence` · `/municipality/{code}` · `/province/{code}` · `/district/{code}` · `/api/analytics/{id}` | 8 |

@@ -330,6 +330,7 @@ def generate_race_candidates(
     scenario_candidates: Mapping[str, CandidateSpec] | None = None,
     existing_keys: set[str] | None = None,
     office_label: str | None = None,
+    people: Sequence[CandidateSpec] = (),
 ) -> RaceCandidates:
     """Field candidates for one single-member race.
 
@@ -344,7 +345,10 @@ def generate_race_candidates(
       does not run; an independent incumbent occupies the independent slot;
     * with probability ``rules.independents_prob`` an independent joins the ballot;
     * new candidates get quality ``N(0, rules.candidate_quality_sd)`` and a home municipality
-      drawn by eligible voters within the jurisdiction.
+      drawn by eligible voters within the jurisdiction;
+    * ``people`` (custom people of ``config/people.yaml`` assigned to this race,
+      :mod:`app.simulation.people`) take their party's line — the party then contests the race —
+      or, without a party, the independent slot.  A re-running incumbent keeps their line.
     """
     rt = RaceType(race_type)
     units = as_unit_index(unit_index, model.frame.n_units, what=race_key)
@@ -375,6 +379,15 @@ def generate_race_candidates(
             incumbent_party=incumbent.party if incumbent is not None else None,
         )
 
+    # --- custom people running here (one per party line, one independent) ----------------
+    person_by_party: dict[str, CandidateSpec] = {}
+    person_independent: CandidateSpec | None = None
+    for c in people:
+        if c.party is None:
+            person_independent = person_independent or c
+        elif c.party in expected:
+            person_by_party.setdefault(c.party, c)
+
     # --- which parties contest --------------------------------------------------------------
     order = sorted(codes, key=lambda c: (-expected[c], c))
     contesting = [
@@ -398,12 +411,18 @@ def generate_race_candidates(
     rng_ind = make_rng(seed, "candidates", race_key, "independent")
     add_independent = bool(rng_ind.random() < rules.independents_prob)
     independent_incumbent = inc_runs and incumbent is not None and incumbent.party is None
+    if person_independent is not None and not independent_incumbent:
+        add_independent = True
     slots = rules.max_candidates - (1 if (add_independent or independent_incumbent) else 0)
     must = set(always)
     if inc_runs and incumbent is not None and incumbent.party is not None:
         must.add(incumbent.party)
         if incumbent.party not in contesting:
             contesting.append(incumbent.party)
+    for party in person_by_party:  # a custom person's party fields a line where they run
+        must.add(party)
+        if party not in contesting:
+            contesting.append(party)
     chosen = [c for c in contesting if c in must]
     for c in contesting:
         if len(chosen) >= max(slots, len(must)):
@@ -428,6 +447,12 @@ def generate_race_candidates(
             candidates.append(incumbent)
             lines.append(_line(incumbent, incumbent=True))
             continue
+        if party in person_by_party:
+            c = person_by_party[party]
+            existing.add(c.key)
+            candidates.append(c)
+            lines.append(_line(c))
+            continue
         rng = make_rng(seed, "candidates", race_key, party)
         c = _make_candidate(
             model,
@@ -448,6 +473,10 @@ def generate_race_candidates(
     if inc_runs and incumbent is not None and incumbent.party is None:
         candidates.append(incumbent)
         lines.append(_line(incumbent, incumbent=True))
+    elif add_independent and person_independent is not None:
+        existing.add(person_independent.key)
+        candidates.append(person_independent)
+        lines.append(_line(person_independent))
     elif add_independent:
         rng = make_rng(seed, "candidates", race_key, "IND")
         c = _make_candidate(
@@ -487,12 +516,14 @@ def generate_down_ballot(
     rules: Mapping[RaceType, DownBallotSpec] | None = None,
     incumbents: Mapping[str, CandidateSpec] | None = None,
     existing_keys: set[str] | None = None,
+    people: Mapping[str, Sequence[CandidateSpec]] | None = None,
 ) -> dict[str, RaceCandidates]:
     """Candidates for many races (rules default to the model scenario's sections per race type).
 
     ``incumbents`` maps race key → sitting office holder; candidate keys are unique across the
     whole batch, against the scenario's candidates and against ``existing_keys`` (a set that is
-    updated in place with every key used, so it can be shared between batches).
+    updated in place with every key used, so it can be shared between batches).  ``people``
+    maps race key → custom people running there (:func:`app.simulation.people.assign_people`).
     """
     doc = model.scenario
     incumbents = incumbents or {}
@@ -516,6 +547,7 @@ def generate_down_ballot(
             scenario_candidates=scenario_candidates,
             existing_keys=existing,
             office_label=slot.office_label,
+            people=(people or {}).get(slot.key, ()),
         )
     log.info(
         "generated candidates for %d races (%d new people)",

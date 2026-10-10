@@ -249,14 +249,14 @@ export function resultRows(lines = [], opts = {}) {
   const list = h("ol", { class: ["res-lines", opts.compact && "res-lines--compact"] });
   let sig = null;
   const build = (ls, o) => {
-    const { leaderKey, max = 12, avatars = true, mateLabel = "with", compact = false, seats } = o;
+    const { leaderKey, max = 12, avatars = true, mateLabel = "with", compact = false, seats, nonpartisan = false, tags } = o;
     const items = ls.map(lineInfo);
     const hasVotes = items.some((i) => i.votes !== null && i.votes !== undefined);
     if (hasVotes) items.sort((a, b) => (b.votes ?? -1) - (a.votes ?? -1));
     const top = items.slice(0, max);
     const maxPct = Math.max(1, ...top.map((i) => i.pct || 0));
     const anyWinner = items.some((x) => x.winner);
-    const nextSig = `${top.map((i) => i.key).join("|")}#${hasVotes}#${anyWinner}#${leaderKey}#${JSON.stringify(seats || {})}`;
+    const nextSig = `${top.map((i) => `${i.key}${i.winner ? "*" : ""}`).join("|")}#${hasVotes}#${anyWinner}#${leaderKey}#${JSON.stringify(seats || {})}#${JSON.stringify(tags || {})}`;
     if (sig === nextSig) {
       // Same order and state: update numbers in place so the bars animate.
       top.forEach((i, idx) => {
@@ -283,8 +283,15 @@ export function resultRows(lines = [], opts = {}) {
           h(
             "span",
             { class: "res-lines__who" },
-            h("span", { class: "res-lines__top" }, nameNode, i.winner ? h("span", { class: "res-lines__check", title: "Winner" }, icon("check", { size: 12 })) : null, i.incumbent ? h("span", { class: "res-tag", title: "Incumbent" }, "INC") : null),
-            h("span", { class: "res-lines__sub" }, partyChip(i.party || "IND", { color: i.color }), i.mate ? h("span", { class: "muted" }, `${mateLabel} ${i.mate}`) : null, seats && seats[i.party] !== undefined ? h("span", { class: "res-tag res-tag--seats" }, `${seats[i.party]} seats`) : null),
+            h(
+              "span",
+              { class: "res-lines__top" },
+              nameNode,
+              i.winner ? h("span", { class: "res-lines__check", title: "Winner" }, icon("check", { size: 12 })) : null,
+              i.incumbent ? h("span", { class: "res-tag", title: "Incumbent" }, "INC") : null,
+              tags && tags[i.key] ? h("span", { class: "res-tag res-tag--seats" }, tags[i.key]) : null,
+            ),
+            h("span", { class: "res-lines__sub" }, nonpartisan === "question" && !i.party ? null : nonpartisan && !i.party ? h("span", { class: "res-lines__np" }, h("span", { class: "chip__swatch" }), "Nonpartisan") : partyChip(i.party || "IND", { color: i.color }), i.mate ? h("span", { class: "muted" }, `${mateLabel} ${i.mate}`) : null, seats && seats[i.party] !== undefined ? h("span", { class: "res-tag res-tag--seats" }, `${seats[i.party]} seats`) : null),
           ),
           h("span", { class: "res-lines__bar", "aria-hidden": "true" }, h("span", { class: "res-lines__fill", style: { width: hasVotes ? `${((i.pct || 0) / maxPct) * 100}%` : "0%" } })),
           h("span", { class: "res-lines__pct num" }, hasVotes ? fmtPct(i.pct) : "–"),

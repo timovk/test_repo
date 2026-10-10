@@ -592,3 +592,25 @@ def test_recount_check_uses_the_recount_thresholds() -> None:
         RaceType.GOVERNOR.value,
     )
     assert check(governor) == (True, "exact tie")
+
+
+def test_recount_check_follows_the_contest_rules() -> None:
+    """A vote-for-N race is close at its last seat, not between its top two (both elected); a
+    Yes/No question is close at its threshold."""
+    check = make_recount_check()
+
+    def inp(totals, seats=1, threshold=None, race_type=RaceType.SCHOOL_BOARD):  # type: ignore[no-untyped-def]
+        t = np.array(totals)
+        keys = ["YES", "NO"] if threshold is not None else [f"c{i}" for i in range(len(t))]
+        return RecountInput(
+            "R", keys, t, int(t.sum()), int(t.sum()), keys[0], keys[1], 0, 0.0,
+            race_type.value, seats=seats, threshold=threshold,
+        )  # fmt: skip
+
+    marks = [10_000, 9_998, 8_000, 6_000]  # 1st and 2nd 2 votes apart; 2nd seat vs 3rd far apart
+    assert check(inp(marks, seats=2))[0] is False
+    assert check(inp(marks, seats=1))[0] is True
+    assert check(inp([10_000, 9_000, 8_000, 7_990], seats=3))[0] is True  # last seat 10 votes
+    # 59.9 % Yes: far from 50/50, but 0.1 pp from a 60 % supermajority
+    assert check(inp([5_990, 4_010], threshold=0.6, race_type=RaceType.BALLOT_MEASURE))[0] is True
+    assert check(inp([5_990, 4_010], threshold=0.5, race_type=RaceType.BALLOT_MEASURE))[0] is False

@@ -69,6 +69,14 @@ class GeographyFrame:
     province_ids: np.ndarray | None = None
     muni_ids: np.ndarray | None = None
     unit_ids: np.ndarray | None = None
+    # --- water boards (W) — REAL water authority areas (waterschappen); empty when unknown ----
+    water_board_codes: list[str] = field(default_factory=list)  # e.g. 'WS33'
+    water_board_names: list[str] = field(default_factory=list)
+    #: (W,) int index into provinces: the province holding most of the board's eligible voters
+    water_board_province: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    #: (U,) int index into water boards (−1 = outside every water board); None = not loaded
+    unit_water_board: np.ndarray | None = None
+    water_board_ids: np.ndarray | None = None
     # Lazily computed caches
     _unit_demo_z: np.ndarray | None = field(default=None, repr=False)
 
@@ -84,6 +92,10 @@ class GeographyFrame:
     @property
     def n_units(self) -> int:
         return len(self.unit_codes)
+
+    @property
+    def n_water_boards(self) -> int:
+        return len(self.water_board_codes)
 
     # ------------------------------------------------------------------ lookups
     def province_index(self, code: str) -> int:
@@ -131,6 +143,14 @@ class GeographyFrame:
     def munis_in_province(self, p: int) -> np.ndarray:
         return np.flatnonzero(self.muni_province == p)
 
+    def water_board_index(self, code: str) -> int:
+        return self.water_board_codes.index(code)
+
+    def units_in_water_board(self, w: int) -> np.ndarray:
+        if self.unit_water_board is None:
+            return np.zeros(0, dtype=np.int64)
+        return np.flatnonzero(self.unit_water_board == w)
+
     # ------------------------------------------------------------------ aggregation
     def to_munis(self, unit_values: np.ndarray) -> np.ndarray:
         """Sum unit-level values (U,) or (U, K) to municipalities."""
@@ -141,6 +161,14 @@ class GeographyFrame:
 
     def province_population(self) -> np.ndarray:
         return self.to_provinces(self.unit_population)
+
+    def to_water_boards(self, unit_values: np.ndarray) -> np.ndarray:
+        """Sum unit-level values (U,) or (U, K) to water boards; units outside every water board
+        (index −1) are left out.  Raises ValueError when the frame has no water boards loaded."""
+        if self.unit_water_board is None:
+            raise ValueError("water boards are not loaded in this geography frame")
+        inside = self.unit_water_board >= 0
+        return _group_sum(self.unit_water_board[inside], np.asarray(unit_values)[inside], self.n_water_boards)
 
     # ------------------------------------------------------------------ demographics
     def demo_column(self, name: str) -> np.ndarray:
@@ -186,6 +214,14 @@ class GeographyFrame:
             problems.append(f"{len(missing)} municipalities have no units")
         if (self.unit_eligible > self.unit_population).any():
             problems.append("eligible voters exceed population in some units")
+        W = self.n_water_boards
+        if self.unit_water_board is not None:
+            if len(self.unit_water_board) != U:
+                problems.append(f"unit_water_board has length {len(self.unit_water_board)}, expected {U}")
+            elif U and (self.unit_water_board.min() < -1 or self.unit_water_board.max() >= W):
+                problems.append("unit_water_board index out of range")
+        if len(self.water_board_names) != W or len(self.water_board_province) != W:
+            problems.append("water board names/provinces do not match the water board codes")
         return problems
 
 

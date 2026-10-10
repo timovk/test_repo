@@ -51,9 +51,12 @@ def test_download_offline_reuses_files_and_writes_provenance(cbs_raw: dict[str, 
     assert {r.key for r in records} == set(load_geography_config().sources)
     assert not any(r.downloaded for r in records)
     payload = json.loads((cbs_raw["data_dir"] / "raw" / "sources_2025.json").read_text())
-    for rec in payload["sources"].values():
-        assert len(rec["sha256"]) == 64 and rec["bytes"] > 0 and rec["license"] == "CC BY 4.0"
+    licenses = {key: src.license for key, src in load_geography_config().sources.items()}
+    for key, rec in payload["sources"].items():
+        assert len(rec["sha256"]) == 64 and rec["bytes"] > 0 and rec["license"] == licenses[key]
         assert rec["url"].startswith("https://") and rec["retrieved_at"]
+        assert rec["data_category"] == "REAL"
+    assert licenses["water_boards"] == "CC0 1.0" and licenses["wijkenbuurten"] == "CC BY 4.0"
 
 
 def test_build_store_contract(built: dict[str, Any]) -> None:

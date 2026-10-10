@@ -194,6 +194,7 @@ class CandidateEffectsConfig(_Model):
             "MAYOR": 0.14,
             "PROVINCIAL_LEGISLATURE": 0.0,
             "MUNICIPAL_COUNCIL": 0.0,
+            "COUNCIL_SEAT": 0.12,
         }
     )
     #: Weight of the running mate's quality relative to the top of the ticket.
@@ -206,6 +207,7 @@ class CandidateEffectsConfig(_Model):
             "SENATE": 0.12,
             "GOVERNOR": 0.12,
             "MAYOR": 0.0,
+            "WATER_BOARD": 0.15,
         }
     )
     #: Home-province bonus for non-presidential statewide/local races (presidential tickets use
@@ -225,6 +227,33 @@ class CandidateEffectsConfig(_Model):
     open_seat_party_bonus: float = 0.02
     #: SD of the race-specific performance shock of each ballot line (drawn per race and line).
     race_line_sd: float = Field(0.04, ge=0)
+    #: Per-race-type override of ``race_line_sd``: low-information local contests (measures,
+    #: recalls, nonpartisan boards) are much less predictable than partisan races.
+    race_line_sd_by_race: dict[str, float] = Field(
+        default_factory=lambda: {
+            "BALLOT_MEASURE": 0.30,
+            "RECALL": 0.30,
+            "SCHOOL_BOARD": 0.15,
+            "WATER_BOARD": 0.15,
+            "COUNCIL_SEAT": 0.08,
+        }
+    )
+    #: Extra blank-ballot (undervote) probability by race type: voters skip the contests lower
+    #: down a local ballot.
+    undervote_by_race: dict[str, float] = Field(
+        default_factory=lambda: {
+            "SCHOOL_BOARD": 0.05,
+            "WATER_BOARD": 0.09,
+            "BALLOT_MEASURE": 0.04,
+            "RECALL": 0.015,
+            "COUNCIL_SEAT": 0.03,
+        }
+    )
+    #: Plurality at large (vote for up to N): share of the N − 1 optional extra marks a valid
+    #: ballot uses on average, and how much flatter mark shares are than first preferences
+    #: (shares ∝ p^(1/flatten)).
+    at_large_mark_fill: float = Field(0.7, ge=0.0, le=1.0)
+    at_large_flatten: float = Field(1.6, ge=1.0, le=5.0)
     #: A House/Senate/Governor jurisdiction counts as lying in a region when at least this share
     #: of its eligible voters lives there (used by ContestRule.regions).
     region_overlap_threshold: float = Field(0.25, gt=0, le=1)
@@ -237,6 +266,9 @@ class CandidateEffectsConfig(_Model):
             "MAYOR": (32, 68),
             "PROVINCIAL_LEGISLATURE": (25, 70),
             "MUNICIPAL_COUNCIL": (22, 72),
+            "COUNCIL_SEAT": (22, 72),
+            "SCHOOL_BOARD": (28, 70),
+            "WATER_BOARD": (32, 74),
         }
     )
     female_share: float = Field(0.46, ge=0, le=1)

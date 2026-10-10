@@ -325,3 +325,94 @@ def candidate_profile(session: Session, candidate_id: int) -> dict[str, Any]:
             "serving": [o["office"] for o in offices if o["serving"]],
         },
     }
+
+
+# =========================================================================== custom people
+def custom_people(session: Session) -> dict[str, Any]:
+    """``GET /api/people`` — the custom people of ``config/people.yaml`` (docs/PEOPLE.md): their
+    home, party and chance, every race they have run in (with the result once it is reported) and
+    the offices they hold.  ``error`` explains a file that does not validate."""
+    import json
+
+    from app.core.errors import ScenarioError
+    from app.services.runtime import get_frame
+    from app.simulation.people import KIND_OF, load_people, people_path
+
+    out: dict[str, Any] = {
+        "data_category": FICTIONAL,
+        "file": str(people_path()),
+        "error": None,
+        "people": [],
+    }
+    try:
+        config = load_people(get_frame(session))
+    except ScenarioError as exc:
+        out["error"] = str(exc)
+        return out
+    parties = {p.code for p in session.scalars(select(Party))}
+    keys = [p.key for p in config.people]
+    rows = (
+        {c.key: c for c in session.scalars(select(Candidate).where(Candidate.key.in_(keys)))} if keys else {}
+    )
+    held = _offices_by_candidate(session)
+    office_names = dict(session.execute(select(Office.code, Office.name)).tuples().all())
+    runs: dict[int, list[dict[str, Any]]] = {}
+    ids = [c.id for c in rows.values()]
+    if ids:
+        q = (
+            select(BallotCandidate, Race, Election)
+            .join(Race, Race.id == BallotCandidate.race_id)
+            .join(Election, Election.id == Race.election_id)
+            .where(BallotCandidate.candidate_id.in_(ids))
+            .order_by(Election.election_date, Race.id)
+        )
+        for bc, race, el in session.execute(q).all():
+            reported = el.status in REPORTED_STATUSES
+            won: bool | None = None
+            if reported:
+                d = json.loads(race.details_json) if race.details_json else {}
+                if d.get("winners") is not None:
+                    won = bc.line_key in d["winners"]
+                elif d.get("moot"):
+                    won = False
+                else:
+                    won = race.winner_ballot_candidate_id == bc.id
+            runs.setdefault(int(bc.candidate_id), []).append(
+                {
+                    "election_id": el.id,
+                    "election": el.name,
+                    "date": el.election_date.isoformat(),
+                    "race_code": race.code,
+                    "race": race.name,
+                    "race_type": race.race_type,
+                    "party": bc.party_code_snapshot,
+                    "incumbent": bool(bc.is_incumbent),
+                    "status": el.status,
+                    "won": won,
+                }
+            )
+    for p in config.people:
+        row = rows.get(p.key)
+        out["people"].append(
+            {
+                "key": p.key,
+                "name": p.full_name,
+                "home": p.home,
+                "home_name": p.home_name,
+                "province": p.home_province,
+                "born": p.birth_date.isoformat() if p.birth_date else None,
+                "party": p.party,
+                "party_known": p.party is None or p.party in parties,
+                "chance": p.chance,
+                "quality": p.quality,
+                "offices": sorted(KIND_OF[o] for o in p.offices) if p.offices else None,
+                "candidate_id": row.id if row is not None else None,
+                "runs": runs.get(row.id, []) if row is not None else [],
+                "holds": [
+                    {"office": code, "name": office_names.get(code, code)}
+                    for code in (held.get(row.id, []) if row is not None else [])
+                ],
+            }
+        )
+    out["count"] = len(out["people"])
+    return out
