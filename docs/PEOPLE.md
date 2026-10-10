@@ -87,7 +87,7 @@ runs picks **one** race on that ballot whose area contains their home:
 |---|---|---|---|
 | `school_board` | their municipality's school board (local election days) | 18 | 3 |
 | `council` | a special election for a vacant seat on their municipal council | 18 | 2 |
-| `water_board` | the board of their water authority (once every four years) | 18 | 1 |
+| `water_board` | the water authority most of their municipality lies in (elected once every four years) | 18 | 1 |
 | `mayor` | their municipality: the midterm mayoral elections, special elections and recall replacements | 21 | 1.5 |
 | `house` | a House district covering their municipality (big cities have several) | 25 | 1.5 |
 | `senate` | their province's Senate seat when its class is up | 30 | 0.6 |

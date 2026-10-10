@@ -430,6 +430,32 @@ def assign_people(
     return out
 
 
+_homes_cache: dict[int, dict[int, frozenset[str]]] = {}
+
+
+def water_board_homes(frame: GeographyFrame) -> dict[int, frozenset[str]]:
+    """Water board index → the municipalities whose population mostly lives in it.  A person's
+    water board is the one of most of their municipality (a municipality can touch several)."""
+    hit = _homes_cache.get(id(frame))
+    if hit is not None:
+        return hit
+    out: dict[int, set[str]] = {}
+    if frame.unit_water_board is not None and frame.n_water_boards:
+        pop = frame.unit_population.astype(float)
+        for m in range(frame.n_munis):
+            units = frame.units_in_muni(m)
+            wb = np.asarray(frame.unit_water_board[units])
+            ok = wb >= 0
+            if not ok.any():
+                continue
+            tot = np.bincount(wb[ok], weights=pop[units][ok], minlength=frame.n_water_boards)
+            out.setdefault(int(tot.argmax()), set()).add(frame.muni_codes[m])
+    homes = {w: frozenset(v) for w, v in out.items()}
+    _homes_cache.clear()
+    _homes_cache[id(frame)] = homes
+    return homes
+
+
 def slots_from_units(
     frame: GeographyFrame, items: Sequence[tuple[str, RaceType | str, np.ndarray | Sequence[int]]]
 ) -> list[PeopleSlot]:
@@ -459,4 +485,5 @@ __all__ = [
     "people_path",
     "resolve_municipality",
     "slots_from_units",
+    "water_board_homes",
 ]

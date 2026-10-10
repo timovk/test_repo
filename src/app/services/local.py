@@ -82,7 +82,14 @@ from app.services.runtime import (
     scenario_hash,
 )
 from app.simulation.candidates import RaceSlot, _make_candidate, generate_down_ballot
-from app.simulation.people import PeopleAssignment, assign_people, load_people, slots_from_units
+from app.simulation.people import (
+    PeopleAssignment,
+    PeopleSlot,
+    assign_people,
+    load_people,
+    slots_from_units,
+    water_board_homes,
+)
 from app.simulation.races import races_from_candidates
 from app.simulation.structural import IDEOLOGY_DIMS, StructuralModel
 
@@ -1139,7 +1146,9 @@ def _assign_people(
     if not config:
         return PeopleAssignment()
     items: list[tuple[str, RaceType, np.ndarray]] = []
+    boards: list[PeopleSlot] = []  # water boards: the board of most of a person's municipality
     offices: list[str] = []
+    homes = water_board_homes(frame)
     for c in plan.contests:
         gm = c.municipality_code
         if c.kind == "school_board" and gm is not None:
@@ -1148,9 +1157,8 @@ def _assign_people(
             offices += [school_board_office_code(gm, s) for s in (cyc.seats_up if cyc else ())]
         elif c.kind == "water_board" and c.water_board_code is not None:
             ws = c.water_board_code
-            items.append(
-                (c.code, RaceType.WATER_BOARD, frame.units_in_water_board(frame.water_board_index(ws)))
-            )
+            w = frame.water_board_index(ws)
+            boards.append(PeopleSlot(c.code, RaceType.WATER_BOARD, homes.get(w, frozenset())))
             cyc = cal.water_board_cycle(ws, plan.date.year)
             offices += [water_board_office_code(ws, s) for s in (cyc.seats_up if cyc else ())]
         elif c.kind in ("mayor_special", "council_seat") and gm is not None:
@@ -1164,7 +1172,7 @@ def _assign_people(
     exclude = {holders[o].candidate_key for o in offices if o in holders and holders[o].candidate_key}
     return assign_people(
         config,
-        slots_from_units(frame, items),
+        slots_from_units(frame, items) + boards,
         seed=seed,
         on=plan.date,
         parties=create_ops.party_ideology(model),

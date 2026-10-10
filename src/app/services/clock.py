@@ -454,9 +454,16 @@ def _result_items(session: Session, start: date, end: date) -> list[dict[str, An
                 party = pres.get("winner_party")
                 parts.append(f"{pres['winner_name']}{f' ({party})' if party else ''} elected President")
             for chamber in ("house", "senate"):
-                ctl = (res.get(chamber) or {}).get("controlling_party")
+                info = res.get(chamber) or {}
+                ctl = info.get("controlling_party")
+                comp = info.get("composition") if isinstance(info.get("composition"), dict) else {}
                 if ctl:
                     parts.append(f"the {chamber.title()} is controlled by the {ctl}")
+                elif comp:
+                    top, seats = max(comp.items(), key=lambda kv: kv[1])
+                    parts.append(
+                        f"no majority in the {chamber.title()} (largest: {top}, {seats} of {sum(comp.values())})"
+                    )
             text = f"{el.name}: " + ("; ".join(parts) if parts else "final") + "."
         out.append(
             {"date": el.election_date.isoformat(), "kind": "result", "text": text, "election_id": int(el.id)}

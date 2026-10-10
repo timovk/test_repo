@@ -113,3 +113,13 @@ people:
     often = parse_people(f"people:\n  - {{name: Often Runner, home: {name}, chance: often}}\n", f)
     ran = [len(assign_people(often, slots, seed=s, on=on, parties=PARTIES)) for s in range(400)]
     assert 0.55 < np.mean(ran) < 0.75
+
+
+def test_one_water_board_per_municipality(synthetic: SyntheticGeography) -> None:
+    """A municipality can touch several water boards; its people only run for the one most of its
+    population lives in."""
+    from app.simulation.people import water_board_homes
+
+    homes = water_board_homes(synthetic.frame)
+    seen = [m for munis in homes.values() for m in munis]
+    assert seen and len(seen) == len(set(seen))
