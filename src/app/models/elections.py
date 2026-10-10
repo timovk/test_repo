@@ -51,8 +51,11 @@ class Election(Base):
     apportionment_id: Mapped[int | None] = mapped_column(ForeignKey("apportionment.id"))
     district_plan_id: Mapped[int | None] = mapped_column(ForeignKey("district_plan.id"))
     previous_election_id: Mapped[int | None] = mapped_column(ForeignKey("election.id"))
-    #: Local (in-between) elections are held per province and date (docs/LOCAL_ELECTIONS.md).
+    #: Unused since local elections are held per date (kept for older databases).
     province_id: Mapped[int | None] = mapped_column(ForeignKey("province.id"), index=True)
+    #: Local (in-between) elections: the provinces voting that day, comma separated ("OV,ZE,NB";
+    #: docs/LOCAL_ELECTIONS.md).  None for regular elections.
+    provinces: Mapped[str | None] = mapped_column(String(80))
     polls_close_local: Mapped[str] = mapped_column(String(5), default="21:00")
     timezone: Mapped[str] = mapped_column(String(40), default="Europe/Amsterdam")
     national_environment_json: Mapped[str | None] = mapped_column(Text)  # realised shocks (audit)

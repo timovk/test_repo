@@ -77,6 +77,7 @@ from app.simulation.candidates import (
     generate_down_ballot,
     slugify,
 )
+from app.simulation.people import PeopleAssignment, PeopleConfig, assign_people, slots_from_units
 from app.simulation.races import (
     governor_slots,
     house_slots,
@@ -505,6 +506,39 @@ class SetupState:
     existing_keys: set[str]
     candidate_specs: dict[str, CandidateSpec] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: Custom people of config/people.yaml (app.simulation.people) and those running this time.
+    people: PeopleConfig | None = None
+    people_used: dict[str, CandidateSpec] = field(default_factory=dict)
+
+
+def party_ideology(model: StructuralModel) -> dict[str, tuple[float, ...]]:
+    """Party code → its position on the model's ideology axes."""
+    return {c: tuple(float(x) for x in model.ideology[i]) for i, c in enumerate(model.party_codes)}
+
+
+def assign_custom_people(
+    state: SetupState,
+    items: Sequence[tuple[str, RaceType | str, Any]],
+    exclude: set[str],
+    incumbents: Mapping[str, CandidateSpec] | None = None,
+) -> PeopleAssignment | None:
+    """Who of config/people.yaml runs in which of these races (``(key, race type, units)``);
+    ``incumbents`` (race → holder) keep their party's line."""
+    if not state.people:
+        return None
+    slots = slots_from_units(state.frame, items)
+    out = assign_people(
+        state.people,
+        slots,
+        seed=state.seed,
+        on=state.election_date,
+        parties=party_ideology(state.model),
+        exclude=exclude | set(state.people_used),
+        held_lines={(k, c.party) for k, c in (incumbents or {}).items()},
+    )
+    for c in out.specs():
+        state.people_used[c.key] = c
+    return out
 
 
 def scenario_incumbents(doc: ScenarioDocument) -> dict[str, CandidateSpec]:
@@ -659,8 +693,16 @@ def down_ballot_plan(
             continue
         incumbents[s.key] = spec
         used.add(spec.key)
+    people = assign_custom_people(
+        state, [(s.key, s.race_type, s.unit_index) for s in slots], used, incumbents
+    )
     fielded: dict[str, RaceCandidates] = generate_down_ballot(
-        model, slots, state.seed, incumbents=incumbents, existing_keys=state.existing_keys
+        model,
+        slots,
+        state.seed,
+        incumbents=incumbents,
+        existing_keys=state.existing_keys,
+        people=people.races if people is not None else None,
     )
     specs = races_from_candidates(slots, fielded)
     out: list[PlannedRace] = []

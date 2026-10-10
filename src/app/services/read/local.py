@@ -37,20 +37,20 @@ def calendar(
 
     def build() -> dict[str, Any]:
         stored = {
-            (p, d): (int(i), s)
-            for i, p, d, s in session.execute(
-                select(Election.id, Province.code, Election.election_date, Election.status)
-                .join(Province, Province.id == Election.province_id)
-                .where(Election.election_type == ElectionType.LOCAL.value)
+            d: (int(i), st)
+            for i, d, st in session.execute(
+                select(Election.id, Election.election_date, Election.status).where(
+                    Election.election_type == ElectionType.LOCAL.value
+                )
             ).all()
         }
         cal = local_service.get_local_calendar(session)
         days = []
         for plan in local_service.plan_local_elections(session, lo - timedelta(days=1), hi):
-            if pv and plan.day.province_code != pv:
+            if pv and pv not in plan.provinces:
                 continue
             d = plan.to_dict()
-            hit = stored.get((plan.day.province_code, plan.day.date))
+            hit = stored.get(plan.date)
             d["election_id"], d["status"] = hit if hit is not None else (None, None)
             days.append(d)
         provinces = {
@@ -70,19 +70,17 @@ def calendar(
 
 
 def elections(session: Session, *, year: int | None = None, province: str | None = None) -> dict[str, Any]:
-    """``GET /api/local/elections`` — the stored local elections (newest first) with their race
-    counts by type."""
-    q = (
-        select(Election, Province.code, Province.name)
-        .join(Province, Province.id == Election.province_id)
-        .where(Election.election_type == ElectionType.LOCAL.value)
-    )
+    """``GET /api/local/elections`` — the stored local elections (newest first) with the provinces
+    voting and their race counts by type; ``province`` keeps those it votes in."""
+    q = select(Election).where(Election.election_type == ElectionType.LOCAL.value)
     if year is not None:
         q = q.where(Election.year == int(year))
+    rows = list(session.scalars(q.order_by(Election.election_date.desc(), Election.id.desc())))
     if province:
-        q = q.where(Province.code == province.upper())
-    rows = session.execute(q.order_by(Election.election_date.desc(), Province.code)).all()
-    ids = [int(e.id) for e, _, _ in rows]
+        pv = province.upper()
+        rows = [e for e in rows if pv in (e.provinces or "").split(",")]
+    names = dict(session.execute(select(Province.code, Province.name)).tuples().all())
+    ids = [int(e.id) for e in rows]
     counts: dict[int, dict[str, int]] = {}
     if ids:
         for eid, rt, n in session.execute(
@@ -91,19 +89,21 @@ def elections(session: Session, *, year: int | None = None, province: str | None
             .group_by(Race.election_id, Race.race_type)
         ).all():
             counts.setdefault(int(eid), {})[str(rt)] = int(n)
-    items = [
-        {
-            "id": int(e.id),
-            "name": e.name,
-            "date": e.election_date.isoformat(),
-            "year": e.year,
-            "province_code": pc,
-            "province_name": pn,
-            "status": e.status,
-            "races": sum(counts.get(int(e.id), {}).values()),
-            "race_counts": counts.get(int(e.id), {}),
-            "finalized_at": iso(e.finalized_at),
-        }
-        for e, pc, pn in rows
-    ]
+    items = []
+    for e in rows:
+        pvs = [p for p in (e.provinces or "").split(",") if p]
+        items.append(
+            {
+                "id": int(e.id),
+                "name": e.name,
+                "date": e.election_date.isoformat(),
+                "year": e.year,
+                "provinces": pvs,
+                "province_names": [names.get(p, p) for p in pvs],
+                "status": e.status,
+                "races": sum(counts.get(int(e.id), {}).values()),
+                "race_counts": counts.get(int(e.id), {}),
+                "finalized_at": iso(e.finalized_at),
+            }
+        )
     return {"data_category": SIMULATED, "count": len(items), "elections": items}

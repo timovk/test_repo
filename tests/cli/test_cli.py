@@ -339,35 +339,12 @@ def test_local_commands(cli_db: CliDB, runner: CliRunner) -> None:
     assert cal["count"] > 0
     first = cal["days"][0]
     second = next(d for d in cal["days"] if d["date"] > first["date"])  # the next local day
-    created = as_json(
-        run(
-            runner,
-            "local",
-            "create",
-            "-p",
-            first["province_code"],
-            "-d",
-            first["date"],
-            "--simulate",
-            "--json",
-        )
-    )
+    created = as_json(run(runner, "local", "create", "-d", first["date"], "--simulate", "--json"))
     assert created["status"] == "simulated" and created["election_type"] == "local"
-    run(
-        runner,
-        "local",
-        "create",
-        "-p",
-        first["province_code"],
-        "-d",
-        first["date"],
-        code=_common.EXIT_CONFLICT,
-    )
+    run(runner, "local", "create", "-d", first["date"], code=_common.EXIT_CONFLICT)
     out = run(runner, "local", "calendar", "--year", "2025").output
     assert "local election days" in out
-    later = as_json(
-        run(runner, "local", "create", "-p", second["province_code"], "-d", second["date"], "--json")
-    )
+    later = as_json(run(runner, "local", "create", "-d", second["date"], "--json"))
     if second["date"] > first["date"]:
         run(runner, "finalize", "-e", str(later["id"]), code=_common.EXIT_CONFLICT)  # earlier one unfinished
     done = run(runner, "finish-earlier", "-e", str(later["id"])).output

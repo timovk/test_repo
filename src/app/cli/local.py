@@ -2,7 +2,8 @@
 
 Between the big November elections every province holds a few local election days a year
 (school boards, water boards, ballot measures, special elections and mayor recalls — FICTIONAL
-contests over REAL geography; docs/LOCAL_ELECTIONS.md).  Elections are certified in strict date
+contests over REAL geography; docs/LOCAL_ELECTIONS.md).  All provinces voting on a date form one
+local election with one combined election night.  Elections are certified in strict date
 order: ``finish-earlier`` holds every unfinished election before a given one.
 """
 
@@ -69,7 +70,7 @@ def calendar_cmd(
     body = [
         (
             d["date"],
-            d["province_code"],
+            ", ".join(d["provinces"]),
             d["races"],
             ", ".join(f"{n} {_KIND_SHORT.get(k, k)}" for k, n in sorted(d["counts"].items())),
             len(d["municipalities"]),
@@ -80,7 +81,7 @@ def calendar_cmd(
     console.print(
         table(
             f"{data_badge('FICTIONAL')} local election days {data['start']} – {data['end']}",
-            ["date", "province", ("races", "right"), "contests", ("municipalities", "right"), "election"],
+            ["date", "provinces", ("races", "right"), "contests", ("municipalities", "right"), "election"],
             body,
         )
     )
@@ -102,13 +103,13 @@ def list_cmd(
         print_json(data)
         return
     body = [
-        (e["id"], e["date"], e["province_code"], e["status"], e["races"], e["name"])
+        (e["id"], e["date"], ", ".join(e["provinces"]), e["status"], e["races"], e["name"])
         for e in data["elections"]
     ]
     console.print(
         table(
             f"{data_badge('SIMULATED')} local elections ({data['count']})",
-            [("id", "right"), "date", "province", "status", ("races", "right"), "name"],
+            [("id", "right"), "date", "provinces", "status", ("races", "right"), "name"],
             body,
         )
     )
@@ -117,19 +118,18 @@ def list_cmd(
 @local_app.command("create")
 @friendly
 def create_cmd(
-    province: str = typer.Option(..., "--province", "-p", help="Province code, e.g. GE."),
-    on: str = typer.Option(..., "--date", "-d", help="The province's local election day (YYYY-MM-DD)."),
+    on: str = typer.Option(..., "--date", "-d", help="A local election date (YYYY-MM-DD)."),
     simulate: bool = typer.Option(False, "--simulate", help="Simulate the hidden result right away."),
     as_json: bool = typer.Option(False, "--json", help="Print JSON."),
 ) -> None:
-    """Create the local election of a province on one of its local election days."""
+    """Create the local election of a date (every province voting that day)."""
     from app.services.elections import election_summary, simulate_election
     from app.services.local import create_local_election
 
     day = _parse_date(on, "--date")
     assert day is not None
     with session_scope() as s:
-        el = create_local_election(s, province.upper(), day)
+        el = create_local_election(s, day)
         if simulate:
             simulate_election(s, el.id)
         eid = el.id

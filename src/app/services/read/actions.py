@@ -181,17 +181,15 @@ def finish_earlier(session: Session, ref: ElectionRef, *, limit: int | None = No
     return out
 
 
-def create_local_election(
-    session: Session, province_code: str, on: date, *, simulate: bool = False
-) -> dict[str, Any]:
+def create_local_election(session: Session, on: date, *, simulate: bool = False) -> dict[str, Any]:
     """``POST /api/local/elections`` — create (and optionally simulate) the local election of a
-    province on one of its local election days (409 when it exists, 422-like errors when the
-    province holds no local election that day)."""
+    local election date: every province voting that day (409 when it exists or when no province
+    votes that day)."""
     from app.services import local as local_service
     from app.services.read.elections import election_detail
 
     try:
-        el = local_service.create_local_election(session, province_code.upper(), on)
+        el = local_service.create_local_election(session, on)
         if simulate:
             election_service.simulate_election(session, el.id)
         _commit(session)

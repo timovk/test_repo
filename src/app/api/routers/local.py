@@ -25,20 +25,16 @@ def calendar(
     return respond(loc.calendar(session, start=start, end=end, province=province))
 
 
-@router.get("/elections", summary="Stored local elections with race counts")
+@router.get("/elections", summary="Stored local elections with race counts (province: those it holds)")
 def elections(session: SessionDep, year: int | None = None, province: str | None = None) -> ApiJSON:
     return respond(loc.elections(session, year=year, province=province))
 
 
 class CreateLocal(BaseModel):
-    province_code: str = Field(..., description="province code, e.g. GE")
-    date: dt.date = Field(..., description="one of the province's local election days")
+    date: dt.date = Field(..., description="a local election date (every province voting that day)")
     simulate: bool = Field(False, description="simulate the (hidden) result right away")
 
 
-@router.post("/elections", status_code=201, summary="Create the local election of a province on a local day")
+@router.post("/elections", status_code=201, summary="Create the local election of a local election date")
 def create(body: CreateLocal, session: SessionDep) -> ApiJSON:
-    return respond(
-        actions.create_local_election(session, body.province_code, body.date, simulate=body.simulate),
-        status_code=201,
-    )
+    return respond(actions.create_local_election(session, body.date, simulate=body.simulate), status_code=201)

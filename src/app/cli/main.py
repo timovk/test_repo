@@ -11,6 +11,7 @@ import typer
 
 from app import __version__
 from app.cli._common import console, set_database_url, setup_logging
+from app.cli.clock import clock_app
 from app.cli.db import db_app
 from app.cli.districts import apportion, districts_app
 from app.cli.elections import (
@@ -26,6 +27,7 @@ from app.cli.elections import (
 from app.cli.geography import geography_app
 from app.cli.local import finish_earlier, local_app
 from app.cli.night import election_night
+from app.cli.people import people
 from app.cli.scenario import scenario_app
 from app.cli.system import demo, init, run, validate
 
@@ -82,10 +84,16 @@ app.add_typer(districts_app, name="districts", help="FICTIONAL House districts: 
 # ---- elections
 app.add_typer(election_app, name="election", help="Create, list and inspect elections.")
 app.add_typer(local_app, name="local", help="In-between local elections: calendar, list, create, schedule.")
+app.add_typer(
+    clock_app,
+    name="clock",
+    help="The world clock: today, next election day (watch or count), skip, agenda, news.",
+)
 app.command("simulate")(simulate)
 app.command("finalize")(finalize)
 app.command("reset")(reset)
 app.command("finish-earlier")(finish_earlier)
+app.command("people")(people)
 app.command("forecast")(forecast)
 app.command("election-night")(election_night)
 app.command("export")(export)

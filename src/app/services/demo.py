@@ -43,7 +43,7 @@ from app.core.logging import get_logger, log_ctx
 from app.core.rng import derive_seed
 from app.core.settings import get_settings
 from app.elections.calendar import ElectionCalendar
-from app.models import Election, Province, Scenario, SimulationRun
+from app.models import Election, Scenario, SimulationRun
 from app.scenarios.loader import load_scenario
 from app.services._common import REPORTED_STATUSES, set_meta
 
@@ -228,8 +228,8 @@ def build_demo(
         election_seed: derive every election's seed from this value (default: scenario seeds).
         workers: worker processes of districting and forecasting (0 = automatic).
         local_elections: hold every in-between local election from the founding election up
-            to the demo election (each through an instant election night), and schedule the
-            local elections up to the next regular election day after it.
+            to the demo election, each through an instant election night.  The world clock
+            then waits on the demo election's day.
 
     Raises:
         ValidationError: the finished system fails :func:`validate_system`.
@@ -331,7 +331,7 @@ def build_demo(
             lo = local_service.open_after(s)
             last = until - timedelta(days=1)
             cal = local_service.get_local_calendar(s)
-            days = cal.days(lo, last)
+            dates = list(cal.dates(lo, last))
             # the local elections of this period an earlier run held (the loop counts the rest)
             skipped = s.scalar(
                 select(func.count())
@@ -346,22 +346,18 @@ def build_demo(
             skipped = int(skipped or 0)
         held = 0
         name = f"local elections before {until.isoformat()}"
-        for i, day in enumerate(days):
+        for i, on in enumerate(dates):
             with b.session() as s:
                 eid = s.scalar(
-                    select(Election.id)
-                    .join(Province, Province.id == Election.province_id)
-                    .where(
-                        Election.election_type == ElectionType.LOCAL.value,
-                        Election.election_date == day.date,
-                        Province.code == day.province_code,
+                    select(Election.id).where(
+                        Election.election_type == ElectionType.LOCAL.value, Election.election_date == on
                     )
                 )
                 if eid is None:
-                    plan = local_service.plan_for(s, day.province_code, day.date)
+                    plan = local_service.plan_for(s, on)
                     if not plan.contests:
                         continue
-                    eid = local_service.create_local_election(s, day.province_code, day.date, plan=plan).id
+                    eid = local_service.create_local_election(s, on, plan=plan).id
                 el = s.get(Election, eid)
                 assert el is not None
                 if el.status in REPORTED_STATUSES:
@@ -372,8 +368,8 @@ def build_demo(
             with b.session() as s:
                 run_instant_night(s, eid)
             held += 1
-            if (i + 1) % 10 == 0 or i + 1 == len(days):
-                b.notify(name, "progress", f"{i + 1}/{len(days)} local days ({day.date.isoformat()})")
+            if (i + 1) % 5 == 0 or i + 1 == len(dates):
+                b.notify(name, "progress", f"{i + 1}/{len(dates)} local election days ({on.isoformat()})")
         if not held:
             return (
                 "skipped",
@@ -464,21 +460,19 @@ def build_demo(
 
     b.run("forecast", forecast)
 
-    # ---- the local elections after the demo election, scheduled (not simulated)
-    def scheduled_locals() -> tuple[str, str]:
-        from app.services import local as local_service
+    # ---- the world clock (docs/CLOCK.md) waits on the demo election's day; later elections are
+    # created as the clock reaches them (so edits to config/people.yaml still apply to them)
+    def world_clock() -> tuple[str, str]:
+        from app.services import clock
 
-        cal = ElectionCalendar.from_config()
-        start = regular_date(LIVE_SCENARIO)
-        nxt = cal.election_date(cal.next_election_year(start.year))
+        on = regular_date(LIVE_SCENARIO)
         with b.session() as s:
-            ids = local_service.ensure_local_elections(s, nxt - timedelta(days=1), after=start)
-        if not ids:
-            return "skipped", "the local elections up to the next regular election exist"
-        return "done", f"{len(ids)} local elections scheduled up to {nxt.isoformat()}"
+            if clock.stored_today(s) == on:
+                return "skipped", f"the clock is at {on.isoformat()}"
+            clock.set_today(s, on)
+        return "done", f"today is {on.isoformat()} (the {LIVE_SCENARIO} election day)"
 
-    if local_elections:
-        b.run("scheduled local elections", scheduled_locals)
+    b.run("world clock", world_clock)
 
     # ---- 7. demo election id + validation
     def finish() -> tuple[str, str]:

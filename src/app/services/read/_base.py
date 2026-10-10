@@ -189,8 +189,8 @@ class ElectionRef:
     simulated_at: datetime | None
     finalized_at: datetime | None
     results_source: str
-    #: Local (in-between) elections: the province holding it (None for regular elections).
-    province_code: str | None = None
+    #: Local (in-between) elections: the provinces voting that day (empty for regular elections).
+    provinces: tuple[str, ...] = ()
 
     @property
     def local(self) -> bool:
@@ -226,7 +226,7 @@ class ElectionRef:
             "live": self.live,
             "results_source": self.results_source,
             "local": self.local,
-            "province_code": self.province_code,
+            "provinces": list(self.provinces),
         }
 
     def envelope(self, **payload: Any) -> dict[str, Any]:
@@ -271,7 +271,7 @@ def ref_of(el: Election) -> ElectionRef:
         simulated_at=el.simulated_at,
         finalized_at=el.finalized_at,
         results_source=_source(el),
-        province_code=el.province.code if el.province_id is not None and el.province is not None else None,
+        provinces=tuple(p for p in (el.provinces or "").split(",") if p),
     )
 
 

@@ -90,6 +90,7 @@ from app.services.runtime import (
     plan_mapping,
     scenario_hash,
 )
+from app.simulation.people import load_people
 from app.simulation.voting import simulate_election as simulate_votes
 
 log = get_logger(__name__)
@@ -350,6 +351,7 @@ def create_election(
             ev_by_province=_ev_by_province(session, appt.id, frame.province_codes),
             existing_keys=existing,
             candidate_specs={c.key: c for c in doc.candidates},
+            people=load_people(frame),
         )
         planned: list[create_ops.PlannedRace] = []
         blocked: set[str] = set()
@@ -396,6 +398,19 @@ def create_election(
             )
         if not planned:
             raise ElectionError(f"no races to hold in {year} (check the scenario and the calendar)")
+        if state.people_used:  # custom people: inserted, or refreshed from config/people.yaml
+            cand_ids.update(
+                create_ops.upsert_candidates(
+                    session,
+                    list(state.people_used.values()),
+                    year,
+                    party_ids,
+                    prov_ids,
+                    frame,
+                    ideology,
+                    update_existing=True,
+                )
+            )
         needed = {
             k
             for pr in planned
@@ -440,6 +455,7 @@ def create_election(
                 "races": counts,
                 "ballot_lines": sum(len(pr.lines) for pr in planned),
                 "new_candidates": len(needed),
+                "custom_people": sorted(state.people_used),
                 "campaigns": campaigns,
                 "polls": polls,
                 "warnings": state.warnings + model.warnings[:20],
@@ -529,26 +545,15 @@ def reported_on_or_after(
     session: Session, election_date: date, *, exclude_id: int | None = None
 ) -> int | None:
     """Id of a reported (FINAL / CERTIFIED) election held on or after ``election_date`` that
-    blocks certifying an election of that date.  Local elections of different provinces held on
-    the same day are independent of each other (``exclude_id`` names the election asking)."""
-    asking = session.get(Election, int(exclude_id)) if exclude_id is not None else None
-    q = select(Election).where(
+    blocks certifying an election of that date (``exclude_id``: the election asking)."""
+    q = select(Election.id).where(
         Election.status.in_(list(REPORTED_STATUSES)),
         Election.election_date >= election_date,
     )
     if exclude_id is not None:
         q = q.where(Election.id != int(exclude_id))
-    for other in session.scalars(q.order_by(Election.election_date, Election.id)):
-        if (
-            other.election_date == election_date
-            and asking is not None
-            and asking.election_type == ElectionType.LOCAL.value
-            and other.election_type == ElectionType.LOCAL.value
-            and asking.province_id != other.province_id
-        ):
-            continue
-        return int(other.id)
-    return None
+    found = session.scalars(q.order_by(Election.election_date, Election.id).limit(1)).first()
+    return int(found) if found is not None else None
 
 
 def require_certifiable(session: Session, election_date: date, *, exclude_id: int | None = None) -> None:
@@ -592,7 +597,7 @@ def earlier_unfinished(session: Session, election_id: int) -> dict[str, Any]:
         else (
             {"id": first.id, "name": first.name, "date": first.election_date.isoformat()}
             if first is not None
-            else {"id": None, "name": missing[0].name, "date": missing[0].day.date.isoformat()}
+            else {"id": None, "name": missing[0].name, "date": missing[0].date.isoformat()}
         ),
     }
 
@@ -727,7 +732,7 @@ def _contents(session: Session, el: Election) -> dict[str, Any]:
         "founding": cyc.is_founding and el.election_type != ElectionType.LOCAL.value,
         # in-between local election: school boards, water boards, measures, specials, recalls
         "local": el.election_type == ElectionType.LOCAL.value,
-        "province_code": el.province.code if el.province_id is not None and el.province is not None else None,
+        "provinces": [p for p in (el.provinces or "").split(",") if p],
     }
 
 

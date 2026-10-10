@@ -92,13 +92,15 @@ def test_water_boards_on_the_calendar(world) -> None:  # type: ignore[no-untyped
 def test_local_election_lifecycle(world) -> None:  # type: ignore[no-untyped-def]
     s = world.session
     plan = _first_plans(s, 1)[0]
-    el = local_service.create_local_election(s, plan.day.province_code, plan.day.date, plan=plan)
+    el = local_service.create_local_election(s, plan.date, plan=plan)
     assert el.election_type == ElectionType.LOCAL.value and el.status == ElectionStatus.SCHEDULED.value
-    assert el.province is not None and el.province.code == plan.day.province_code
+    assert el.name.startswith("Local Elections · ") and el.provinces.split(",") == plan.provinces
     races = s.scalars(select(Race).where(Race.election_id == el.id)).all()
-    assert len(races) == len(plan.contests) + sum(1 for c in plan.contests if c.kind == "recall")
-    with pytest.raises(ElectionError):  # one election per province and day
-        local_service.create_local_election(s, plan.day.province_code, plan.day.date, plan=plan)
+    assert len(races) == plan.races
+    # every province voting that day is on the one ballot (one combined election night)
+    assert {c.province_code for c in plan.contests} == set(plan.provinces)
+    with pytest.raises(ElectionError):  # one election per date
+        local_service.create_local_election(s, plan.date, plan=plan)
     simulate_election(s, el.id)
     inputs = election_inputs(s, el.id)
     votes = load_final_race_votes(s, el.id, inputs, with_expectation=False)
@@ -153,46 +155,37 @@ def test_local_election_lifecycle(world) -> None:  # type: ignore[no-untyped-def
     assert all("winners" not in _details(r) for r in s.scalars(select(Race).where(Race.election_id == el.id)))
 
 
-def test_strict_date_order_and_same_day_independence(world) -> None:  # type: ignore[no-untyped-def]
+def test_strict_date_order_and_combined_days(world) -> None:  # type: ignore[no-untyped-def]
     s = world.session
     plans = local_service.plan_local_elections(s, FOUNDING, date(2025, 12, 31))
-    by_day: dict[date, list] = {}
+    assert [p.date for p in plans] == sorted({p.date for p in plans})  # one election per date
+    combined = next(p for p in plans if len(p.provinces) >= 2)
+    assert combined.provinces == [
+        d.province_code for d in combined.days if d.province_code in combined.provinces
+    ]
+    first, target = plans[0], plans[min(2, len(plans) - 1)]
     for p in plans:
-        by_day.setdefault(p.day.date, []).append(p)
-    day, same = next((d, ps) for d, ps in sorted(by_day.items()) if len(ps) >= 2)
-    first_day = min(by_day)
-    # every local election before ``day``, and only one province's election on ``day``
-    for p in plans:
-        if p.day.date < day:
-            local_service.create_local_election(s, p.day.province_code, p.day.date, plan=p)
-    a = local_service.create_local_election(s, same[0].day.province_code, day, plan=same[0]).id
+        if p.date <= target.date:
+            local_service.create_local_election(s, p.date, plan=p)
+    eid = s.scalars(select(Election.id).where(Election.election_date == target.date)).one()
     # a later election cannot be certified while an earlier one is unfinished
-    if day > first_day:
-        simulate_election(s, a)
+    if target.date > first.date:
+        simulate_election(s, eid)
         with pytest.raises(ElectionError, match="must be finished first"):
-            finalize_election(s, a)
-    done = local_service.finish_earlier(s, day)
+            finalize_election(s, eid)
+    done = local_service.finish_earlier(s, target.date)
     assert all(s.get(Election, i).status == "final" for i in done)
-    if s.get(Election, a).status == ElectionStatus.SCHEDULED.value:
-        simulate_election(s, a)
-    finalize_election(s, a)
-    # the other provinces' elections of that day are still open once ``a`` is certified
-    # (an interrupted run resumes them) ...
-    missing = {p.day.province_code for p in local_service.missing_local_before(s, day + timedelta(days=1))}
-    assert missing == {p.day.province_code for p in same[1:]}
-    created = local_service.ensure_local_elections(s, day)
-    assert len(created) == len(same) - 1
-    # ... and independent of it: certified after it, on the same day
-    b = created[0]
-    simulate_election(s, b)
-    finalize_election(s, b)
-    assert s.get(Election, a).status == s.get(Election, b).status == "final"
+    if s.get(Election, eid).status == ElectionStatus.SCHEDULED.value:
+        simulate_election(s, eid)
+    finalize_election(s, eid)
+    assert not local_service.missing_local_before(s, target.date + timedelta(days=1))
+    assert local_service.ensure_local_elections(s, target.date) == []
 
 
 def test_the_big_election_waits_for_the_local_ones(world) -> None:  # type: ignore[no-untyped-def]
     s = world.session
     plan = _first_plans(s, 1)[0]
-    local_service.create_local_election(s, plan.day.province_code, plan.day.date, plan=plan)
+    local_service.create_local_election(s, plan.date, plan=plan)
     with pytest.raises(ElectionError, match="must be finished first"):
         finalize_election(s, world.second)
 
@@ -202,7 +195,7 @@ def test_validation_of_local_elections(world) -> None:  # type: ignore[no-untype
     nobody.  Neither is a validation failure."""
     s = world.session
     plan = _first_plans(s, 1)[0]
-    el = local_service.create_local_election(s, plan.day.province_code, plan.day.date, plan=plan)
+    el = local_service.create_local_election(s, plan.date, plan=plan)
     simulate_election(s, el.id)
     finalize_election(s, el.id)
     el.year = 2026  # a midterm year: the calendar's House and presidential checks do not apply
@@ -259,8 +252,8 @@ def test_specials_and_recalls(world, monkeypatch: pytest.MonkeyPatch) -> None:  
     kinds = Counter(c.kind for p in plans for c in p.contests)
     assert kinds["mayor_special"] > 0 and kinds["recall"] > 0
     target = next(p for p in plans if any(c.kind in ("recall", "mayor_special") for c in p.contests))
-    local_service.finish_earlier(s, target.day.date)
-    el = local_service.create_local_election(s, target.day.province_code, target.day.date, plan=target)
+    local_service.finish_earlier(s, target.date)
+    el = local_service.create_local_election(s, target.date, plan=target)
     simulate_election(s, el.id)
     finalize_election(s, el.id)
     s.commit()
@@ -320,3 +313,47 @@ def test_vote_for_n_mark_draws() -> None:
     marks = at_large_marks(rng, valid, shares, 2, CandidateEffectsConfig())
     assert (marks <= valid[:, None]).all()
     assert (marks.sum(axis=1) >= valid).all() and (marks.sum(axis=1) <= 2 * valid).all()
+
+
+# ============================================================================ custom people
+def test_custom_people_run_where_they_live(world, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
+    from app.models import BallotCandidate, Candidate
+    from app.services.read.people import custom_people
+    from app.simulation import people as people_mod
+
+    s = world.session
+    plan = next(p for p in _first_plans(s, 8) if any(c.kind == "school_board" for c in p.contests))
+    sb = next(c for c in plan.contests if c.kind == "school_board")
+    frame = get_frame(s)
+    name = frame.muni_names[frame.muni_index(sb.municipality_code)]
+    path = tmp_path / "people.yaml"
+    path.write_text(
+        "people:\n"
+        f"  - {{name: Sanne de Vries, home: {name}, born: 1990, party: PA, chance: always, offices: [school_board]}}\n"
+        f"  - {{name: Tom Jansen, home: {name}, born: 1985, chance: always, offices: [school_board]}}\n"
+        f"  - {{name: Not Running, home: {name}, born: 1985, chance: never}}\n"
+    )
+    monkeypatch.setattr(people_mod, "people_path", lambda: path)
+    el = local_service.create_local_election(s, plan.date, plan=plan)
+    race = s.scalars(select(Race).where(Race.election_id == el.id, Race.code == sb.code)).one()
+    keys = {
+        bc.line_key for bc in s.scalars(select(BallotCandidate).where(BallotCandidate.race_id == race.id))
+    }
+    assert {"person-sanne-de-vries", "person-tom-jansen"} <= keys and "person-not-running" not in keys
+    sanne = s.scalars(select(Candidate).where(Candidate.key == "person-sanne-de-vries")).one()
+    assert sanne.home_municipality_code == sb.municipality_code and sanne.party_id is not None
+    simulate_election(s, el.id)
+    finalize_election(s, el.id)
+    s.commit()
+    data = custom_people(s)
+    assert data["error"] is None and data["count"] == 3
+    runs = {p["key"]: p["runs"] for p in data["people"]}
+    assert runs["person-not-running"] == []
+    for key in ("person-sanne-de-vries", "person-tom-jansen"):
+        assert (
+            len(runs[key]) == 1
+            and runs[key][0]["race_code"] == sb.code
+            and runs[key][0]["won"] in (True, False)
+        )
+    winners = [p for p in data["people"] if p["runs"] and p["runs"][0]["won"]]
+    assert all(p["holds"] for p in winners)  # a winner takes a board seat

@@ -87,6 +87,7 @@ def test_build_demo_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "election founding-2024",
         "election demo-2028",
         "forecast",
+        "world clock",
         "validate",
     ]
     assert {s.name: s.status for s in summary.steps} == {
@@ -96,6 +97,7 @@ def test_build_demo_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "election founding-2024": "done",
         "election demo-2028": "done",
         "forecast": "done",
+        "world clock": "done",
         "validate": "done",
     }
     assert ("database", "start") in events and ("validate", "done") in events
@@ -111,6 +113,7 @@ def test_build_demo_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         assert s.get(Election, founding).status == ElectionStatus.FINAL.value
         assert s.get(Election, live).status == ElectionStatus.SIMULATED.value
         assert s.get(AppMeta, DEMO_ELECTION_KEY).value == str(live)
+        assert s.get(AppMeta, "world_date").value == s.get(Election, live).election_date.isoformat()
         calls = s.scalar(select(func.count()).select_from(RaceCall).where(RaceCall.election_id == founding))
         assert calls == night["calls"]
         ns = s.scalar(select(NightSession).where(NightSession.election_id == founding))
@@ -142,6 +145,7 @@ def test_build_demo_synthetic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert status["election founding-2024"] == "skipped"
     assert status["election demo-2028"] == "skipped"
     assert status["forecast"] == "skipped" and len(runner.calls) == 1
+    assert status["world clock"] == "skipped"
     assert again.elections == summary.elections and again.validation_ok
 
 
@@ -174,7 +178,7 @@ def test_build_demo_real(real_frame, tmp_path: Path) -> None:  # type: ignore[no
     )
     print("database bytes:", summary.database_bytes, "nights:", summary.nights)
     assert summary.validation_ok, summary.validation_errors
-    assert seconds < 1500.0  # target < 900 s on an unloaded machine (≈ 190 local elections included)
+    assert seconds < 1500.0  # target < 900 s on an unloaded machine (≈ 64 local election days included)
     regular = Election.election_type != "local"
     with _scope(url) as s:
         counts = dict(
@@ -188,13 +192,16 @@ def test_build_demo_real(real_frame, tmp_path: Path) -> None:  # type: ignore[no
         statuses = dict(s.execute(select(Election.year, Election.status).where(regular)).tuples().all())
         assert statuses == {2024: "final", 2026: "final", 2028: "simulated"}
         assert s.scalar(select(func.count()).select_from(NightSession).join(Election).where(regular)) == 2
-        # every local election before the 2028 general is held; later ones are scheduled
+        # every local election day before the 2028 general is held (one election per date, every
+        # province voting that day); later ones are created as the world clock reaches them
         local = s.execute(
             select(Election.election_date, Election.status).where(Election.election_type == "local")
         ).all()
         held = [st for d, st in local if d < date(2028, 11, 8)]
-        assert len(held) > 150 and set(held) == {"final"}
-        assert {st for d, st in local if d > date(2028, 11, 8)} == {"scheduled"}
+        assert len(held) > 50 and set(held) == {"final"}
+        assert len({d for d, _ in local}) == len(local)
+        assert not [d for d, _ in local if d > date(2028, 11, 8)]
+        assert s.get(AppMeta, "world_date").value == "2028-11-08"
     st = _night_state(url, summary.demo_election_id)
     p = st["snapshot"]["president"]
     assert (p["ev_decided_total"], p["ev_uncalled"], p["ev_total"], p["ev_needed"]) == (0, 174, 174, 88)

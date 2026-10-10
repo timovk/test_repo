@@ -10,29 +10,24 @@ from fastapi.testclient import TestClient
 def _first_days(client: TestClient, n: int = 2) -> list[dict]:
     cal = client.get("/api/local/calendar?start=2024-11-06&end=2025-12-31").json()
     assert cal["count"] > 0 and cal["days"][0]["date"] > "2024-11-06"
-    assert {"province_code", "date", "races", "counts", "contests", "election_id"} <= set(cal["days"][0])
+    assert {"provinces", "date", "races", "counts", "contests", "election_id"} <= set(cal["days"][0])
+    assert len({d["date"] for d in cal["days"]}) == cal["count"]  # one local election per date
     assert len(cal["province_days"]) == 12
     return cal["days"][:n]
 
 
 def test_local_calendar_create_and_results(rw_client: TestClient) -> None:
     day = _first_days(rw_client, 1)[0]
-    r = rw_client.post(
-        "/api/local/elections", json={"province_code": day["province_code"], "date": day["date"]}
-    )
+    r = rw_client.post("/api/local/elections", json={"date": day["date"]})
     assert r.status_code == 201, r.text
     detail = r.json()
     eid = detail["election"]["id"]
-    assert detail["election"]["local"] is True and detail["election"]["province_code"] == day["province_code"]
+    assert detail["election"]["local"] is True and detail["election"]["provinces"] == day["provinces"]
     assert detail["contents"]["local"] is True
     assert detail["night"]["needs_simulation"] is True  # SCHEDULED: no night before simulating
-    again = rw_client.post(
-        "/api/local/elections", json={"province_code": day["province_code"], "date": day["date"]}
-    )
+    again = rw_client.post("/api/local/elections", json={"date": day["date"]})
     assert again.status_code == 409
-    bad = rw_client.post(
-        "/api/local/elections", json={"province_code": day["province_code"], "date": "2025-07-01"}
-    )
+    bad = rw_client.post("/api/local/elections", json={"date": "2025-07-01"})
     assert bad.status_code == 409
 
     races = rw_client.get(f"/api/elections/{eid}/races").json()
@@ -77,7 +72,7 @@ def test_local_calendar_create_and_results(rw_client: TestClient) -> None:
     )
     meta = rw_client.get("/api/meta").json()
     brief = next(e for e in meta["elections"] if e["id"] == eid)
-    assert brief["local"] and brief["province_code"] == day["province_code"]
+    assert brief["local"] and brief["provinces"] == day["provinces"]
 
 
 def test_strict_order_api(rw_client: TestClient, api_world) -> None:  # type: ignore[no-untyped-def]
@@ -86,7 +81,7 @@ def test_strict_order_api(rw_client: TestClient, api_world) -> None:  # type: ig
     for d in days:
         r = rw_client.post(
             "/api/local/elections",
-            json={"province_code": d["province_code"], "date": d["date"], "simulate": True},
+            json={"date": d["date"], "simulate": True},
         )
         assert r.status_code == 201, r.text
         ids.append(r.json()["election"]["id"])

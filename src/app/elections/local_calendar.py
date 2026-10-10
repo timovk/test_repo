@@ -206,7 +206,8 @@ class SlotRule:
 
 @dataclass(frozen=True)
 class LocalDay:
-    """A province's local election day (the unit a local election is created for)."""
+    """A province's local election day.  The province days of one date are held together as one
+    local election (one combined election night)."""
 
     province_code: str
     slot: int
@@ -366,6 +367,14 @@ class LocalCalendar:
         order = {pv: i for i, pv in enumerate(self.frame.province_codes)}
         return sorted(out, key=lambda x: (x.date, order[x.province_code]))
 
+    def dates(self, start: date, end: date) -> dict[date, list[LocalDay]]:
+        """Local election dates with ``start < date ≤ end`` → the province days held on each
+        (oldest first).  All provinces voting on a date form one local election."""
+        out: dict[date, list[LocalDay]] = {}
+        for d in self.days(start, end):
+            out.setdefault(d.date, []).append(d)
+        return out
+
     def municipalities_on(self, day: LocalDay) -> list[str]:
         """Municipalities whose own local day is ``day`` (canonical order)."""
         f = self.frame
@@ -515,7 +524,6 @@ class LocalCalendar:
     def format_date(d: date) -> str:
         return f"{d.day} {MONTH_NAMES[d.month - 1]} {d.year}"
 
-    def election_name(self, day: LocalDay) -> str:
-        """E.g. ``"Gelderland Local Elections · 17 March 2027"``."""
-        p = self.frame.province_index(day.province_code)
-        return f"{self.frame.province_names[p]} Local Elections · {self.format_date(day.date)}"
+    def election_name(self, on: date) -> str:
+        """E.g. ``"Local Elections · 17 March 2027"`` (every province voting that day)."""
+        return f"Local Elections · {self.format_date(on)}"
